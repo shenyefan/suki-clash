@@ -1,0 +1,21 @@
+[package]
+name = "suki-clash"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+gpui-kit = { version = "0.8.1", features = ["tree-sitter-yaml", "tree-sitter-javascript"] }
+regex = "1.13.1"
+getrandom = "0.4.3"
+serde_yaml_ng = { version = "0.10.0", default-features = false }
+qrcode = { version = "0.14.1", default-features = false }
+async-channel = "2.5.0"
+dirs = "7.0.0"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+tempfile = "3.27.0"
+thiserror = "2.0.21"
+chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
+
+[dev-dependencies]
+gpui-kit = { version = "0.8.1", features = ["test-support"] }
