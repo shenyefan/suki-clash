@@ -8,8 +8,7 @@ use gpui_kit::{
         ActiveTheme, Disableable, Icon, Selectable, Sizable,
         button::{Button, ButtonVariants, DropdownButton},
         input::Input,
-        menu::{DropdownMenu, PopupMenuItem},
-        scroll::ScrollableElement,
+        menu::DropdownMenu,
     },
     *,
 };
@@ -47,11 +46,12 @@ impl ProxiesPage {
                 for order in SortOrder::ALL {
                     let owner = owner.clone();
                     menu = menu.item(
-                        PopupMenuItem::new(order.label())
+                        crate::ui::actions::menu(order.label())
                             .checked(order == sort)
                             .on_click(move |_, window, cx| {
                                 owner.update(cx, |this, cx| {
                                     this.sort = order;
+                                    this.group_sorts.clear();
                                     this.refresh_list(window, cx);
                                     cx.notify();
                                 })
@@ -79,7 +79,7 @@ impl ProxiesPage {
                 let expand = owner.clone();
                 let collapse = owner.clone();
                 menu.item(
-                    PopupMenuItem::new("仅显示可用节点")
+                    crate::ui::actions::menu("仅显示可用节点")
                         .checked(available)
                         .on_click(move |_, window, cx| {
                             filter.update(cx, |this, cx| {
@@ -89,25 +89,27 @@ impl ProxiesPage {
                             })
                         }),
                 )
-                .item(PopupMenuItem::new("紧凑列表").checked(compact).on_click(
-                    move |_, window, cx| {
-                        density.update(cx, |this, cx| {
-                            this.compact = !this.compact;
-                            this.refresh_list(window, cx);
-                            cx.notify();
-                        })
-                    },
-                ))
+                .item(
+                    crate::ui::actions::menu("紧凑列表")
+                        .checked(compact)
+                        .on_click(move |_, window, cx| {
+                            density.update(cx, |this, cx| {
+                                this.compact = !this.compact;
+                                this.refresh_list(window, cx);
+                                cx.notify();
+                            })
+                        }),
+                )
                 .separator()
                 .item(
-                    PopupMenuItem::new("展开全部分组")
+                    crate::ui::actions::menu("展开全部分组")
                         .icon(IconName::ChevronsUpDown)
                         .on_click(move |_, window, cx| {
                             expand.update(cx, |this, cx| this.expand_all(true, window, cx))
                         }),
                 )
                 .item(
-                    PopupMenuItem::new("收起全部分组")
+                    crate::ui::actions::menu("收起全部分组")
                         .icon(IconName::ChevronsDownUp)
                         .on_click(move |_, window, cx| {
                             collapse.update(cx, |this, cx| this.expand_all(false, window, cx))
@@ -115,17 +117,27 @@ impl ProxiesPage {
                 )
                 .separator()
                 .item(
-                    PopupMenuItem::new("刷新代理组")
+                    crate::ui::actions::menu("刷新代理组")
                         .icon(IconName::RefreshCw)
-                        .on_click(|_, window, cx| ui::request_command("刷新代理组", window, cx)),
+                        .on_click(|_, window, cx| {
+                            crate::core::request(
+                                crate::core::Command::Proxy(super::runtime::Action::Refresh),
+                                window,
+                                cx,
+                            )
+                        }),
                 )
             })
     }
 
     fn toolbar(&self, disabled: bool, cx: &mut Context<Self>) -> Div {
+        let runtime = self.session.read(cx).runtime();
+        let generation = runtime.generation;
+        let epoch = runtime.epoch;
         ui::workspace_toolbar()
             .child(
                 Input::new(&self.query)
+                    .aria_label("搜索代理组或节点")
                     .with_size(control::STANDARD)
                     .w(layout::SEARCH_WIDTH)
                     .flex_1()
@@ -140,18 +152,27 @@ impl ProxiesPage {
                     .ghost()
                     .with_size(control::STANDARD)
                     .icon(IconName::Link)
-                    .label("链式代理…")
+                    .label("链式代理")
                     .on_click(cx.listener(|this, _, w, cx| this.edit_chain(w, cx))),
             )
             .child(
                 Button::new("test-all-groups")
                     .outline()
                     .with_size(control::STANDARD)
-                    .icon(IconName::Zap)
+                    .icon(IconName::Gauge)
                     .label("测试延迟")
                     .disabled(disabled)
-                    .on_click(|_, window, cx| {
-                        ui::request_command("测试全部代理组延迟", window, cx)
+                    .on_click(move |_, window, cx| {
+                        crate::core::test_delay(
+                            super::runtime::Test {
+                                group: None,
+                                node: None,
+                                generation,
+                                epoch,
+                            },
+                            window,
+                            cx,
+                        )
                     }),
             )
     }
@@ -213,13 +234,7 @@ impl Render for ProxiesPage {
                             });
                         }
                     })
-                    .child(
-                        div()
-                            .id("proxy-group-scroll")
-                            .size_full()
-                            .overflow_y_scrollbar()
-                            .child(content),
-                    ),
+                    .child(div().id("proxy-group-scroll").size_full().child(content)),
             )
             .child(
                 ui::workspace_footer()

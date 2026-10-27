@@ -1,7 +1,7 @@
 use super::{SettingsKind, SettingsPage};
 use crate::{
     integration, ui,
-    ui::theme::{control, layout, space, text},
+    ui::theme::{control, layout, space},
 };
 use gpui_kit::{
     assets::IconName,
@@ -10,6 +10,7 @@ use gpui_kit::{
         button::{Button, ButtonVariants},
         input::{Editor, Input},
         scroll::ScrollableElement,
+        switch::Switch,
         tab::{Tab, TabBar},
     },
     prelude::FluentBuilder as _,
@@ -17,7 +18,7 @@ use gpui_kit::{
 };
 
 impl SettingsPage {
-    pub(super) fn runtime_view(&self, cx: &mut Context<Self>) -> Div {
+    pub(super) fn runtime_view(&self, window: &mut Window, cx: &mut Context<Self>) -> Div {
         let tabs: &[&str] = match self.kind {
             SettingsKind::Core => &["常规", "网络", "访问", "维护"],
             SettingsKind::Dns => &["常规", "服务器", "Fake-IP", "解析策略", "Hosts"],
@@ -28,32 +29,67 @@ impl SettingsPage {
             _ => &["常规", "外观", "托盘", "网络", "同步", "维护"],
         };
         let query = self.filter.read(cx).value().to_lowercase();
-        let header = ui::workspace_header(self.kind.label(), "", cx).child(
-            TabBar::new("runtime-tabs")
-                .segmented()
-                .with_size(control::STANDARD)
-                .children(tabs.iter().map(|label| Tab::new().label(*label)))
-                .selected_index(self.runtime_tab)
-                .on_click(cx.listener(|this, ix, _, cx| {
-                    this.runtime_tab = *ix;
-                    cx.notify();
-                })),
-        );
-        let toolbar =
-            ui::workspace_toolbar()
-                .child(
-                    div().flex_1().min_w(space::NONE).child(
-                        Input::new(&self.filter)
-                            .with_size(control::STANDARD)
-                            .w_full()
-                            .cleanable(true)
-                            .prefix(Icon::new(IconName::Search).size(layout::ICON))
-                            .aria_label("搜索当前页面"),
-                    ),
-                )
-                .when(self.kind == SettingsKind::Dns, |toolbar| {
+        let heading = if matches!(self.kind, SettingsKind::Dns | SettingsKind::Sniffer) {
+            let key = crate::preferences::native::flag(self.kind);
+            let checked = self
+                .values(cx)
+                .get(key)
+                .is_some_and(|value| value == "true");
+            ui::workspace_header_control(
+                self.kind.label(),
+                "",
+                Switch::new(SharedString::from(format!("setting-{key}")))
+                    .with_size(control::STANDARD)
+                    .checked(checked)
+                    .disabled(self.saving || self.session.read(cx).core_busy())
+                    .accessibility_label(if self.kind == SettingsKind::Dns {
+                        "使用全局 DNS 配置"
+                    } else {
+                        "使用全局嗅探配置"
+                    })
+                    .on_change(cx.listener(move |this, value, window, cx| {
+                        this.toggle(key, *value, window, cx)
+                    })),
+                cx,
+            )
+        } else {
+            ui::workspace_header(self.kind.label(), "", cx)
+        };
+        let header = heading.when(!self.dns_raw, |header| {
+            header.child(
+                TabBar::new("runtime-tabs")
+                    .segmented()
+                    .with_size(control::STANDARD)
+                    .children(tabs.iter().map(|label| Tab::new().label(*label)))
+                    .selected_index(self.runtime_tab)
+                    .on_click(cx.listener(|this, ix, _, cx| {
+                        this.runtime_tab = *ix;
+                        cx.notify();
+                    })),
+            )
+        });
+        let toolbar = ui::workspace_toolbar()
+            .child(
+                div()
+                    .flex_1()
+                    .min_w(space::NONE)
+                    .when(!self.dns_raw, |search| {
+                        search.child(
+                            Input::new(&self.filter)
+                                .with_size(control::STANDARD)
+                                .w_full()
+                                .cleanable(true)
+                                .prefix(Icon::new(IconName::Search).size(layout::ICON))
+                                .aria_label("搜索当前页面"),
+                        )
+                    }),
+            )
+            .when(
+                matches!(self.kind, SettingsKind::Dns | SettingsKind::Sniffer),
+                |toolbar| {
                     toolbar.child(
                         Button::new("dns-edit-mode")
+                            .icon(gpui_kit::assets::IconName::FileCode)
                             .outline()
                             .with_size(control::STANDARD)
                             .label(if self.dns_raw {
@@ -65,94 +101,101 @@ impl SettingsPage {
                                 this.switch_dns_mode(!this.dns_raw, w, cx)
                             })),
                     )
-                })
-                .when(self.kind == SettingsKind::Resources, |toolbar| {
-                    toolbar.child(
-                        Button::new("resources-update-all")
-                            .outline()
-                            .with_size(control::STANDARD)
-                            .icon(IconName::RefreshCw)
-                            .label("全部更新")
-                            .disabled(self.runtime_tab != 0)
-                            .on_click(cx.listener(|this, _, w, cx| {
-                                this.runtime_command(
-                                    ["更新 GeoData", "更新全部代理集合", "更新全部规则集合"]
-                                        [this.runtime_tab],
-                                    w,
-                                    cx,
-                                )
-                            })),
-                    )
-                });
-        let body = if self.kind == SettingsKind::Dns && self.dns_raw {
-            gpui_kit::component::v_flex()
-                .gap(space::SM)
-                .child(
-                    ui::muted("编辑 DNS 与 Hosts；切回表单前会检查 YAML 格式。", cx)
-                        .text_size(text::CAPTION),
+                },
+            )
+            .when(self.kind == SettingsKind::Resources, |toolbar| {
+                toolbar.child(
+                    Button::new("resources-update-all")
+                        .outline()
+                        .with_size(control::STANDARD)
+                        .icon(IconName::RefreshCw)
+                        .label("全部更新")
+                        .disabled(
+                            self.saving
+                                || self.session.read(cx).core_busy()
+                                || !self.session.read(cx).is_running(),
+                        )
+                        .on_click(cx.listener(|this, _, w, cx| this.update_resources(None, w, cx))),
                 )
+            });
+        let body = if matches!(self.kind, SettingsKind::Dns | SettingsKind::Sniffer) && self.dns_raw
+        {
+            gpui_kit::component::v_flex()
+                .size_full()
+                .min_h(space::NONE)
+                .min_w(space::NONE)
                 .child(
                     Editor::new(&self.dns_source)
                         .w_full()
-                        .h(layout::EDITOR_HEIGHT)
-                        .aria_label("DNS YAML 配置"),
+                        .h_full()
+                        .disabled(
+                            !self
+                                .values(cx)
+                                .get(crate::preferences::native::flag(self.kind))
+                                .is_some_and(|value| value == "true")
+                                || self.saving
+                                || self.session.read(cx).core_busy(),
+                        )
+                        .aria_label(if self.kind == SettingsKind::Dns {
+                            "DNS YAML 配置"
+                        } else {
+                            "嗅探 YAML 配置"
+                        }),
                 )
         } else {
             match self.kind {
-                SettingsKind::Core => self.core_content(&query, cx),
-                SettingsKind::Resources => self.resource_content(&query, cx),
+                SettingsKind::Core => self.core_content(&query, window, cx),
+                SettingsKind::Resources => self.resource_content(&query, window, cx),
                 _ => self.preferences_content(&query, cx),
             }
         };
         ui::workspace()
             .child(header)
             .child(toolbar)
-            .child(
-                ui::workspace_body().child(
-                    div()
-                        .id(SharedString::from(format!(
-                            "{}-runtime-scroll",
-                            self.kind.id()
-                        )))
-                        .size_full()
-                        .overflow_y_scrollbar()
-                        .child(body.py(space::SM)),
-                ),
-            )
-            .child(
-                ui::workspace_footer()
-                    .child(
-                        ui::muted(
-                            if self.dirty {
-                                "有未保存的更改"
-                            } else {
-                                ""
-                            },
-                            cx,
-                        )
-                        .text_size(text::CAPTION),
+            .child(ui::workspace_body().child(if self.dns_raw {
+                let viewport = body
+                    .id("settings-yaml-viewport")
+                    .size_full()
+                    .min_h(space::NONE);
+                #[cfg(test)]
+                let viewport = {
+                    use gpui_kit::test::TestSupportExt as _;
+                    viewport.test_support()
+                };
+                viewport.into_any_element()
+            } else if self.kind == SettingsKind::Resources && self.runtime_tab != 0 {
+                body.py(space::SM)
+                    .size_full()
+                    .min_h(space::NONE)
+                    .into_any_element()
+            } else {
+                div()
+                    .id(SharedString::from(format!(
+                        "{}-runtime-scroll",
+                        self.kind.id()
+                    )))
+                    .size_full()
+                    .overflow_y_scrollbar()
+                    .child(body.py(space::SM))
+                    .into_any_element()
+            }))
+            .when(
+                !matches!(self.kind, SettingsKind::Core | SettingsKind::Resources),
+                |workspace| {
+                    workspace.child(
+                        ui::workspace_footer().child(div().flex_1()).child(
+                            Button::new("runtime-reset")
+                                .icon(gpui_kit::assets::IconName::RotateCcw)
+                                .ghost()
+                                .with_size(control::STANDARD)
+                                .label("恢复默认")
+                                .disabled(self.saving || self.session.read(cx).core_busy())
+                                .on_click(
+                                    cx.listener(|this, _, window, cx| this.reset(window, cx)),
+                                ),
+                        ),
                     )
-                    .child(div().flex_1())
-                    .child(
-                        Button::new("runtime-reset")
-                            .ghost()
-                            .with_size(control::STANDARD)
-                            .label("恢复默认…")
-                            .on_click(cx.listener(|this, _, w, cx| this.reset(w, cx))),
-                    )
-                    .child(
-                        Button::new("runtime-save")
-                            .outline()
-                            .with_size(control::STANDARD)
-                            .icon(IconName::Save)
-                            .label(if self.saving {
-                                "保存中"
-                            } else {
-                                "保存设置"
-                            })
-                            .disabled(!self.dirty || self.saving)
-                            .on_click(cx.listener(|this, _, w, cx| this.save(w, cx))),
-                    ),
+                },
             )
     }
     pub(super) fn runtime_command(
@@ -161,6 +204,34 @@ impl SettingsPage {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let command = match action {
+            "启动内核" => Some(crate::core::Command::Start),
+            "停止内核" => Some(crate::core::Command::Stop),
+            "重启内核" => Some(crate::core::Command::Restart),
+            "校验配置" => Some(crate::core::Command::Validate),
+            "清空 Fake-IP 缓存" => Some(crate::core::Command::FlushFakeIp),
+            "更新 GeoData" => Some(crate::core::Command::UpdateGeo),
+            "刷新版本列表" => Some(crate::core::Command::Versions { refresh: true }),
+            "加载版本列表" => Some(crate::core::Command::Versions { refresh: false }),
+            "升级内核" | "切换内核" | "应用所选通道" => {
+                match crate::core::ReleaseSelection::from_values(&self.command_values(cx)) {
+                    Ok(selection) => Some(if action == "升级内核" {
+                        crate::core::Command::CheckUpdate(selection)
+                    } else {
+                        crate::core::Command::Install(selection)
+                    }),
+                    Err(error) => {
+                        ui::show_error(error, window, cx);
+                        return;
+                    }
+                }
+            }
+            _ => None,
+        };
+        if let Some(command) = command {
+            crate::core::request(command, window, cx);
+            return;
+        }
         let values = self.command_values(cx);
         if let Some(error) = super::schema::validate(&self.sections, &values) {
             ui::show_error(error, window, cx);

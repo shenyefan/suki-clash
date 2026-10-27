@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
     fs,
-    io::{self, Write},
+    io::{self, Read, Write},
     path::{Path, PathBuf},
 };
 
@@ -27,8 +27,6 @@ impl Namespace {
                 | "resources"
                 | "sysproxy"
                 | "tun"
-                | "logs"
-                | "proxy-chain"
                 | "profile-index"
                 | "override-index"
         ) || name
@@ -39,6 +37,12 @@ impl Namespace {
         } else {
             Err(StorageError::InvalidNamespace)
         }
+    }
+    pub(crate) fn is_setting(&self) -> bool {
+        matches!(
+            self.name(),
+            "settings" | "core" | "dns" | "sniffer" | "resources" | "sysproxy" | "tun"
+        )
     }
     pub(crate) fn name(&self) -> &str {
         &self.0
@@ -55,10 +59,12 @@ pub(crate) enum StorageError {
     UnsupportedVersion(u32),
     #[error("配置文件格式错误：{0}")]
     InvalidDocument(#[from] serde_json::Error),
+    #[error("{path}：{reason}；请修正文件后重试")]
+    Document { path: PathBuf, reason: String },
+    #[error("{0}")]
+    Settings(String),
     #[error("存储操作失败：{0}")]
     Io(#[from] io::Error),
-    #[error("不允许迁移符号链接或特殊文件：{0}")]
-    UnsafeMigration(PathBuf),
 }
 
 #[derive(Serialize, Deserialize)]
@@ -67,66 +73,239 @@ struct Envelope {
     values: Values,
 }
 
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NativeBackup {
+    configuration: serde_yaml_ng::Value,
+    enabled: bool,
+}
+
 pub(crate) struct Repository {
     paths: AppPaths,
 }
 impl Repository {
-    pub(crate) fn open(paths: AppPaths, preview: Option<&Path>) -> Result<Self, StorageError> {
+    pub(crate) fn open(paths: AppPaths) -> Result<Self, StorageError> {
         paths.create()?;
-        let store = Self { paths };
-        if let Some(preview) = preview {
-            store.migrate_preview(preview)?;
-        }
-        Ok(store)
+        Ok(Self { paths })
     }
     pub(crate) fn paths(&self) -> &AppPaths {
         &self.paths
     }
     fn path(&self, namespace: &Namespace) -> PathBuf {
-        self.paths
-            .settings()
-            .join(format!("{}.json", namespace.name()))
+        self.document_path(namespace)
+    }
+    pub(crate) fn document_path(&self, namespace: &Namespace) -> PathBuf {
+        if namespace.is_setting() && !matches!(namespace.name(), "dns" | "sniffer") {
+            return crate::preferences::app::path(&self.paths);
+        }
+        let directory = if namespace.is_setting() {
+            self.paths.settings()
+        } else {
+            self.paths.records()
+        };
+        directory.join(format!(
+            "{}.{}",
+            namespace.name(),
+            if matches!(namespace.name(), "dns" | "sniffer") {
+                "yaml"
+            } else {
+                "json"
+            }
+        ))
     }
     pub(crate) fn read(&self, namespace: &Namespace) -> Result<Values, StorageError> {
-        match fs::read(self.path(namespace)) {
-            Ok(bytes) => decode(&bytes),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(Values::new()),
-            Err(error) => Err(error.into()),
+        self.read_limited(namespace, crate::configuration::INPUT_LIMIT)
+    }
+    pub(crate) fn read_limited(
+        &self,
+        namespace: &Namespace,
+        limit: u64,
+    ) -> Result<Values, StorageError> {
+        if namespace.is_setting() && !matches!(namespace.name(), "dns" | "sniffer") {
+            return crate::preferences::app::read_values(
+                &self.paths,
+                crate::preferences::app::section(namespace.name()),
+                limit,
+            )
+            .map_err(StorageError::Settings);
         }
+        let file = match fs::File::open(self.path(namespace)) {
+            Ok(file) => file,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Values::new()),
+            Err(error) => return Err(error.into()),
+        };
+        let mut bytes = Vec::new();
+        file.take(limit.saturating_add(1)).read_to_end(&mut bytes)?;
+        if bytes.len() as u64 > limit {
+            return Err(io::Error::other("配置存储超过读取上限").into());
+        }
+        let mut values =
+            decode_document(&bytes, namespace).map_err(|error| StorageError::Document {
+                path: self.path(namespace),
+                reason: error.to_string(),
+            })?;
+        if let Some(kind) = crate::preferences::kind_for_page(namespace.name())
+            .filter(|kind| crate::preferences::native::key(*kind).is_some())
+        {
+            let saved = crate::preferences::app::read_values(&self.paths, namespace.name(), limit)
+                .map_err(StorageError::Settings)?;
+            let flag = crate::preferences::native::flag(kind);
+            if let Some(value) = saved.get(flag) {
+                values.insert(flag.into(), value.clone());
+            }
+        }
+        Ok(values)
     }
     pub(crate) fn snapshot(&self) -> Result<BTreeMap<Namespace, Values>, StorageError> {
         let mut snapshot = BTreeMap::new();
-        for entry in fs::read_dir(self.paths.settings())? {
-            let path = entry?.path();
-            if path.extension().and_then(|value| value.to_str()) != Some("json") {
-                continue;
+        for kind in crate::preferences::SettingsKind::ALL
+            .into_iter()
+            .filter(|kind| {
+                !matches!(
+                    kind,
+                    crate::preferences::SettingsKind::Core
+                        | crate::preferences::SettingsKind::Resources
+                )
+            })
+        {
+            let namespace = Namespace::parse(kind.id())?;
+            let values = self.read(&namespace)?;
+            if !values.is_empty() {
+                snapshot.insert(namespace, values);
             }
-            let Some(name) = path.file_stem().and_then(|value| value.to_str()) else {
+        }
+        for entry in fs::read_dir(self.paths.records())? {
+            let path = entry?.path();
+            let Some(name) = path.file_stem().and_then(|name| name.to_str()) else {
                 continue;
             };
-            let namespace = Namespace::parse(name)?;
-            snapshot.insert(namespace.clone(), self.read(&namespace)?);
+            let Ok(namespace) = Namespace::parse(name) else {
+                continue;
+            };
+            if !namespace.is_setting() && path == self.document_path(&namespace) {
+                snapshot.insert(namespace.clone(), self.read(&namespace)?);
+            }
         }
         Ok(snapshot)
     }
+    pub(crate) fn available_snapshot(&self) -> BTreeMap<Namespace, Values> {
+        let mut snapshot = BTreeMap::new();
+        for kind in crate::preferences::SettingsKind::ALL
+            .into_iter()
+            .filter(|kind| {
+                !matches!(
+                    kind,
+                    crate::preferences::SettingsKind::Core
+                        | crate::preferences::SettingsKind::Resources
+                )
+            })
+        {
+            let Ok(namespace) = Namespace::parse(kind.id()) else {
+                continue;
+            };
+            if let Ok(values) = self.read(&namespace)
+                && !values.is_empty()
+            {
+                snapshot.insert(namespace, values);
+            }
+        }
+        if let Ok(entries) = fs::read_dir(self.paths.records()) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let Some(name) = path.file_stem().and_then(|name| name.to_str()) else {
+                    continue;
+                };
+                let Ok(namespace) = Namespace::parse(name) else {
+                    continue;
+                };
+                if !namespace.is_setting()
+                    && path == self.document_path(&namespace)
+                    && let Ok(values) = self.read(&namespace)
+                {
+                    snapshot.insert(namespace, values);
+                }
+            }
+        }
+        snapshot
+    }
     pub(crate) fn save(&self, namespace: &Namespace, values: &Values) -> Result<(), StorageError> {
         let values = persistent_values(values);
-        let envelope = Envelope { version: 1, values };
-        atomic_write(
-            &self.path(namespace),
-            &serde_json::to_vec_pretty(&envelope)?,
-        )
+        if namespace.is_setting() && !matches!(namespace.name(), "dns" | "sniffer") {
+            return crate::preferences::app::write_values(
+                &self.paths,
+                crate::preferences::app::section(namespace.name()),
+                &values,
+            )
+            .map_err(StorageError::Settings);
+        }
+        let bytes = if let Some(kind) = crate::preferences::kind_for_page(namespace.name())
+            .filter(|kind| crate::preferences::native::key(*kind).is_some())
+        {
+            let bytes =
+                crate::preferences::native::encode(kind, &values).map_err(io::Error::other)?;
+            // Syntax/type errors must be detected before changing either file.
+            let previous = fs::read(self.path(namespace)).ok();
+            atomic_write(&self.path(namespace), &bytes)?;
+            let flags = Values::from([(
+                crate::preferences::native::flag(kind).into(),
+                values
+                    .get(crate::preferences::native::flag(kind))
+                    .cloned()
+                    .unwrap_or_else(|| "false".into()),
+            )]);
+            if let Err(error) =
+                crate::preferences::app::write_values(&self.paths, namespace.name(), &flags)
+            {
+                let recovery = if let Some(previous) = previous {
+                    atomic_write(&self.path(namespace), &previous)
+                } else {
+                    fs::remove_file(self.path(namespace)).map_err(StorageError::from)
+                };
+                return Err(StorageError::Settings(match recovery {
+                    Ok(()) => error,
+                    Err(recovery) => format!("{error}；YAML 恢复失败：{recovery}"),
+                }));
+            }
+            return Ok(());
+        } else if namespace.is_setting() {
+            crate::preferences::json::encode(&values).map_err(io::Error::other)?
+        } else {
+            serde_json::to_vec_pretty(&Envelope { version: 1, values })?
+        };
+        atomic_write(&self.path(namespace), &bytes)
     }
-    pub(crate) fn backup(&self, namespace: &Namespace) -> Result<PathBuf, StorageError> {
-        // Validate before making this the latest recoverable copy.
-        let bytes = fs::read(self.path(namespace))?;
-        decode(&bytes)?;
+    pub(crate) fn backup_values(
+        &self,
+        namespace: &Namespace,
+        values: &Values,
+    ) -> Result<PathBuf, StorageError> {
         let path = self
             .paths
             .directory(DirectoryKind::Backups)
             .join(format!("{}.json", namespace.name()));
+        let values = persistent_values(values);
+        let bytes = if let Some(kind) = crate::preferences::kind_for_page(namespace.name())
+            .filter(|kind| crate::preferences::native::key(*kind).is_some())
+        {
+            let bytes =
+                crate::preferences::native::encode(kind, &values).map_err(io::Error::other)?;
+            let configuration = serde_yaml_ng::from_slice(&bytes).map_err(io::Error::other)?;
+            serde_json::to_vec_pretty(&NativeBackup {
+                configuration,
+                enabled: values
+                    .get(crate::preferences::native::flag(kind))
+                    .is_some_and(|value| value == "true"),
+            })?
+        } else if namespace.is_setting() {
+            crate::preferences::json::encode(&values).map_err(io::Error::other)?
+        } else {
+            serde_json::to_vec_pretty(&Envelope { version: 1, values })?
+        };
         atomic_write(&path, &bytes)?;
         Ok(path)
+    }
+    pub(crate) fn backup(&self, namespace: &Namespace) -> Result<PathBuf, StorageError> {
+        self.backup_values(namespace, &self.read(namespace)?)
     }
     pub(crate) fn restore(&self, namespace: &Namespace) -> Result<Values, StorageError> {
         let bytes = fs::read(
@@ -134,67 +313,24 @@ impl Repository {
                 .directory(DirectoryKind::Backups)
                 .join(format!("{}.json", namespace.name())),
         )?;
-        decode(&bytes)
-    }
-    fn migrate_preview(&self, preview: &Path) -> Result<(), StorageError> {
-        let marker = self.paths.settings().join(".preview-migrated-v1");
-        if marker.exists() || !preview.try_exists()? {
-            return Ok(());
+        if let Some(kind) = crate::preferences::kind_for_page(namespace.name())
+            .filter(|kind| crate::preferences::native::key(*kind).is_some())
+        {
+            let backup: NativeBackup = serde_json::from_slice(&bytes)?;
+            let text = serde_yaml_ng::to_string(&backup.configuration).map_err(io::Error::other)?;
+            let mut values = crate::preferences::native::decode(kind, text.as_bytes())
+                .map_err(StorageError::Settings)?;
+            values.insert(
+                crate::preferences::native::flag(kind).into(),
+                backup.enabled.to_string(),
+            );
+            return Ok(values);
         }
-        reject_link(preview)?;
-        for entry in fs::read_dir(preview)? {
-            let path = entry?.path();
-            reject_link(&path)?;
-            if path.extension().and_then(|value| value.to_str()) == Some("settings") {
-                let Some(name) = path.file_stem().and_then(|value| value.to_str()) else {
-                    continue;
-                };
-                let namespace = Namespace::parse(name)?;
-                if !self.path(&namespace).try_exists()? {
-                    self.save(&namespace, &parse_legacy(&fs::read_to_string(&path)?)?)?;
-                }
-            } else if path.extension().and_then(|value| value.to_str()) == Some("backup") {
-                let Some(name) = path.file_stem().and_then(|value| value.to_str()) else {
-                    continue;
-                };
-                let namespace = Namespace::parse(name)?;
-                let target = self
-                    .paths
-                    .directory(DirectoryKind::Backups)
-                    .join(format!("{}.json", namespace.name()));
-                if !target.try_exists()? {
-                    let values = persistent_values(&parse_legacy(&fs::read_to_string(&path)?)?);
-                    atomic_write(
-                        &target,
-                        &serde_json::to_vec_pretty(&Envelope { version: 1, values })?,
-                    )?;
-                }
-            }
-        }
-        for directory in ["profiles", "overrides"] {
-            let source = preview.join(directory);
-            if !source.try_exists()? {
-                continue;
-            }
-            reject_link(&source)?;
-            let destination = self.paths.data().join(directory);
-            fs::create_dir_all(&destination)?;
-            for entry in fs::read_dir(source)? {
-                let entry = entry?;
-                reject_link(&entry.path())?;
-                if !entry.file_type()?.is_file() {
-                    return Err(StorageError::UnsafeMigration(entry.path()));
-                }
-                let target = destination.join(entry.file_name());
-                if !target.try_exists()? {
-                    atomic_write(&target, &fs::read(entry.path())?)?;
-                }
-            }
-        }
-        atomic_write(&marker, b"1\n")
+        decode_document(&bytes, namespace)
     }
 }
 
+#[cfg(test)]
 pub(crate) fn contains_session_credentials(values: &Values) -> bool {
     SESSION_CREDENTIALS
         .iter()
@@ -214,11 +350,18 @@ fn persistent_values(values: &Values) -> Values {
     values
 }
 
-fn reject_link(path: &Path) -> Result<(), StorageError> {
-    if fs::symlink_metadata(path)?.file_type().is_symlink() {
-        return Err(StorageError::UnsafeMigration(path.to_owned()));
+fn decode_document(bytes: &[u8], namespace: &Namespace) -> Result<Values, StorageError> {
+    if let Some(kind) = crate::preferences::kind_for_page(namespace.name())
+        .filter(|kind| crate::preferences::native::key(*kind).is_some())
+    {
+        return crate::preferences::native::decode(kind, bytes)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error).into());
     }
-    Ok(())
+    if !namespace.is_setting() {
+        return decode(bytes);
+    }
+    crate::preferences::json::decode(bytes)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error).into())
 }
 fn decode(bytes: &[u8]) -> Result<Values, StorageError> {
     let envelope: Envelope = serde_json::from_slice(bytes)?;
@@ -226,24 +369,6 @@ fn decode(bytes: &[u8]) -> Result<Values, StorageError> {
         return Err(StorageError::UnsupportedVersion(envelope.version));
     }
     Ok(envelope.values)
-}
-fn parse_legacy(text: &str) -> Result<Values, StorageError> {
-    text.lines()
-        .filter(|line| !line.is_empty())
-        .map(|line| {
-            let (key, value) = line.split_once('\t').ok_or_else(|| {
-                io::Error::new(io::ErrorKind::InvalidData, "预览配置缺少字段分隔符")
-            })?;
-            Ok((
-                key.to_owned(),
-                value
-                    .replace("%09", "\t")
-                    .replace("%0D", "\r")
-                    .replace("%0A", "\n")
-                    .replace("%25", "%"),
-            ))
-        })
-        .collect()
 }
 pub(crate) fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), StorageError> {
     let directory = path

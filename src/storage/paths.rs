@@ -55,6 +55,9 @@ impl AppPaths {
     pub(crate) fn settings(&self) -> PathBuf {
         self.config.join("settings")
     }
+    pub(crate) fn records(&self) -> PathBuf {
+        self.data.join("records")
+    }
     pub(crate) fn data(&self) -> &Path {
         &self.data
     }
@@ -76,6 +79,14 @@ impl AppPaths {
             }
         }
         fs::create_dir_all(self.settings())?;
+        fs::create_dir_all(self.records())?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            for directory in [self.settings(), self.records()] {
+                fs::set_permissions(directory, fs::Permissions::from_mode(0o700))?;
+            }
+        }
         Ok(())
     }
 }

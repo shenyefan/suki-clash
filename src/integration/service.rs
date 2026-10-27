@@ -1,7 +1,5 @@
 //! One storage writer owns ordering; UI readers only access committed snapshots.
-use crate::storage::{
-    AppPaths, DirectoryKind, Namespace, Repository, StorageError, Values, atomic_write,
-};
+use crate::storage::{AppPaths, DirectoryKind, Namespace, Repository, StorageError, Values};
 use std::{
     collections::BTreeMap,
     path::PathBuf,
@@ -9,17 +7,27 @@ use std::{
     thread::{self, JoinHandle},
 };
 
+#[cfg(test)]
+use crate::storage::atomic_write;
+
 type Snapshot = Arc<RwLock<BTreeMap<Namespace, Values>>>;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct RequestId(u64);
 
+#[cfg(test)]
 pub(crate) struct DocumentWrite {
     pub(crate) path: PathBuf,
     pub(crate) content: String,
 }
 
 pub(crate) enum Command {
+    Log {
+        level: &'static str,
+        module: &'static str,
+        message: String,
+    },
+    #[cfg(test)]
     Save {
         namespace: Namespace,
         values: Values,
@@ -33,6 +41,8 @@ pub(crate) enum Command {
 impl Command {
     pub(crate) fn label(&self) -> &'static str {
         match self {
+            Self::Log { .. } => "写入程序日志",
+            #[cfg(test)]
             Self::Save { .. } => "保存配置",
             Self::Backup(_) => "备份本页设置",
             Self::Restore(_) => "读取备份草稿",
@@ -53,6 +63,8 @@ pub(crate) enum Outcome {
 pub(crate) enum ServiceError {
     #[error(transparent)]
     Storage(#[from] StorageError),
+    #[error("{0}")]
+    Unavailable(String),
     #[error("后台存储执行端已停止")]
     Closed,
     #[error("存储任务较多，请稍后重试")]
@@ -81,22 +93,111 @@ impl Pending {
 pub(crate) struct Service {
     sender: async_channel::Sender<Request>,
     snapshot: Snapshot,
-    paths: AppPaths,
+    paths: Option<AppPaths>,
+    startup_error: Option<String>,
     next_id: u64,
+    logs: crate::logging::Feed,
     worker: Option<JoinHandle<()>>,
 }
 impl Service {
     pub(crate) fn start(repository: Repository) -> Result<Self, StorageError> {
-        let snapshot = Arc::new(RwLock::new(repository.snapshot()?));
+        let startup_error = crate::preferences::initialize(&repository)
+            .and_then(|()| {
+                if let Some(values) = repository
+                    .snapshot()?
+                    .get(&Namespace::parse("profile-index")?)
+                {
+                    crate::profiles::repository::decode(values).map_err(std::io::Error::other)?;
+                }
+                Ok(())
+            })
+            .err()
+            .map(|error| error.to_string());
+        let mut initial = repository.available_snapshot();
+        if let Some(values) = initial.get(&Namespace::parse("profile-index")?)
+            && crate::profiles::repository::decode(values).is_err()
+        {
+            initial.remove(&Namespace::parse("profile-index")?);
+        }
+        if let Ok(preferences) = crate::core::Preferences::load(repository.paths()) {
+            initial.insert(Namespace::parse("core")?, preferences.values());
+        }
+        let snapshot = Arc::new(RwLock::new(initial));
         let writer_snapshot = snapshot.clone();
         let paths = repository.paths().clone();
         let (sender, receiver) = async_channel::bounded::<Request>(64);
+        let logs = crate::logging::Feed::default();
+        let writer_logs = logs.clone();
+        // Diagnostic logging remains available when its settings cannot be read.
+        // This policy does not replace or persist the invalid user configuration.
+        let mut policy = program_policy(&repository).or_else(|_| {
+            policy_values(&crate::preferences::defaults(
+                crate::preferences::SettingsKind::General,
+            ))
+        })?;
+        let mut log =
+            crate::logging::Sink::new(&paths, crate::logging::Source::Program, policy.1, policy.2)?;
+        log.configure_program(policy.1, policy.2, policy.3)?;
+        if let Some(error) = &startup_error {
+            let record =
+                crate::logging::Record::program(crate::logging::Level::Error, "storage", error);
+            logs.publish(record.clone());
+            log.write(record.line().as_bytes())?;
+        }
         let worker = thread::Builder::new()
             .name("suki-storage".into())
             .spawn(move || {
                 while let Ok(request) = receiver.recv_blocking() {
-                    let result = execute(&repository, &writer_snapshot, request.command)
+                    if let Command::Log {
+                        level,
+                        module,
+                        message,
+                    } = &request.command
+                    {
+                        let result = (|| -> Result<(), StorageError> {
+                            if let Ok(current) = program_policy(&repository) {
+                                policy = current;
+                            }
+                            let (minimum, days, size, count) = policy;
+                            log.configure_program(days, size, count)?;
+                            let level = crate::logging::Level::parse(level);
+                            if level < minimum || minimum == crate::logging::Level::Silent {
+                                return Ok(());
+                            }
+                            let message = if message.contains("://") {
+                                "日志包含地址，正文已省略"
+                            } else {
+                                message.as_str()
+                            };
+                            let record = crate::logging::Record::program(level, module, message);
+                            writer_logs.publish(record.clone());
+                            log.write(record.line().as_bytes())?;
+                            Ok(())
+                        })();
+                        if let Err(error) = &result {
+                            writer_logs.publish(crate::logging::Record::program(
+                                crate::logging::Level::Error,
+                                "logging",
+                                &format!("程序日志保存失败：{error}"),
+                            ));
+                        }
+                        let _ = request
+                            .reply
+                            .try_send(result.map(|()| Outcome::Saved).map_err(ServiceError::from));
+                        continue;
+                    }
+                    #[cfg(not(test))]
+                    let log_settings_changed=false;
+                    #[cfg(test)]
+                    let log_settings_changed = matches!(&request.command, Command::Save { namespace, .. } if namespace.name() == "settings");
+                    let mut result = execute(&repository, &writer_snapshot, request.command)
                         .map_err(ServiceError::from);
+                    if result.is_ok() && log_settings_changed {
+                        let applied = program_policy(&repository).and_then(|(_, days, size, count)| log.configure_program(days, size, count).map_err(StorageError::from));
+                        if let Err(error) = applied {
+                            result = Err(StorageError::from(std::io::Error::other(format!("设置已保存，程序日志设置应用失败：{error}"))).into());
+                        }
+                    }
                     // The window may have gone away. Its pending write still completes.
                     let _ = request.reply.try_send(result);
                 }
@@ -104,13 +205,46 @@ impl Service {
         Ok(Self {
             sender,
             snapshot,
-            paths,
+            paths: Some(paths),
+            startup_error,
             next_id: 0,
+            logs,
             worker: Some(worker),
         })
     }
-    pub(crate) fn paths(&self) -> &AppPaths {
-        &self.paths
+    pub(crate) fn logs(&self) -> crate::logging::Feed {
+        self.logs.clone()
+    }
+    pub(crate) fn paths(&self) -> Option<&AppPaths> {
+        self.paths.as_ref()
+    }
+    #[cfg(test)]
+    pub(crate) fn startup_error(&self) -> Option<&str> {
+        self.startup_error.as_deref()
+    }
+    pub(crate) fn unavailable(paths: Option<AppPaths>, message: String) -> Self {
+        let snapshot = paths
+            .as_ref()
+            .and_then(|paths| Repository::open(paths.clone()).ok())
+            .map(|repository| repository.available_snapshot())
+            .unwrap_or_default();
+        let (sender, receiver) = async_channel::bounded(1);
+        receiver.close();
+        let logs = crate::logging::Feed::default();
+        logs.publish(crate::logging::Record::program(
+            crate::logging::Level::Error,
+            "storage",
+            &message,
+        ));
+        Self {
+            sender,
+            snapshot: Arc::new(RwLock::new(snapshot)),
+            paths,
+            startup_error: Some(message),
+            next_id: 0,
+            logs,
+            worker: None,
+        }
     }
     pub(crate) fn read(&self, namespace: &Namespace) -> Values {
         self.snapshot
@@ -121,6 +255,11 @@ impl Service {
             .unwrap_or_default()
     }
     pub(crate) fn submit(&mut self, command: Command) -> Result<Pending, ServiceError> {
+        if self.worker.is_none()
+            && let Some(error) = &self.startup_error
+        {
+            return Err(ServiceError::Unavailable(error.clone()));
+        }
         self.next_id = self
             .next_id
             .checked_add(1)
@@ -148,17 +287,59 @@ impl Drop for Service {
     }
 }
 
+fn program_policy(
+    repository: &Repository,
+) -> Result<(crate::logging::Level, u32, u64, usize), StorageError> {
+    let values = crate::preferences::values(repository, crate::preferences::SettingsKind::General)?;
+    crate::preferences::validate(crate::preferences::SettingsKind::General, &values)
+        .map_err(std::io::Error::other)?;
+    policy_values(&values)
+}
+
+fn policy_values(
+    values: &Values,
+) -> Result<(crate::logging::Level, u32, u64, usize), StorageError> {
+    let number = |key: &str| -> Result<u64, StorageError> {
+        values
+            .get(key)
+            .and_then(|value| value.parse().ok())
+            .ok_or_else(|| std::io::Error::other(format!("日志设置 {key} 无效")).into())
+    };
+    let days = match values.get("AutoLogClean").map(String::as_str) {
+        Some("1d") => 1,
+        Some("7d") => 7,
+        Some("30d") => 30,
+        Some("90d") => 90,
+        _ => 0,
+    };
+    Ok((
+        crate::logging::Level::parse(
+            values
+                .get("AppLogLevel")
+                .map(String::as_str)
+                .unwrap_or("info"),
+        ),
+        days,
+        number("AppLogMaxSize")?.saturating_mul(1024),
+        number("AppLogMaxCount")? as usize,
+    ))
+}
+
 fn execute(
     repository: &Repository,
-    snapshot: &Snapshot,
+    _snapshot: &Snapshot,
     command: Command,
 ) -> Result<Outcome, StorageError> {
     match command {
+        Command::Log { .. } => Ok(Outcome::Saved),
+        #[cfg(test)]
         Command::Save {
             namespace,
             values,
             documents,
         } => {
+            // Do not replace a damaged document with a form derived from defaults.
+            repository.read(&namespace)?;
             let mut previous = Vec::new();
             for document in &documents {
                 // Paths originate in the app, but stay inside this repository even if a caller errs.
@@ -206,13 +387,13 @@ fn execute(
                 if !failures.is_empty() {
                     return Err(std::io::Error::other(format!(
                         "{cause}；文件恢复也失败：{}",
-                        failures.join("；")
+                        crate::failure::join(&failures)
                     ))
                     .into());
                 }
                 return Err(cause);
             }
-            snapshot
+            _snapshot
                 .write()
                 .unwrap_or_else(|error| error.into_inner())
                 .insert(namespace, values);
@@ -239,6 +420,13 @@ fn execute(
             }
             Ok(Outcome::Document(path))
         }
+        Command::Backup(namespace) if matches!(namespace.name(), "core" | "resources") => {
+            let preferences = crate::configuration::Preferences::load(repository.paths())
+                .map_err(std::io::Error::other)?;
+            repository
+                .backup_values(&namespace, &preferences.values())
+                .map(Outcome::Backup)
+        }
         Command::Backup(namespace) => repository.backup(&namespace).map(Outcome::Backup),
         Command::Restore(namespace) => repository.restore(&namespace).map(Outcome::Restored),
         Command::OpenDirectory(kind) => Ok(Outcome::Directory(repository.paths().directory(kind))),
@@ -255,10 +443,183 @@ mod tests {
         Values::from([("theme".into(), value.into())])
     }
     #[test]
+    fn damaged_settings_keep_logging_and_unrelated_writes_available_and_recover_after_repair() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = AppPaths::isolated(root.path());
+        let repository = Repository::open(paths.clone()).unwrap();
+        crate::preferences::initialize(&repository).unwrap();
+        let broken = paths.settings().join("settings.json");
+        let original = std::fs::read(&broken).unwrap();
+        std::fs::write(&broken, br#"{"schema_version":1,"general":false}"#).unwrap();
+        let mut service = Service::start(repository).unwrap();
+        assert!(service.startup_error().unwrap().contains("settings.json"));
+        let log = service
+            .submit(Command::Log {
+                level: "ERROR",
+                module: "core",
+                message: "retry-error".into(),
+            })
+            .unwrap();
+        assert!(log.reply.recv_blocking().unwrap().is_ok());
+        let save = service
+            .submit(Command::Save {
+                namespace: Namespace::parse("dns").unwrap(),
+                values: crate::preferences::defaults(crate::preferences::SettingsKind::Dns),
+                documents: vec![],
+            })
+            .unwrap();
+        assert!(save.reply.recv_blocking().unwrap().is_ok());
+        let rejected = service
+            .submit(Command::Save {
+                namespace: namespace(),
+                values: values("new"),
+                documents: vec![],
+            })
+            .unwrap();
+        assert!(rejected.reply.recv_blocking().unwrap().is_err());
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&std::fs::read(&broken).unwrap()).unwrap()
+                ["general"],
+            false
+        );
+        std::fs::write(&broken, original).unwrap();
+        let saved = service
+            .submit(Command::Save {
+                namespace: namespace(),
+                values: crate::preferences::defaults(crate::preferences::SettingsKind::General),
+                documents: vec![],
+            })
+            .unwrap();
+        assert!(saved.reply.recv_blocking().unwrap().is_ok());
+        service.shutdown().unwrap().join().unwrap();
+        let records = service.logs().since(0);
+        assert!(
+            records
+                .iter()
+                .any(|record| record.message.contains("settings.json"))
+        );
+        assert!(records.iter().any(|record| record.message == "retry-error"));
+        let text = std::fs::read_dir(paths.directory(DirectoryKind::Logs))
+            .unwrap()
+            .map(|entry| std::fs::read_to_string(entry.unwrap().path()).unwrap())
+            .collect::<String>();
+        assert!(text.contains("settings.json") && text.contains("retry-error"));
+    }
+    #[test]
+    fn unavailable_storage_retains_healthy_settings_and_rejects_writes() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = AppPaths::isolated(root.path());
+        let repository = Repository::open(paths.clone()).unwrap();
+        let dns = Namespace::parse("profile-enhance-1").unwrap();
+        let healthy = Values::from([("rules".into(), "prepend: []".into())]);
+        repository.save(&dns, &healthy).unwrap();
+        let healthy = repository.read(&dns).unwrap();
+        let broken = paths.settings().join("settings.json");
+        std::fs::write(&broken, b"broken").unwrap();
+        let mut service = Service::unavailable(Some(paths), "设置读取失败".into());
+        assert_eq!(service.read(&dns), healthy);
+        assert!(matches!(
+            service.submit(Command::Save {
+                namespace: namespace(),
+                values: Values::new(),
+                documents: vec![]
+            }),
+            Err(ServiceError::Unavailable(_))
+        ));
+        assert_eq!(std::fs::read(broken).unwrap(), b"broken");
+        assert!(service.shutdown().is_none());
+        let mut missing = Service::unavailable(None, "无法确定应用目录".into());
+        assert!(missing.paths().is_none());
+        assert!(
+            missing
+                .submit(Command::OpenDirectory(DirectoryKind::Config))
+                .is_err()
+        );
+    }
+    #[test]
+    fn program_level_and_retention_hot_update_without_changing_core_logs() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = AppPaths::isolated(root.path());
+        let mut service = Service::start(Repository::open(paths.clone()).unwrap()).unwrap();
+        let feed = service.logs();
+        service
+            .submit(Command::Log {
+                level: "DEBUG",
+                module: "storage",
+                message: "hidden-debug".into(),
+            })
+            .unwrap();
+        service
+            .submit(Command::Log {
+                level: "ERROR",
+                module: "profiles",
+                message: "visible-error".into(),
+            })
+            .unwrap();
+        let mut values = crate::preferences::defaults(crate::preferences::SettingsKind::General);
+        values.insert("AppLogLevel".into(), "trace".into());
+        values.insert("AppLogMaxSize".into(), "1".into());
+        values.insert("AppLogMaxCount".into(), "2".into());
+        service
+            .submit(Command::Save {
+                namespace: namespace(),
+                values,
+                documents: vec![],
+            })
+            .unwrap();
+        let core_path = paths.directory(DirectoryKind::Logs).join("core-retain.log");
+        std::fs::write(&core_path, b"core").unwrap();
+        for _ in 0..5 {
+            service
+                .submit(Command::Log {
+                    level: "DEBUG",
+                    module: "settings",
+                    message: "x".repeat(900),
+                })
+                .unwrap();
+        }
+        service.shutdown().unwrap().join().unwrap();
+        let records = feed.since(0);
+        assert_eq!(records.len(), 6);
+        assert_eq!(records[0].origin, "profiles");
+        assert!(
+            records
+                .iter()
+                .all(|record| record.source == crate::logging::Source::Program)
+        );
+        assert!(
+            !records
+                .iter()
+                .any(|record| record.message == "hidden-debug")
+        );
+        let files = std::fs::read_dir(paths.directory(DirectoryKind::Logs))
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| {
+                path.file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .starts_with("program-")
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(files.len(), 2);
+        assert!(
+            files
+                .iter()
+                .all(|path| std::fs::metadata(path).unwrap().len() <= 1024)
+        );
+        let text = files
+            .iter()
+            .map(|path| std::fs::read_to_string(path).unwrap())
+            .collect::<String>();
+        assert!(text.contains("[settings]"));
+        assert_eq!(std::fs::read(core_path).unwrap(), b"core");
+    }
+    #[test]
     fn worker_drains_accepted_writes_and_publishes_only_committed_values() {
         let root = tempfile::tempdir().unwrap();
         let paths = AppPaths::isolated(root.path());
-        let mut service = Service::start(Repository::open(paths.clone(), None).unwrap()).unwrap();
+        let mut service = Service::start(Repository::open(paths.clone()).unwrap()).unwrap();
         let first = service
             .submit(Command::Save {
                 namespace: namespace(),
@@ -279,10 +640,7 @@ mod tests {
         assert!(second.reply.recv_blocking().unwrap().is_ok());
         assert_eq!(service.read(&namespace()), values("second"));
         assert_eq!(
-            Repository::open(paths, None)
-                .unwrap()
-                .read(&namespace())
-                .unwrap(),
+            Repository::open(paths).unwrap().read(&namespace()).unwrap(),
             values("second")
         );
         assert!(service.submit(Command::Backup(namespace())).is_err());
@@ -291,9 +649,10 @@ mod tests {
     fn failed_index_write_restores_document_and_keeps_snapshot_unchanged() {
         let root = tempfile::tempdir().unwrap();
         let paths = AppPaths::isolated(root.path());
-        let repository = Repository::open(paths.clone(), None).unwrap();
+        let repository = Repository::open(paths.clone()).unwrap();
         repository.save(&namespace(), &values("before")).unwrap();
         let mut service = Service::start(repository).unwrap();
+        let before_snapshot = service.read(&namespace());
         let file = paths.data().join("profiles/3.yaml");
         atomic_write(&file, b"before").unwrap();
         fs_make_index_unwritable(&paths);
@@ -310,7 +669,7 @@ mod tests {
         service.shutdown().unwrap().join().unwrap();
         assert!(pending.reply.recv_blocking().unwrap().is_err());
         assert_eq!(std::fs::read(file).unwrap(), b"before");
-        assert_eq!(service.read(&namespace()), values("before"));
+        assert_eq!(service.read(&namespace()), before_snapshot);
     }
     fn fs_make_index_unwritable(paths: &AppPaths) {
         let path = paths.settings().join("settings.json");
@@ -321,7 +680,8 @@ mod tests {
     fn escaped_document_path_cannot_write_outside_repository() {
         let root = tempfile::tempdir().unwrap();
         let paths = AppPaths::isolated(root.path());
-        let mut service = Service::start(Repository::open(paths.clone(), None).unwrap()).unwrap();
+        let mut service = Service::start(Repository::open(paths.clone()).unwrap()).unwrap();
+        let before_snapshot = service.read(&namespace());
         let outside = root.path().join("outside.yaml");
         let pending = service
             .submit(Command::Save {
@@ -336,6 +696,6 @@ mod tests {
         service.shutdown().unwrap().join().unwrap();
         assert!(pending.reply.recv_blocking().unwrap().is_err());
         assert!(!outside.exists());
-        assert!(service.read(&namespace()).is_empty());
+        assert_eq!(service.read(&namespace()), before_snapshot);
     }
 }

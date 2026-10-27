@@ -28,6 +28,7 @@ pub(crate) fn drawer(
     use gpui_kit::test::TestSupportExt as _;
     div()
         .id("detail-drawer")
+        .w_full()
         .map(|drawer| {
             #[cfg(test)]
             let drawer = drawer.test_support();

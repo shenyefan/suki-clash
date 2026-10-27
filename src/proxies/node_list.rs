@@ -4,28 +4,26 @@ use super::{
 };
 use crate::ui::{
     self,
-    theme::{control, layout, list, opacity, proxy_card, space, text},
+    theme::{control, layout, list, proxy_card, space, text},
 };
 use gpui_kit::{
     assets::IconName,
     component::{
-        ActiveTheme, Icon, Sizable,
+        ActiveTheme, Disableable, Icon, Sizable,
         button::{Button, ButtonVariants},
-        collapsible::Collapsible,
-        h_flex,
-        menu::{DropdownMenu, PopupMenuItem},
-        v_flex,
+        h_flex, v_flex,
     },
     prelude::FluentBuilder as _,
     *,
 };
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct GroupInfo {
-    id: &'static str,
-    name: &'static str,
+    id: String,
+    name: String,
     kind: GroupKind,
-    default_node: &'static str,
+    default_node: String,
+    count: usize,
 }
 impl From<&ProxyGroup> for GroupInfo {
     fn from(group: &ProxyGroup) -> Self {
@@ -34,6 +32,7 @@ impl From<&ProxyGroup> for GroupInfo {
             name: group.name(),
             kind: group.kind(),
             default_node: group.default_node(),
+            count: group.len(),
         }
     }
 }
@@ -45,9 +44,20 @@ impl ProxiesPage {
             .groups
             .iter()
             .filter_map(|group| {
-                let nodes =
-                    group.visible_nodes(&query, self.only_available, self.sort, self.reverse);
-                (!nodes.is_empty()).then_some((GroupInfo::from(group), nodes))
+                let nodes = group.visible_nodes(
+                    &query,
+                    self.only_available,
+                    self.group_sorts
+                        .get(&group.id())
+                        .copied()
+                        .unwrap_or(self.sort),
+                    self.reverse,
+                );
+                (!nodes.is_empty()).then(|| {
+                    let mut info = GroupInfo::from(group);
+                    info.count = nodes.len();
+                    (info, nodes)
+                })
             })
             .collect();
         let direct = self.session.read(cx).mode() == Some(crate::session::ProxyMode::Direct);
@@ -81,6 +91,7 @@ impl ProxiesPage {
             if !direct && !self.groups.is_empty() {
                 content = content.child(
                     Button::new("clear-proxy-filters")
+                        .icon(gpui_kit::assets::IconName::X)
                         .outline()
                         .with_size(control::STANDARD)
                         .label("清除筛选")
@@ -97,261 +108,497 @@ impl ProxiesPage {
             }
             return content.into_any_element();
         }
-        v_flex()
+        let height = if self.compact {
+            proxy_card::COMPACT_HEIGHT
+        } else {
+            proxy_card::HEIGHT
+        };
+        let node_height = height.to_pixels(window.rem_size());
+        let gap = proxy_card::GAP.to_pixels(window.rem_size());
+        let mut rows = Vec::new();
+        let mut heights = Vec::new();
+        for (group, nodes) in groups {
+            let open = self.is_expanded(&group.id, !query.is_empty());
+            let motion = cx.theme().motion_tokens();
+            let fraction = gpui_kit::base::motion::transition(
+                (
+                    ElementId::from("proxy-group-body"),
+                    SharedString::from(group.id.clone()),
+                ),
+                if open { 1. } else { 0. },
+                gpui_kit::base::motion::Transition::new(motion.duration_fast)
+                    .easing(motion.easing_move.clone()),
+                window,
+                cx,
+            );
+            heights.push(node_height + gap);
+            rows.push((group.clone(), None));
+            if fraction > 0. {
+                for chunk in nodes.chunks(self.columns.max(1)) {
+                    heights.push((node_height + gap) * fraction);
+                    rows.push((group.clone(), Some(chunk.to_vec())));
+                }
+            }
+        }
+        let searching = !query.is_empty();
+        let rows = std::rc::Rc::new(rows);
+        div()
+            .size_full()
             .py(list::INSET_Y)
-            .gap(list::GROUP_GAP)
-            .px(list::INSET_X)
-            .children(groups.into_iter().map(|(group, nodes)| {
-                let open = self.is_expanded(group.id, !query.is_empty());
-                let searching = !query.is_empty();
-                let motion = cx.theme().motion_tokens();
-                let angle = gpui_kit::base::motion::transition(
-                    (ElementId::from("proxy-disclosure"), group.id),
-                    if open {
-                        std::f32::consts::FRAC_PI_2
+            .child(ui::virtual_rows::rows(
+                cx.entity(),
+                "proxy-virtual-rows",
+                heights,
+                &self.list_scroll,
+                move |this, index, window, cx| {
+                    let (group, nodes) = &rows[index];
+                    if let Some(nodes) = nodes {
+                        div()
+                            .h(height + proxy_card::GAP)
+                            .pb(proxy_card::GAP)
+                            .px(list::INSET_X)
+                            .grid()
+                            .grid_cols(this.columns as u16)
+                            .gap(proxy_card::GAP)
+                            .children(nodes.iter().cloned().map(|node| {
+                                this.node_card(
+                                    group.clone(),
+                                    node,
+                                    this.is_expanded(&group.id, searching),
+                                    cx,
+                                )
+                            }))
+                            .into_any_element()
                     } else {
-                        0.
+                        div()
+                            .h(height + proxy_card::GAP)
+                            .pb(proxy_card::GAP)
+                            .px(list::INSET_X)
+                            .child(this.group_header(group.clone(), searching, window, cx))
+                            .into_any_element()
+                    }
+                },
+            ))
+            .into_any_element()
+    }
+    fn group_header(
+        &self,
+        group: GroupInfo,
+        searching: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let open = self.is_expanded(&group.id, searching);
+        let motion = cx.theme().motion_tokens();
+        let angle = gpui_kit::base::motion::transition(
+            (
+                ElementId::from("proxy-disclosure"),
+                SharedString::from(group.id.clone()),
+            ),
+            if open {
+                std::f32::consts::FRAC_PI_2
+            } else {
+                0.
+            },
+            gpui_kit::base::motion::Transition::new(motion.duration_fast)
+                .easing(motion.easing_move.clone()),
+            window,
+            cx,
+        );
+        let selected = self
+            .session
+            .read(cx)
+            .selected_node(&group.name)
+            .unwrap_or(&group.default_node);
+        let runtime = self.session.read(cx).runtime();
+        let fixed_node = runtime
+            .proxies
+            .entries
+            .get(&group.name)
+            .and_then(|proxy| proxy.fixed.as_deref())
+            .filter(|name| !name.is_empty());
+        let fixed = fixed_node.is_some();
+        let height = if self.compact {
+            proxy_card::COMPACT_HEIGHT
+        } else {
+            proxy_card::HEIGHT
+        };
+        let runtime = self.session.read(cx).runtime();
+        let generation = runtime.generation;
+        let epoch = runtime.epoch;
+        let toggle_id = group.id.clone();
+        let test_group = group.name.clone();
+        let locate_group = group.id.clone();
+        let sort_group = group.id.clone();
+        let sort = self
+            .group_sorts
+            .get(&group.id)
+            .copied()
+            .unwrap_or(self.sort);
+        let testing = runtime
+            .proxies
+            .testing
+            .iter()
+            .any(|(name, _)| name == &group.name);
+        let reset_group = group.name.clone();
+        let header = h_flex()
+            .gap(space::SM)
+            .child(
+                Button::new(SharedString::from(format!("proxy-group-{}", group.id)))
+                    .ghost()
+                    .with_size(control::STANDARD)
+                    .flex_1()
+                    .min_w(space::NONE)
+                    .px(list::PADDING_X)
+                    .h(height)
+                    .accessibility_label(format!(
+                        "{}{}，{}个节点，当前节点{}",
+                        if open { "收起" } else { "展开" },
+                        group.name,
+                        group.count,
+                        selected
+                    ))
+                    .child(
+                        h_flex()
+                            .w_full()
+                            .gap(space::MD)
+                            .child(
+                                Icon::new(IconName::ChevronRight)
+                                    .rotate(radians(angle))
+                                    .size(layout::ICON),
+                            )
+                            .child(self.group_icon(&group, cx))
+                            .child(
+                                v_flex()
+                                    .flex_1()
+                                    .min_w(space::NONE)
+                                    .child(
+                                        h_flex()
+                                            .gap(space::SM)
+                                            .child(
+                                                div()
+                                                    .font_weight(text::EMPHASIS)
+                                                    .child(group.name.clone()),
+                                            )
+                                            .child(ui::muted(group.kind.label(), cx)),
+                                    )
+                                    .child(
+                                        ui::muted(
+                                            format!(
+                                                "{}{}",
+                                                selected,
+                                                fixed_node
+                                                    .map(|node| format!(" · 固定：{node}"))
+                                                    .unwrap_or_default()
+                                            ),
+                                            cx,
+                                        )
+                                        .truncate(),
+                                    ),
+                            )
+                            .child(ui::muted(
+                                format!(
+                                    "{} 个节点",
+                                    self.groups
+                                        .iter()
+                                        .find(|entry| entry.id() == group.id)
+                                        .map(|entry| entry
+                                            .visible_nodes("", false, self.sort, false)
+                                            .len())
+                                        .unwrap_or(0)
+                                ),
+                                cx,
+                            )),
+                    )
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.toggle_group(toggle_id.clone(), searching, window, cx)
+                    })),
+            )
+            .child(
+                ui::icon_button(
+                    SharedString::from(format!("proxy-group-locate-{}", group.id)),
+                    IconName::LocateFixed,
+                    "定位当前节点",
+                )
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.locate_group(&locate_group, window, cx)
+                })),
+            )
+            .child(
+                ui::icon_button(
+                    SharedString::from(format!("proxy-group-test-{}", group.id)),
+                    IconName::Gauge,
+                    "测试代理组延迟",
+                )
+                .loading(testing)
+                .on_click(move |_, window, cx| {
+                    crate::core::test_delay(
+                        super::runtime::Test {
+                            group: Some(test_group.clone()),
+                            node: None,
+                            generation,
+                            epoch,
+                        },
+                        window,
+                        cx,
+                    )
+                }),
+            )
+            .child(
+                ui::icon_button(
+                    SharedString::from(format!("proxy-group-sort-{}", group.id)),
+                    match sort {
+                        super::model::SortOrder::Default => IconName::ArrowDownWideNarrow,
+                        super::model::SortOrder::Latency => IconName::Clock,
+                        super::model::SortOrder::Name => IconName::ArrowDownAZ,
                     },
-                    gpui_kit::base::motion::Transition::new(motion.duration_fast)
-                        .easing(motion.easing_move.clone()),
-                    window,
-                    cx,
-                );
+                    sort.label(),
+                )
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.group_sorts.insert(
+                        sort_group.clone(),
+                        match sort {
+                            super::model::SortOrder::Default => super::model::SortOrder::Latency,
+                            super::model::SortOrder::Latency => super::model::SortOrder::Name,
+                            super::model::SortOrder::Name => super::model::SortOrder::Default,
+                        },
+                    );
+                    cx.notify();
+                })),
+            )
+            .when(fixed, |row| {
+                row.child(
+                    ui::icon_button(
+                        SharedString::from(format!("proxy-group-unfix-{}", group.id)),
+                        IconName::PinOff,
+                        "恢复自动选择",
+                    )
+                    .on_click(move |_, window, cx| {
+                        crate::core::request(
+                            crate::core::Command::Proxy(super::runtime::Action::Unfix {
+                                group: reset_group.clone(),
+                                generation,
+                                epoch,
+                            }),
+                            window,
+                            cx,
+                        )
+                    }),
+                )
+            });
+        header.into_any_element()
+    }
+    fn locate_group(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let query = self.query.read(cx).value().trim().to_lowercase();
+        let searching = !query.is_empty();
+        if searching {
+            self.search_expanded.insert(id.to_owned());
+        } else {
+            self.expanded.insert(id.to_owned());
+        }
+        let mut row = 0;
+        for group in &self.groups {
+            let nodes = group.visible_nodes(
+                &query,
+                self.only_available,
+                self.group_sorts
+                    .get(&group.id())
+                    .copied()
+                    .unwrap_or(self.sort),
+                self.reverse,
+            );
+            if nodes.is_empty() {
+                continue;
+            }
+            if group.id() == id {
                 let selected = self
                     .session
                     .read(cx)
-                    .selected_node(group.name)
-                    .unwrap_or(group.default_node);
-                let fixed = self.session.read(cx).is_fixed(group.name);
-                let height = if self.compact {
-                    proxy_card::COMPACT_HEIGHT
-                } else {
-                    proxy_card::HEIGHT
-                };
-                let header = h_flex()
-                    .gap(space::SM)
-                    .bg(cx.theme().muted.opacity(opacity::GROUP_HEADER))
-                    .rounded(cx.theme().radius)
-                    .child(
-                        Button::new(SharedString::from(format!("proxy-group-{}", group.id)))
-                            .ghost()
-                            .with_size(control::STANDARD)
-                            .flex_1()
-                            .min_w(space::NONE)
-                            .px(list::PADDING_X)
-                            .h(height)
-                            .accessibility_label(format!(
-                                "{}{}，{}个节点，当前节点{}",
-                                if open { "收起" } else { "展开" },
-                                group.name,
-                                nodes.len(),
-                                selected
-                            ))
-                            .child(
-                                h_flex()
-                                    .w_full()
-                                    .gap(space::MD)
-                                    .child(
-                                        Icon::new(IconName::ChevronRight)
-                                            .rotate(radians(angle))
-                                            .size(layout::ICON),
-                                    )
-                                    .child(
-                                        Icon::new(match group.kind {
-                                            GroupKind::Select => IconName::Route,
-                                            GroupKind::UrlTest => IconName::Zap,
-                                            GroupKind::Media => IconName::TvMinimalPlay,
-                                        })
-                                        .size(layout::ICON_LG),
-                                    )
-                                    .child(
-                                        v_flex()
-                                            .flex_1()
-                                            .min_w(space::NONE)
-                                            .child(
-                                                h_flex()
-                                                    .gap(space::SM)
-                                                    .child(
-                                                        div()
-                                                            .font_weight(text::EMPHASIS)
-                                                            .child(group.name),
-                                                    )
-                                                    .child(ui::muted(group.kind.label(), cx)),
-                                            )
-                                            .child(
-                                                ui::muted(
-                                                    format!(
-                                                        "{}{}",
-                                                        selected,
-                                                        if fixed { " · 手动固定" } else { "" }
-                                                    ),
-                                                    cx,
-                                                )
-                                                .truncate(),
-                                            ),
-                                    )
-                                    .child(ui::muted(format!("{} 个节点", nodes.len()), cx)),
-                            )
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.toggle_group(group.id, searching, window, cx)
-                            })),
-                    )
-                    .child(
-                        Button::new(SharedString::from(format!("proxy-group-menu-{}", group.id)))
-                            .ghost()
-                            .small()
-                            .icon(IconName::Ellipsis)
-                            .accessibility_label(format!("{}操作", group.name))
-                            .dropdown_menu(move |menu, _, _| {
-                                menu.item(
-                                    PopupMenuItem::new("测试此代理组延迟")
-                                        .icon(IconName::Zap)
-                                        .on_click(|_, window, cx| {
-                                            ui::request_command("测试此代理组延迟", window, cx)
-                                        }),
-                                )
-                                .when(fixed, |menu| {
-                                    menu.separator().item(
-                                        PopupMenuItem::new("恢复自动选择")
-                                            .icon(IconName::PinOff)
-                                            .on_click(move |_, window, cx| {
-                                                ui::request_command("恢复自动选择", window, cx)
-                                            }),
-                                    )
-                                })
-                            }),
-                    );
-                Collapsible::new()
-                    .motion_id((ElementId::from("proxy-group-body"), group.id))
-                    .open(open)
-                    .child(header)
-                    .content(
-                        div()
-                            .pt(space::SM)
-                            .grid()
-                            .grid_cols(self.columns as u16)
-                            .gap(proxy_card::GAP)
-                            .children(nodes.into_iter().map(|node| {
-                                div()
-                                    .h(height)
-                                    .min_w(space::NONE)
-                                    .child(self.node_card(group, node, open, cx))
-                            })),
-                    )
-                    .into_any_element()
-            }))
-            .into_any_element()
+                    .selected_node(&group.name())
+                    .unwrap_or("")
+                    .to_owned();
+                if let Some(index) = nodes.iter().position(|node| node.name() == selected) {
+                    row += 1 + index / self.columns.max(1);
+                }
+                self.list_scroll
+                    .scroll_to_item(row, ScrollStrategy::Nearest);
+                break;
+            }
+            row += 1;
+            if self.is_expanded(&group.id(), searching) {
+                row += nodes.len().div_ceil(self.columns.max(1));
+            }
+        }
+        self.refresh_list(window, cx);
+    }
+    fn group_icon(&self, group: &GroupInfo, cx: &App) -> AnyElement {
+        let runtime = self.session.read(cx).runtime();
+        if let Some(path) = runtime
+            .proxies
+            .entries
+            .get(&group.name)
+            .and_then(|proxy| runtime.icons.files.get(proxy.icon.trim()))
+        {
+            return img(path.clone())
+                .size(layout::ICON_LG)
+                .object_fit(ObjectFit::Contain)
+                .into_any_element();
+        }
+        Icon::new(match group.kind {
+            GroupKind::Select | GroupKind::Fallback => IconName::Route,
+            GroupKind::UrlTest => IconName::Zap,
+            GroupKind::Media => IconName::TvMinimalPlay,
+            GroupKind::LoadBalance => IconName::Network,
+            GroupKind::Relay => IconName::Link,
+        })
+        .size(layout::ICON_LG)
+        .into_any_element()
     }
     fn node_card(&self, group: GroupInfo, node: Node, open: bool, cx: &App) -> AnyElement {
         let active = self
             .session
             .read(cx)
-            .selected_node(group.name)
-            .unwrap_or(group.default_node)
+            .selected_node(&group.name)
+            .unwrap_or(&group.default_node)
             == node.name();
-        let focus = self.card_focus[&(group.id, node.id())].clone();
-        let keyboard_focus = focus.clone();
-        v_flex()
-            .id(SharedString::from(format!(
-                "node-card-{}-{}",
-                group.id,
-                node.id()
-            )))
-            .track_focus(&focus)
-            .role(Role::Button)
-            .tab_stop(open)
-            .aria_label(format!(
-                "{}：{}{}",
-                group.name,
-                node.name(),
-                if active { "，当前使用" } else { "" }
-            ))
-            .size_full()
-            .line_height(relative(text::LINE_HEIGHT))
-            .min_w(space::NONE)
-            .px(proxy_card::PADDING)
-            .justify_center()
-            .gap(space::XS)
-            .rounded(cx.theme().radius)
-            .bg(if active {
-                ui::theme::selection_tint(cx)
-            } else {
-                cx.theme().muted.opacity(opacity::PANEL)
-            })
-            .hover(move |card| {
-                if active {
-                    card
-                } else {
-                    card.bg(cx.theme().list_hover)
-                }
-            })
-            .border_1()
-            .border_color(cx.theme().ring.opacity(opacity::TRANSPARENT))
-            .focus_visible(|card| card.border_color(cx.theme().ring))
-            .on_click(move |_, window, cx| {
-                cx.stop_propagation();
-                ui::request_command("切换代理节点", window, cx);
-            })
-            .on_key_down(move |event: &KeyDownEvent, window, cx| {
-                if keyboard_focus.is_focused(window)
-                    && matches!(event.keystroke.key.as_str(), "enter" | "space")
-                {
-                    cx.stop_propagation();
-                    ui::request_command("切换代理节点", window, cx);
-                }
-            })
-            .child(
-                h_flex()
-                    .gap(space::SM)
-                    .child(
+        let focus = self.card_focus[&(group.id.clone(), node.id())].clone();
+        let runtime = self.session.read(cx).runtime();
+        let generation = runtime.generation;
+        let epoch = runtime.epoch;
+        let select_group = group.name.clone();
+        let select_node = node.name();
+        let test_node = node.name();
+        Button::new(SharedString::from(format!(
+            "node-card-{}-{}",
+            group.id,
+            node.id()
+        )))
+        .ghost()
+        .disabled(matches!(
+            group.kind,
+            GroupKind::LoadBalance | GroupKind::Relay
+        ))
+        .with_size(control::STANDARD)
+        .track_focus(&focus)
+        .tab_stop(open)
+        .accessibility_label(format!(
+            "{}：{}{}",
+            group.name,
+            node.name(),
+            if active { "，当前使用" } else { "" }
+        ))
+        .size_full()
+        .line_height(relative(text::LINE_HEIGHT))
+        .min_w(space::NONE)
+        .px(proxy_card::PADDING)
+        .justify_center()
+        .gap(space::XS)
+        .rounded(cx.theme().radius)
+        .map(|card| ui::selectable_card(card, active, cx))
+        .on_click(move |_, window, cx| {
+            cx.stop_propagation();
+            crate::core::request(
+                crate::core::Command::Proxy(super::runtime::Action::Select {
+                    group: select_group.clone(),
+                    node: select_node.clone(),
+                    generation,
+                    epoch,
+                }),
+                window,
+                cx,
+            );
+        })
+        .child(
+            v_flex()
+                .w_full()
+                .min_w(space::NONE)
+                .gap(space::XS)
+                .child(
+                    h_flex().gap(space::SM).child(
                         div()
                             .flex_1()
                             .min_w(space::NONE)
                             .truncate()
                             .font_weight(text::EMPHASIS)
                             .child(node.name()),
-                    )
-                    .child(div().w(layout::ICON).when(active, |slot| {
-                        slot.child(Icon::new(IconName::Check).size(layout::ICON))
-                    })),
-            )
-            .child(
-                h_flex()
-                    .gap(space::SM)
-                    .child(
-                        ui::muted(format!("{} · {}", node.region(), node.protocol()), cx)
+                    ),
+                )
+                .child(
+                    h_flex()
+                        .gap(space::SM)
+                        .child(
+                            ui::muted(
+                                if node.region().is_empty() {
+                                    node.protocol()
+                                } else {
+                                    format!("{} · {}", node.region(), node.protocol())
+                                },
+                                cx,
+                            )
                             .text_size(text::CAPTION)
                             .truncate()
                             .flex_1()
                             .min_w(space::NONE),
-                    )
-                    .child(
-                        Button::new(SharedString::from(format!(
-                            "node-delay-{}-{}",
-                            group.id,
-                            node.id()
-                        )))
-                        .ghost()
-                        .small()
-                        .label(
-                            node.delay()
-                                .map(|delay| format!("{delay} ms"))
-                                .unwrap_or_else(|| "超时".into()),
                         )
-                        .text_color(if node.delay().is_some() {
-                            cx.theme().muted_foreground
-                        } else {
-                            cx.theme().warning
-                        })
-                        .accessibility_label(format!("测试{}的{}延迟", group.name, node.name()))
-                        .tooltip("测试此节点延迟")
-                        .on_click(|_, window, cx| {
-                            cx.stop_propagation();
-                            ui::request_command("测试节点延迟", window, cx);
-                        }),
-                    ),
-            )
-            .into_any_element()
+                        .child(
+                            Button::new(SharedString::from(format!(
+                                "node-delay-{}-{}",
+                                group.id,
+                                node.id()
+                            )))
+                            .icon(gpui_kit::assets::IconName::Gauge)
+                            .ghost()
+                            .small()
+                            .disabled(!node.testable())
+                            .loading(node.testing())
+                            .label(node.delay().map(|delay| format!("{delay}")).unwrap_or_else(
+                                || {
+                                    if !node.testable() {
+                                        "-"
+                                    } else if node.failure().is_some() {
+                                        "失败"
+                                    } else if node.tested() {
+                                        "超时"
+                                    } else {
+                                        "-"
+                                    }
+                                    .into()
+                                },
+                            ))
+                            .text_color(if node.testing() {
+                                cx.theme().muted_foreground
+                            } else if let Some(delay) = node.delay() {
+                                if delay >= 400 {
+                                    cx.theme().warning
+                                } else if delay >= 250 {
+                                    cx.theme().primary
+                                } else {
+                                    cx.theme().success
+                                }
+                            } else if node.tested() && node.testable() {
+                                cx.theme().danger
+                            } else {
+                                cx.theme().muted_foreground
+                            })
+                            .accessibility_label(format!("测试{}的{}延迟", group.name, node.name()))
+                            .tooltip(node.failure().unwrap_or("测试此节点延迟").to_owned())
+                            .on_click(move |_, window, cx| {
+                                cx.stop_propagation();
+                                crate::core::test_delay(
+                                    super::runtime::Test {
+                                        group: Some(group.name.clone()),
+                                        node: Some(test_node.clone()),
+                                        generation,
+                                        epoch,
+                                    },
+                                    window,
+                                    cx,
+                                );
+                            }),
+                        ),
+                ),
+        )
+        .into_any_element()
     }
 }
 
@@ -363,8 +610,14 @@ mod motion_tests {
     use std::time::Duration;
     #[gpui_kit::test]
     fn group_body_and_following_header_move_continuously_on_reversal(cx: &mut TestAppContext) {
+        let root = tempfile::tempdir().unwrap();
+        let paths = crate::storage::AppPaths::isolated(root.path());
+        let service =
+            crate::integration::Service::start(crate::storage::Repository::open(paths).unwrap())
+                .unwrap();
         cx.update(|cx| {
             gpui_kit::init(cx);
+            crate::integration::init(service, cx);
             cx.set_reduce_motion(false);
         });
         let (handle, _) = cx.update(|cx| {
@@ -398,7 +651,7 @@ mod motion_tests {
                                     .collect::<Vec<_>>()
                             })
                             .collect();
-                        page.expanded.insert("proxy");
+                        page.expanded.insert("proxy".into());
                         page.refresh_list(window, cx);
                         page
                     })
@@ -410,6 +663,13 @@ mod motion_tests {
         let initial = cx
             .update_window(handle, |_, w, cx| {
                 w.render_frame(cx);
+                assert!(w.find("node-card-proxy-hk01").visible());
+                assert!(w.find("node-card-proxy-hk02").visible());
+                w.hover("node-card-proxy-hk01", cx);
+                assert!(w.find("node-card-proxy-hk01").visible());
+                assert!(w.find("proxy-group-test-proxy").visible());
+                assert!(w.find("proxy-group-locate-proxy").visible());
+                assert!(w.find("proxy-group-sort-proxy").visible());
                 let initial = w.find("proxy-group-auto").bounds().origin.y;
                 w.click("proxy-group-proxy", cx);
                 let start = w.find("proxy-group-auto").bounds().origin.y;
@@ -436,5 +696,6 @@ mod motion_tests {
             assert!((end - initial).abs() < px(1.));
         })
         .unwrap();
+        crate::integration::finish_test_services(cx);
     }
 }

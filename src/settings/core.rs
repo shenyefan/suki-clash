@@ -5,52 +5,109 @@ use crate::{
 };
 use gpui_kit::{
     assets::IconName,
-    component::{Disableable, Sizable, button::Button, h_flex, select::Select, v_flex},
+    component::{Disableable, Sizable, h_flex, select::Select, v_flex},
     prelude::FluentBuilder as _,
     *,
 };
 
 impl SettingsPage {
-    pub(super) fn core_content(&self, query: &str, cx: &mut Context<Self>) -> Div {
+    pub(super) fn sync_core_versions(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.core_versions.is_empty() {
+            return;
+        }
+        let Some(super::SettingField {
+            control: FieldControl::Select(state),
+            ..
+        }) = self.fields.get("CoreSpecificVersion")
+        else {
+            return;
+        };
+        let previous = state
+            .read(cx)
+            .selected_value()
+            .cloned()
+            .filter(|value| !value.is_empty());
+        let mut items = self
+            .core_versions
+            .iter()
+            .cloned()
+            .map(SharedString::from)
+            .collect::<Vec<_>>();
+        if let Some(value) = &previous
+            && !items.contains(value)
+        {
+            items.insert(0, value.clone());
+        }
+        let selected = previous.or_else(|| items.first().cloned());
+        state.update(cx, |state, cx| {
+            state.set_items(items, window, cx);
+            if let Some(selected) = selected {
+                state.set_selected_value(&selected, window, cx);
+            }
+        });
+        cx.notify();
+    }
+    pub(super) fn core_content(
+        &self,
+        query: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Div {
         let mut body = v_flex().gap(space::SECTION);
         let running = self.session.read(cx).is_running();
-        if self.runtime_tab == 0 && query.is_empty() {
+        let core = self.session.read(cx).core();
+        let has_process = core.has_process();
+        let busy = self.session.read(cx).core_busy();
+        if self.runtime_tab == 0
+            && (query.is_empty() || "mihomo smart 内核 状态 版本 发行 通道".contains(query))
+        {
             let status = h_flex()
                 .gap(space::SM)
-                .child(ui::muted(if running { "运行中" } else { "已停止" }, cx))
+                .child(ui::muted(core.label(), cx))
                 .child(
-                    Button::new("core-power")
-                        .with_size(control::STANDARD)
-                        .label(if running { "停止" } else { "启动" })
-                        .on_click(cx.listener(move |this, _, w, cx| {
-                            this.runtime_command(
-                                if running {
-                                    "停止内核"
-                                } else {
-                                    "启动内核"
-                                },
-                                w,
-                                cx,
-                            )
-                        })),
+                    ui::icon_button(
+                        "core-power",
+                        if has_process {
+                            IconName::Square
+                        } else {
+                            IconName::Play
+                        },
+                        if has_process {
+                            "停止内核"
+                        } else {
+                            "启动内核"
+                        },
+                    )
+                    .disabled(busy)
+                    .on_click(cx.listener(move |this, _, w, cx| {
+                        this.runtime_command(
+                            if has_process {
+                                "停止内核"
+                            } else {
+                                "启动内核"
+                            },
+                            w,
+                            cx,
+                        )
+                    })),
                 )
                 .child(
-                    Button::new("core-restart")
-                        .with_size(control::STANDARD)
-                        .label("重启")
-                        .disabled(!running)
+                    ui::icon_button("core-restart", IconName::RefreshCw, "重启内核")
+                        .disabled(!running || busy)
                         .on_click(
                             cx.listener(|this, _, w, cx| this.runtime_command("重启内核", w, cx)),
                         ),
                 );
-            let version = h_flex().gap(space::LG).child(ui::muted("—", cx)).child(
-                Button::new("core-upgrade")
-                    .with_size(control::STANDARD)
-                    .label("检查更新")
-                    .on_click(
-                        cx.listener(|this, _, w, cx| this.runtime_command("升级内核", w, cx)),
-                    ),
-            );
+            let version = h_flex()
+                .gap(space::LG)
+                .child(ui::muted(core.version().unwrap_or("—"), cx))
+                .child(
+                    ui::icon_button("core-upgrade", IconName::RefreshCw, "检查内核更新")
+                        .disabled(busy)
+                        .on_click(
+                            cx.listener(|this, _, w, cx| this.runtime_command("升级内核", w, cx)),
+                        ),
+                );
             let channel = h_flex()
                 .gap(space::SM)
                 .when_some(self.fields.get("CoreReleaseIndex"), |row, field| {
@@ -60,7 +117,8 @@ impl SettingsPage {
                                 Select::new(state)
                                     .with_size(control::STANDARD)
                                     .w_full()
-                                    .accessibility_label("发行通道"),
+                                    .accessibility_label("发行通道")
+                                    .disabled(busy || self.saving),
                             ),
                         )
                     } else {
@@ -68,92 +126,124 @@ impl SettingsPage {
                     }
                 })
                 .child(
-                    Button::new("core-switch")
-                        .with_size(control::STANDARD)
-                        .label("切换并重启")
+                    ui::icon_button("core-switch", IconName::Download, "下载所选内核并重启")
+                        .disabled(busy)
                         .on_click(
                             cx.listener(|this, _, w, cx| this.runtime_command("切换内核", w, cx)),
                         ),
                 );
-            body = body.child(ui::preferences_group(
-                "Mihomo",
-                vec![
-                    ui::preference_row("运行状态", "", status, cx).into_any_element(),
-                    ui::preference_row("当前版本", "", version, cx).into_any_element(),
-                    ui::preference_row(
-                        "发行通道",
-                        "稳定版适合日常使用，预览版包含最新改动",
-                        channel,
-                        cx,
-                    )
-                    .into_any_element(),
-                ],
-                cx,
-            ));
+            let mut rows = vec![
+                ui::preference_row("运行状态", "", status, cx).into_any_element(),
+                self.field_row("StartCore", cx),
+                ui::preference_row("当前版本", "", version, cx).into_any_element(),
+                ui::preference_row(
+                    "发行通道",
+                    "最新版 / 预览版 / Smart / 指定版本",
+                    channel,
+                    cx,
+                )
+                .into_any_element(),
+            ];
+            let specific=self.fields.get("CoreReleaseIndex").is_some_and(|field|matches!(&field.control,FieldControl::Select(state) if state.read(cx).selected_value().is_some_and(|value|value.as_ref()=="指定版本")));
+            if specific {
+                rows.push(self.field_row("CoreSpecificVersion", cx));
+            }
+            body = body.child(ui::preferences_group("Mihomo", rows, cx));
         }
         let titles: &[&str] = match self.runtime_tab {
             0 => &["基础参数"],
-            1 => &["监听端口", "外部控制"],
+            1 => &["监听端口", "隧道"],
             2 => &["访问控制"],
-            _ => &["状态", "内核维护", "WebUI", "日志维护"],
+            _ => &["内核维护", "外部控制", "WebUI", "日志维护"],
         };
         let mut found = false;
         for section in &self.sections {
+            if section.title == "状态" {
+                continue;
+            }
             if query.is_empty() && !titles.contains(&section.title) {
+                continue;
+            }
+            if section.title == "隧道" {
+                if query.is_empty() || "tcp udp 隧道 转发".contains(query) {
+                    found = true;
+                    body = body.child(ui::preferences_group(
+                        "隧道",
+                        self.tunnel_rows(window, cx),
+                        cx,
+                    ));
+                }
                 continue;
             }
             if section.title == "WebUI" {
                 if query.is_empty() || "webui 面板".contains(query) {
                     found = true;
-                    let mut rows: Vec<AnyElement> = self
-                        .panels
-                        .iter()
-                        .map(|(id, name, url)| {
-                            let id = *id;
-                            let open_url = url.clone();
-                            let controls = h_flex()
-                                .gap(space::SM)
-                                .child(
-                                    Button::new(("open-panel", id))
-                                        .with_size(control::STANDARD)
-                                        .label("打开")
-                                        .on_click(cx.listener(move |this, _, w, cx| {
-                                            this.open_panel(&open_url, w, cx)
-                                        })),
-                                )
-                                .child(
-                                    ui::icon_button(
-                                        ("edit-panel", id),
-                                        IconName::Pencil,
-                                        "编辑面板…",
+                    let height =
+                        crate::ui::theme::list::DETAIL_ROW_HEIGHT.to_pixels(window.rem_size());
+                    let mut rows = Vec::new();
+                    if !self.panels.is_empty() {
+                        rows.push(ui::virtual_rows::panel(
+                            cx.entity(),
+                            "webui-rows",
+                            vec![height; self.panels.len()],
+                            &self.lists["panels"],
+                            move |this, index, _, cx| {
+                                let (id, name, url) = &this.panels[index];
+                                let id = *id;
+                                let open_url = url.clone();
+                                let controls = h_flex()
+                                    .gap(space::SM)
+                                    .child(
+                                        ui::icon_button(
+                                            ("open-panel", id),
+                                            IconName::ExternalLink,
+                                            "打开面板",
+                                        )
+                                        .disabled(busy || this.saving)
+                                        .on_click(
+                                            cx.listener(move |this, _, w, cx| {
+                                                this.open_panel(&open_url, w, cx)
+                                            }),
+                                        ),
                                     )
-                                    .on_click(cx.listener(
-                                        move |this, _, w, cx| this.edit_panel(Some(id), w, cx),
-                                    )),
-                                )
-                                .child(
-                                    ui::icon_button(
-                                        ("remove-panel", id),
-                                        IconName::Trash,
-                                        "删除面板",
+                                    .child(
+                                        ui::icon_button(
+                                            ("edit-panel", id),
+                                            IconName::Pencil,
+                                            "编辑面板",
+                                        )
+                                        .disabled(busy || this.saving)
+                                        .on_click(
+                                            cx.listener(move |this, _, w, cx| {
+                                                this.edit_panel(Some(id), w, cx)
+                                            }),
+                                        ),
                                     )
-                                    .on_click(cx.listener(
-                                        move |this, _, _, cx| {
-                                            this.panels.retain(|panel| panel.0 != id);
-                                            this.dirty = true;
-                                            cx.notify();
-                                        },
-                                    )),
-                                );
-                            ui::preference_row(
-                                name.clone(),
-                                url.split('/').nth(2).unwrap_or(url).to_owned(),
-                                controls,
-                                cx,
-                            )
-                            .into_any_element()
-                        })
-                        .collect();
+                                    .child(
+                                        ui::icon_button(
+                                            ("remove-panel", id),
+                                            IconName::Trash,
+                                            "删除面板",
+                                        )
+                                        .disabled(busy || this.saving)
+                                        .on_click(
+                                            cx.listener(move |this, _, window, cx| {
+                                                this.panels.retain(|panel| panel.0 != id);
+                                                this.commit_panels(window, cx);
+                                                cx.notify();
+                                            }),
+                                        ),
+                                    );
+                                ui::data_preference_row(
+                                    name.clone(),
+                                    url.split('/').nth(2).unwrap_or(url).to_owned(),
+                                    controls,
+                                    cx,
+                                )
+                                .into_any_element()
+                            },
+                        ));
+                    }
                     rows.push(
                         ui::preference_row(
                             "面板",
@@ -161,20 +251,24 @@ impl SettingsPage {
                             h_flex()
                                 .gap(space::SM)
                                 .child(
-                                    Button::new("add-runtime-panel")
-                                        .with_size(control::STANDARD)
-                                        .label("添加…")
-                                        .on_click(
-                                            cx.listener(|this, _, w, cx| this.add_panel(w, cx)),
-                                        ),
+                                    ui::icon_button(
+                                        "add-runtime-panel",
+                                        IconName::Plus,
+                                        "添加面板",
+                                    )
+                                    .disabled(busy || self.saving)
+                                    .on_click(cx.listener(|this, _, w, cx| this.add_panel(w, cx))),
                                 )
                                 .child(
-                                    Button::new("restore-runtime-panels")
-                                        .with_size(control::STANDARD)
-                                        .label("恢复默认")
-                                        .on_click(cx.listener(|this, _, w, cx| {
-                                            this.action("恢复默认 WebUI", w, cx)
-                                        })),
+                                    ui::icon_button(
+                                        "restore-runtime-panels",
+                                        IconName::RotateCcw,
+                                        "恢复默认面板",
+                                    )
+                                    .disabled(busy || self.saving)
+                                    .on_click(cx.listener(
+                                        |this, _, w, cx| this.action("恢复默认 WebUI", w, cx),
+                                    )),
                                 ),
                             cx,
                         )
@@ -190,7 +284,11 @@ impl SettingsPage {
                 .filter(|field| {
                     !matches!(
                         field.key,
-                        "CoreAction0" | "CoreAction1" | "CoreSpecificVersion" | "CoreReleaseIndex"
+                        "CoreAction0"
+                            | "CoreAction1"
+                            | "CoreSpecificVersion"
+                            | "CoreReleaseIndex"
+                            | "StartCore"
                     ) && (query.is_empty()
                         || format!("{} {} {}", section.title, field.label, field.description)
                             .to_lowercase()

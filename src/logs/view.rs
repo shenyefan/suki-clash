@@ -10,7 +10,7 @@ use gpui_kit::{
         button::{Button, ButtonVariants, DropdownButton},
         h_flex,
         input::Input,
-        menu::{DropdownMenu, PopupMenuItem},
+        menu::DropdownMenu,
         scroll::ScrollableElement,
         scroll::{Scrollbar, ScrollbarMode},
         select::Select,
@@ -54,23 +54,24 @@ impl LogsPage {
                             table.refresh(cx);
                         });
                         this.refresh(w, cx);
-                        this.persist(w, cx);
                     })),
             )
             .dropdown_menu(move |mut menu, _, _| {
                 for (ix, label) in LABELS.into_iter().enumerate() {
                     let owner = owner.clone();
-                    menu = menu.item(PopupMenuItem::new(label).checked(ix == column).on_click(
-                        move |_, w, cx| {
-                            owner.update(cx, |this, cx| {
-                                this.table.update(cx, |table, cx| {
-                                    table.delegate_mut().sort = Some((ix, descending));
-                                    table.refresh(cx);
+                    menu = menu.item(
+                        crate::ui::actions::menu(label)
+                            .checked(ix == column)
+                            .on_click(move |_, w, cx| {
+                                owner.update(cx, |this, cx| {
+                                    this.table.update(cx, |table, cx| {
+                                        table.delegate_mut().sort = Some((ix, descending));
+                                        table.refresh(cx);
+                                    });
+                                    this.refresh(w, cx);
                                 });
-                                this.refresh(w, cx);
-                            });
-                        },
-                    ));
+                            }),
+                    );
                 }
                 menu
             })
@@ -88,16 +89,11 @@ impl LogsPage {
             .flex_shrink_0()
             .icon(IconName::SlidersHorizontal)
             .accessibility_label("日志搜索选项")
-            .tooltip(
-                self.search
-                    .error
-                    .clone()
-                    .unwrap_or_else(|| "搜索选项".into()),
-            )
+            .tooltip("搜索选项")
             .dropdown_menu(move |mut menu, _, _| {
                 for (key, label, enabled) in options {
                     let owner = owner.clone();
-                    menu = menu.item(PopupMenuItem::new(label).checked(enabled).on_click(
+                    menu = menu.item(crate::ui::actions::menu(label).checked(enabled).on_click(
                         move |_, w, cx| {
                             owner.update(cx, |this, cx| {
                                 let option = match key {
@@ -107,7 +103,6 @@ impl LogsPage {
                                 };
                                 *option = !*option;
                                 this.refresh(w, cx);
-                                this.persist(w, cx);
                                 if let Some(error) = &this.search.error {
                                     ui::show_error(error.clone(), w, cx);
                                 }
@@ -136,6 +131,7 @@ impl Render for LogsPage {
                 .count()
         });
         let total = counts[self.source];
+        let table = self.table.downgrade();
         let presence = ui::motion::presence("logs-details", detail.is_some(), window, cx);
         let detail = detail
             .or_else(|| self.detail_cache.clone())
@@ -162,7 +158,6 @@ impl Render for LogsPage {
                                 table.clear_selection(cx);
                             });
                             this.refresh(w, cx);
-                            this.persist(w, cx);
                         })),
                 ),
             )
@@ -176,18 +171,11 @@ impl Render for LogsPage {
                                 .cleanable(true)
                                 .aria_label("搜索日志")
                                 .prefix(Icon::new(IconName::Search).size(layout::ICON))
+                                .suffix(self.search_options(cx))
                                 .when(self.search.error.is_some(), |input| {
                                     input.border_color(cx.theme().danger)
                                 }),
                         ),
-                    )
-                    .child(
-                        h_flex()
-                            .w(layout::CONTROL_HEIGHT)
-                            .h(layout::CONTROL_HEIGHT)
-                            .flex_shrink_0()
-                            .justify_center()
-                            .child(self.search_options(cx)),
                     )
                     .child(
                         div().w(layout::FILTER_WIDTH).flex_shrink_0().child(
@@ -212,12 +200,12 @@ impl Render for LogsPage {
                             .accessibility_label(if self.buffer.paused {
                                 "继续接收日志"
                             } else {
-                                "暂停接收日志"
+                                "暂停显示日志"
                             })
                             .tooltip(if self.buffer.paused {
                                 "继续接收"
                             } else {
-                                "暂停接收"
+                                "暂停显示"
                             })
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.buffer.paused = !this.buffer.paused;
@@ -257,6 +245,10 @@ impl Render for LogsPage {
                             .tooltip("清空日志")
                             .disabled(total == 0)
                             .on_click(cx.listener(|this, _, w, cx| {
+                                this.cleared[this.source] = crate::integration::logs(cx)
+                                    .since(0)
+                                    .last()
+                                    .map_or(0, |entry| entry.id);
                                 this.buffer.clear(this.source);
                                 this.refresh(w, cx);
                             })),
@@ -268,13 +260,39 @@ impl Render for LogsPage {
                         .size_full()
                         .min_h(space::NONE)
                         .child(
-                            div().flex_1().min_h(space::NONE).child(
-                                DataTable::new(&self.table)
-                                    .with_size(control::STANDARD)
-                                    .stripe(false)
-                                    .bordered(false)
-                                    .scrollbar_visible(true, false),
-                            ),
+                            div()
+                                .relative()
+                                .flex_1()
+                                .min_h(space::NONE)
+                                .child(
+                                    canvas(
+                                        move |bounds, _, cx| {
+                                            if let Some(table) = table.upgrade()
+                                                && table.read(cx).delegate().viewport_width
+                                                    != bounds.size.width
+                                            {
+                                                cx.defer(move |cx| {
+                                                    table.update(cx, |state, cx| {
+                                                        state.delegate_mut().viewport_width =
+                                                            bounds.size.width;
+                                                        state.refresh(cx);
+                                                        cx.notify();
+                                                    })
+                                                });
+                                            }
+                                        },
+                                        |_, _, _, _| {},
+                                    )
+                                    .absolute()
+                                    .size_full(),
+                                )
+                                .child(
+                                    DataTable::new(&self.table)
+                                        .with_size(control::STANDARD)
+                                        .stripe(false)
+                                        .bordered(false)
+                                        .scrollbar_visible(true, false),
+                                ),
                         )
                         .child(
                             div().h(Scrollbar::width()).w_full().flex_shrink_0().child(
@@ -304,7 +322,7 @@ impl Render for LogsPage {
                     .child(
                         ui::muted(
                             if self.buffer.paused {
-                                "接收已暂停"
+                                "显示已暂停"
                             } else {
                                 ""
                             },
@@ -316,7 +334,7 @@ impl Render for LogsPage {
                         Button::new("logs-latest")
                             .ghost()
                             .small()
-                            .icon(IconName::ArrowDown)
+                            .icon(IconName::ArrowUp)
                             .label("跳到最新")
                             .disabled(count == 0)
                             .on_click(cx.listener(|this, _, w, cx| this.jump_to_latest(w, cx))),
@@ -343,14 +361,7 @@ impl LogsPage {
                                     .child(div().font_weight(text::HEADING).child(entry.time))
                                     .child(Tag::secondary().small().child(entry.level)),
                             )
-                            .child(ui::muted(
-                                if entry.source == 0 {
-                                    "内核日志"
-                                } else {
-                                    "程序日志"
-                                },
-                                cx,
-                            )),
+                            .child(ui::muted(entry.origin.clone(), cx)),
                     )
                     .child(
                         Button::new("copy-log-detail")

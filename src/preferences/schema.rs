@@ -3,7 +3,7 @@ use super::SettingsKind;
 use std::collections::BTreeMap;
 
 #[derive(Clone, Copy, PartialEq)]
-pub(super) enum FieldKind {
+pub(crate) enum FieldKind {
     Toggle,
     Text,
     Secret,
@@ -13,21 +13,21 @@ pub(super) enum FieldKind {
     ReadOnly,
 }
 #[derive(Clone)]
-pub(super) struct FieldSpec {
-    pub(super) key: &'static str,
-    pub(super) label: &'static str,
-    pub(super) description: &'static str,
-    pub(super) kind: FieldKind,
-    pub(super) default: &'static str,
-    pub(super) options: &'static [&'static str],
-    pub(super) actions: &'static [&'static str],
+pub(crate) struct FieldSpec {
+    pub(crate) key: &'static str,
+    pub(crate) label: &'static str,
+    pub(crate) description: &'static str,
+    pub(crate) kind: FieldKind,
+    pub(crate) default: &'static str,
+    pub(crate) options: &'static [&'static str],
+    pub(crate) actions: &'static [&'static str],
 }
-pub(super) struct SectionSpec {
-    pub(super) title: &'static str,
-    pub(super) fields: Vec<FieldSpec>,
+pub(crate) struct SectionSpec {
+    pub(crate) title: &'static str,
+    pub(crate) fields: Vec<FieldSpec>,
 }
 
-pub(super) fn default_panels() -> Vec<(u64, String, String)> {
+pub(crate) fn default_panels() -> Vec<(u64, String, String)> {
     [
         (1, "MetaCubeXD", "https://metacubex.github.io/metacubexd/#/setup?http=true&hostname=%host&port=%port&secret=%secret"),
         (2, "YACD", "https://yacd.metacubex.one/?hostname=%host&port=%port&secret=%secret"),
@@ -38,7 +38,7 @@ pub(super) fn default_panels() -> Vec<(u64, String, String)> {
     .collect()
 }
 
-pub(super) fn panels_from_values(values: &BTreeMap<String, String>) -> Vec<(u64, String, String)> {
+pub(crate) fn panels_from_values(values: &BTreeMap<String, String>) -> Vec<(u64, String, String)> {
     if !values.contains_key("WebUiConfigured") {
         return default_panels();
     }
@@ -56,7 +56,7 @@ pub(super) fn panels_from_values(values: &BTreeMap<String, String>) -> Vec<(u64,
         .collect()
 }
 
-pub(super) fn store_panels(
+pub(crate) fn store_panels(
     panels: &[(u64, String, String)],
     values: &mut BTreeMap<String, String>,
 ) {
@@ -67,7 +67,7 @@ pub(super) fn store_panels(
     }
 }
 
-pub(super) fn valid_web_url(value: &str) -> bool {
+pub(crate) fn valid_web_url(value: &str) -> bool {
     value
         .trim()
         .split_once("://")
@@ -79,7 +79,7 @@ pub(super) fn valid_web_url(value: &str) -> bool {
         })
 }
 
-pub(super) fn expand_panel_url(url: &str, address: &str, secret: &str) -> Result<String, String> {
+pub(crate) fn expand_panel_url(url: &str, address: &str, secret: &str) -> Result<String, String> {
     if !valid_web_url(url) {
         return Err("面板地址需为 HTTP / HTTPS 地址".into());
     }
@@ -108,7 +108,7 @@ pub(super) fn expand_panel_url(url: &str, address: &str, secret: &str) -> Result
         .replace("%secret", &encoded))
 }
 
-pub(super) fn sections(kind: SettingsKind) -> Vec<SectionSpec> {
+pub(crate) fn sections(kind: SettingsKind) -> Vec<SectionSpec> {
     match kind {
         SettingsKind::SysProxy => proxy_sections(),
         SettingsKind::Tun => tun_sections(),
@@ -260,7 +260,7 @@ fn proxy_sections() -> Vec<SectionSpec> {
                 kind: FieldKind::ReadOnly,
                 default: "",
                 options: &[],
-                actions: &["打开 UWP 回环工具…"],
+                actions: &["打开 UWP 回环工具"],
             }],
         },
     ]
@@ -450,8 +450,8 @@ fn general_extensions() -> Vec<SectionSpec> {
                 label: "通知位置",
                 description: "",
                 kind: FieldKind::Select,
-                default: "右下角",
-                options: &["右下角", "右上角", "左下角", "左上角"],
+                default: "顶部居中",
+                options: &["顶部居中", "右下角", "右上角", "左下角", "左上角"],
                 actions: &[],
             }],
         },
@@ -501,7 +501,7 @@ fn general_extensions() -> Vec<SectionSpec> {
                     kind: FieldKind::ReadOnly,
                     default: "",
                     options: &[],
-                    actions: &["选择普通图标…", "选择系统代理图标…", "选择虚拟网卡图标…"],
+                    actions: &["选择普通图标", "选择系统代理图标", "选择虚拟网卡图标"],
                 },
             ],
         },
@@ -540,7 +540,7 @@ fn general_extensions() -> Vec<SectionSpec> {
                     label: "应用日志级别",
                     description: "",
                     kind: FieldKind::Select,
-                    default: "Warn",
+                    default: "Info",
                     options: &["Trace", "Debug", "Info", "Warn", "Error", "Silent"],
                     actions: &[],
                 },
@@ -589,7 +589,7 @@ fn general_extensions() -> Vec<SectionSpec> {
                     kind: FieldKind::ReadOnly,
                     default: "",
                     options: &[],
-                    actions: &["本地备份历史…", "导入备份…"],
+                    actions: &["本地备份历史", "导入备份"],
                 },
                 FieldSpec {
                     key: "RemoteBackupHistory",
@@ -598,7 +598,7 @@ fn general_extensions() -> Vec<SectionSpec> {
                     kind: FieldKind::ReadOnly,
                     default: "",
                     options: &[],
-                    actions: &["远程备份历史…"],
+                    actions: &["远程备份历史"],
                 },
             ],
         },
@@ -671,7 +671,7 @@ fn general_extensions() -> Vec<SectionSpec> {
                     kind: FieldKind::ReadOnly,
                     default: "",
                     options: &[],
-                    actions: &["测试 WebDAV 连接", "上传备份", "获取远程备份…"],
+                    actions: &["测试 WebDAV 连接", "上传备份", "获取远程备份"],
                 },
             ],
         },
@@ -685,7 +685,7 @@ fn general_extensions() -> Vec<SectionSpec> {
                     kind: FieldKind::ReadOnly,
                     default: "",
                     options: &[],
-                    actions: &["查看运行配置…"],
+                    actions: &["查看运行配置"],
                 },
                 FieldSpec {
                     key: "ConfigDirectories",
@@ -870,7 +870,7 @@ fn original_sections(kind: SettingsKind) -> Vec<SectionSpec> {
                 fields: vec![
                     FieldSpec {
                         key: "DnsOverrideEnabled",
-                        label: "覆写 DNS 配置",
+                        label: "使用全局 DNS 配置",
                         description: "关闭时使用订阅中的 DNS 和 Hosts 配置",
                         kind: FieldKind::Toggle,
                         default: "false",
@@ -880,7 +880,7 @@ fn original_sections(kind: SettingsKind) -> Vec<SectionSpec> {
                     FieldSpec {
                         key: "DnsEnabled",
                         label: "启用 DNS",
-                        description: "仅在“覆写 DNS 配置”开启时生效",
+                        description: "仅在全局 DNS 配置开启时生效",
                         kind: FieldKind::Toggle,
                         default: "true",
                         options: &[],
@@ -1139,27 +1139,27 @@ fn original_sections(kind: SettingsKind) -> Vec<SectionSpec> {
                         options: &[],
                         actions: &[],
                     },
-                    FieldSpec {
-                        key: "CoreAction2",
-                        label: "目录",
-                        description: "内核文件与运行配置",
-                        kind: FieldKind::ReadOnly,
-                        default: "",
-                        options: &[],
-                        actions: &["打开内核目录", "打开配置目录"],
-                    },
                 ],
             },
             SectionSpec {
                 title: "版本管理",
                 fields: vec![
                     FieldSpec {
+                        key: "StartCore",
+                        label: "启动时运行内核",
+                        description: "",
+                        kind: FieldKind::Toggle,
+                        default: "true",
+                        options: &[],
+                        actions: &[],
+                    },
+                    FieldSpec {
                         key: "CoreReleaseIndex",
                         label: "发行通道",
                         description: "选择后点击“应用”，下载并启动对应内核",
                         kind: FieldKind::Select,
                         default: "最新版",
-                        options: &["最新版", "预览版"],
+                        options: &["最新版", "预览版", "Smart", "指定版本"],
                         actions: &["应用所选通道"],
                     },
                     FieldSpec {
@@ -1167,8 +1167,8 @@ fn original_sections(kind: SettingsKind) -> Vec<SectionSpec> {
                         label: "指定版本",
                         description: "版本标签，例如 v1.19.13",
                         kind: FieldKind::Select,
-                        default: "v1.19.13",
-                        options: &["v1.19.13", "v1.19.12", "v1.19.11"],
+                        default: "",
+                        options: &[""],
                         actions: &["刷新版本列表"],
                     },
                 ],
@@ -1177,13 +1177,13 @@ fn original_sections(kind: SettingsKind) -> Vec<SectionSpec> {
                 title: "内核维护",
                 fields: vec![
                     FieldSpec {
-                        key: "CoreAction5",
-                        label: "GeoData",
-                        description: "更新 GeoIP、GeoSite 和 MMDB 数据",
+                        key: "CoreValidate",
+                        label: "运行配置",
+                        description: "使用当前内核检查候选配置",
                         kind: FieldKind::ReadOnly,
                         default: "",
                         options: &[],
-                        actions: &["更新 GeoData"],
+                        actions: &["校验配置"],
                     },
                     FieldSpec {
                         key: "CoreAction6",
@@ -1204,7 +1204,7 @@ fn original_sections(kind: SettingsKind) -> Vec<SectionSpec> {
                         label: "混合端口",
                         description: "HTTP 与 SOCKS 共用；0 表示关闭",
                         kind: FieldKind::Number,
-                        default: "7890",
+                        default: "7897",
                         options: &[],
                         actions: &["随机端口"],
                     },
@@ -1213,7 +1213,7 @@ fn original_sections(kind: SettingsKind) -> Vec<SectionSpec> {
                         label: "SOCKS 端口",
                         description: "0 表示关闭",
                         kind: FieldKind::Number,
-                        default: "7891",
+                        default: "0",
                         options: &[],
                         actions: &["随机端口"],
                     },
@@ -1222,7 +1222,7 @@ fn original_sections(kind: SettingsKind) -> Vec<SectionSpec> {
                         label: "HTTP 端口",
                         description: "0 表示关闭",
                         kind: FieldKind::Number,
-                        default: "7892",
+                        default: "0",
                         options: &[],
                         actions: &["随机端口"],
                     },
@@ -1247,12 +1247,24 @@ fn original_sections(kind: SettingsKind) -> Vec<SectionSpec> {
                 ],
             },
             SectionSpec {
+                title: "隧道",
+                fields: vec![FieldSpec {
+                    key: "TunnelAction",
+                    label: "TCP / UDP 隧道",
+                    description: "将本地端口转发到目标，可指定代理组或节点",
+                    kind: FieldKind::ReadOnly,
+                    default: "",
+                    options: &[],
+                    actions: &["管理隧道"],
+                }],
+            },
+            SectionSpec {
                 title: "外部控制",
                 fields: vec![
                     FieldSpec {
                         key: "EnableExternalController",
                         label: "启用外部控制",
-                        description: "本应用无需开启；开启后其他程序可通过 HTTP API 控制内核。修改后需保存并重启。",
+                        description: "本应用无需开启；开启后其他程序可通过 HTTP API 控制内核。修改确认后重启生效。",
                         kind: FieldKind::Toggle,
                         default: "false",
                         options: &[],
@@ -1265,7 +1277,7 @@ fn original_sections(kind: SettingsKind) -> Vec<SectionSpec> {
                         kind: FieldKind::Text,
                         default: "127.0.0.1:9090",
                         options: &[],
-                        actions: &[],
+                        actions: &["复制地址"],
                     },
                     FieldSpec {
                         key: "Secret",
@@ -1274,7 +1286,25 @@ fn original_sections(kind: SettingsKind) -> Vec<SectionSpec> {
                         kind: FieldKind::Secret,
                         default: "",
                         options: &[],
-                        actions: &["生成密钥"],
+                        actions: &["生成密钥", "复制密钥"],
+                    },
+                    FieldSpec {
+                        key: "CorsPrivateNetwork",
+                        label: "允许私有网络访问",
+                        description: "CORS allow-private-network",
+                        kind: FieldKind::Toggle,
+                        default: "true",
+                        options: &[],
+                        actions: &[],
+                    },
+                    FieldSpec {
+                        key: "CorsOrigins",
+                        label: "CORS 允许来源",
+                        description: "每行一个 HTTP/HTTPS 来源，支持 *；离开编辑框后应用",
+                        kind: FieldKind::Multiline,
+                        default: "https://metacubex.github.io\nhttps://yacd.metacubex.one\nhttps://board.zash.run.place",
+                        options: &[],
+                        actions: &[],
                     },
                 ],
             },
@@ -1311,14 +1341,14 @@ fn original_sections(kind: SettingsKind) -> Vec<SectionSpec> {
                         kind: FieldKind::Toggle,
                         default: "false",
                         options: &[],
-                        actions: &[],
+                        actions: &["网卡信息"],
                     },
                     FieldSpec {
                         key: "LanAllowedIps",
                         label: "允许的地址",
                         description: "仅允许这些地址访问，每行一个 CIDR",
                         kind: FieldKind::Multiline,
-                        default: "",
+                        default: crate::configuration::Preferences::DEFAULT_ALLOWED_IPS,
                         options: &[],
                         actions: &[],
                     },
@@ -1359,7 +1389,7 @@ fn original_sections(kind: SettingsKind) -> Vec<SectionSpec> {
                         label: "IPv6",
                         description: "启用 IPv6 支持",
                         kind: FieldKind::Toggle,
-                        default: "false",
+                        default: "true",
                         options: &[],
                         actions: &[],
                     },
@@ -1404,7 +1434,7 @@ fn original_sections(kind: SettingsKind) -> Vec<SectionSpec> {
                         label: "日志级别",
                         description: "控制内核日志的详细程度",
                         kind: FieldKind::Select,
-                        default: "静默（silent）",
+                        default: "信息（info）",
                         options: &[
                             "静默（silent）",
                             "错误（error）",
@@ -1455,43 +1485,43 @@ fn original_sections(kind: SettingsKind) -> Vec<SectionSpec> {
                 FieldSpec {
                     key: "GeoIpUrl",
                     label: "GeoIP 数据库",
-                    description: "下载地址",
+                    description: "",
                     kind: FieldKind::Text,
-                    default: "",
+                    default: crate::configuration::resources::Database::GeoIp.default_url(),
                     options: &[],
                     actions: &["更新 GeoIP"],
                 },
                 FieldSpec {
                     key: "GeoSiteUrl",
                     label: "GeoSite 数据库",
-                    description: "下载地址",
+                    description: "",
                     kind: FieldKind::Text,
-                    default: "",
+                    default: crate::configuration::resources::Database::GeoSite.default_url(),
                     options: &[],
                     actions: &["更新 GeoSite"],
                 },
                 FieldSpec {
                     key: "MmdbUrl",
                     label: "MMDB 数据库",
-                    description: "下载地址",
+                    description: "",
                     kind: FieldKind::Text,
-                    default: "",
+                    default: crate::configuration::resources::Database::Country.default_url(),
                     options: &[],
                     actions: &["更新 MMDB"],
                 },
                 FieldSpec {
                     key: "AsnUrl",
                     label: "ASN 数据库",
-                    description: "下载地址",
+                    description: "",
                     kind: FieldKind::Text,
-                    default: "",
+                    default: crate::configuration::resources::Database::Asn.default_url(),
                     options: &[],
                     actions: &["更新 ASN"],
                 },
                 FieldSpec {
                     key: "GeoMode",
                     label: "GeoData 格式",
-                    description: "选择 db 或 dat",
+                    description: "",
                     kind: FieldKind::Select,
                     default: "db",
                     options: &["db", "dat"],
@@ -1500,7 +1530,7 @@ fn original_sections(kind: SettingsKind) -> Vec<SectionSpec> {
                 FieldSpec {
                     key: "GeoAutoUpdate",
                     label: "自动更新",
-                    description: "定期自动更新 GeoData",
+                    description: "",
                     kind: FieldKind::Toggle,
                     default: "false",
                     options: &[],
@@ -1509,7 +1539,7 @@ fn original_sections(kind: SettingsKind) -> Vec<SectionSpec> {
                 FieldSpec {
                     key: "GeoUpdateIntervalValue",
                     label: "更新间隔（小时）",
-                    description: "两次自动更新之间的间隔",
+                    description: "",
                     kind: FieldKind::Number,
                     default: "24",
                     options: &[],
@@ -1578,12 +1608,12 @@ fn original_sections(kind: SettingsKind) -> Vec<SectionSpec> {
                         description: "窗口使用的背景材质",
                         kind: FieldKind::Select,
                         default: if cfg!(target_os = "windows") {
-                            "Mica"
+                            "Acrylic"
                         } else {
                             "原生磨砂"
                         },
                         options: if cfg!(target_os = "windows") {
-                            &["Mica", "Acrylic", "纯色"]
+                            &["Acrylic", "纯色"]
                         } else {
                             &["原生磨砂", "纯色"]
                         },
@@ -1710,7 +1740,7 @@ fn original_sections(kind: SettingsKind) -> Vec<SectionSpec> {
                     FieldSpec {
                         key: "GistAgeRecipient",
                         label: "Age 接收方公钥",
-                        description: "格式：age1…",
+                        description: "格式：age1",
                         kind: FieldKind::Text,
                         default: "",
                         options: &[],
@@ -1836,7 +1866,7 @@ fn original_sections(kind: SettingsKind) -> Vec<SectionSpec> {
     }
 }
 
-pub(super) fn default_bypass() -> &'static str {
+pub(crate) fn default_bypass() -> &'static str {
     if cfg!(target_os = "windows") {
         "localhost\n127.*\n192.168.*\n10.*\n172.16.*\n172.17.*\n172.18.*\n172.19.*\n172.20.*\n172.21.*\n172.22.*\n172.23.*\n172.24.*\n172.25.*\n172.26.*\n172.27.*\n172.28.*\n172.29.*\n172.30.*\n172.31.*\n*.local\n<local>"
     } else if cfg!(target_os = "linux") {
@@ -1846,7 +1876,7 @@ pub(super) fn default_bypass() -> &'static str {
     }
 }
 
-pub(super) fn section_tab(kind: SettingsKind, title: &str, key: &str) -> usize {
+pub(crate) fn section_tab(kind: SettingsKind, title: &str, key: &str) -> usize {
     match kind {
         SettingsKind::Dns => match title {
             "DNS 服务器" => 1,
@@ -1885,7 +1915,7 @@ pub(super) fn section_tab(kind: SettingsKind, title: &str, key: &str) -> usize {
     }
 }
 
-pub(super) fn field_visible(kind: SettingsKind, key: &str) -> bool {
+pub(crate) fn field_visible(kind: SettingsKind, key: &str) -> bool {
     match (kind, key) {
         (SettingsKind::SysProxy, "OpenUwpLoopbackClick") | (SettingsKind::Tun, "TunAction1") => {
             cfg!(target_os = "windows")
@@ -1900,7 +1930,7 @@ pub(super) fn field_visible(kind: SettingsKind, key: &str) -> bool {
     }
 }
 
-pub(super) fn field_enabled(
+pub(crate) fn field_enabled(
     kind: SettingsKind,
     key: &str,
     values: &BTreeMap<String, String>,
@@ -1948,6 +1978,8 @@ pub(super) fn field_enabled(
         (SettingsKind::Tun, "AutoRedirect" | "RouteExcludeAddress") => enabled("AutoRoute"),
         (SettingsKind::General, "AutoDelayInterval") => enabled("EnableAutoDelay"),
         (SettingsKind::General, "AutoBackupInterval") => enabled("AutoBackupSchedule"),
+        (SettingsKind::Core, "RedirPort") => !cfg!(windows),
+        (SettingsKind::Core, "TproxyPort") => cfg!(target_os = "linux"),
         (SettingsKind::General, "HotReloadProfileAutoCloseConnection") => {
             enabled("UseHotReloadProfile")
         }
@@ -1958,7 +1990,7 @@ pub(super) fn field_enabled(
     }
 }
 
-pub(super) fn split_entries(value: &str) -> impl Iterator<Item = &str> {
+pub(crate) fn split_entries(value: &str) -> impl Iterator<Item = &str> {
     value
         .split([',', ';', '\n', '\r'])
         .map(str::trim)
@@ -1966,16 +1998,7 @@ pub(super) fn split_entries(value: &str) -> impl Iterator<Item = &str> {
 }
 
 fn valid_cidr(value: &str) -> bool {
-    if let Some((ip, prefix)) = value.split_once('/') {
-        let Ok(ip) = ip.parse::<std::net::IpAddr>() else {
-            return false;
-        };
-        prefix
-            .parse::<u8>()
-            .is_ok_and(|prefix| prefix <= if ip.is_ipv4() { 32 } else { 128 })
-    } else {
-        value.parse::<std::net::IpAddr>().is_ok()
-    }
+    value.parse::<ipnet::IpNet>().is_ok() || value.parse::<std::net::IpAddr>().is_ok()
 }
 
 fn valid_host(value: &str) -> bool {
@@ -2124,7 +2147,7 @@ fn validate_flow_settings(values: &BTreeMap<String, String>) -> Option<String> {
     None
 }
 
-pub(super) fn validate(
+pub(crate) fn validate(
     sections: &[SectionSpec],
     values: &BTreeMap<String, String>,
 ) -> Option<String> {

@@ -1,25 +1,25 @@
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(super) enum DocumentKind {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum DocumentKind {
     Profile,
     Yaml,
     JavaScript,
 }
 impl DocumentKind {
-    pub(super) fn label(self) -> &'static str {
+    pub(crate) fn label(self) -> &'static str {
         match self {
             Self::Profile => "配置",
             Self::Yaml => "YAML",
             Self::JavaScript => "JavaScript",
         }
     }
-    pub(super) fn extension(self) -> &'static str {
+    pub(crate) fn extension(self) -> &'static str {
         if self == Self::JavaScript {
             "js"
         } else {
             "yaml"
         }
     }
-    pub(super) fn template(self) -> &'static str {
+    pub(crate) fn template(self) -> &'static str {
         match self {
             Self::JavaScript => "function main(config) {\n  // 在此修改配置\n  return config;\n}\n",
             Self::Yaml => "# 合并到运行配置\nprofile:\n  store-selected: true\n",
@@ -29,20 +29,20 @@ impl DocumentKind {
         }
     }
 }
-#[derive(Clone)]
-pub(super) struct TrafficUsage {
-    pub(super) used_bytes: u64,
-    pub(super) total_bytes: u64,
-    pub(super) expires: Option<String>,
+#[derive(Clone, Debug)]
+pub(crate) struct TrafficUsage {
+    pub(crate) used_bytes: u64,
+    pub(crate) total_bytes: u64,
+    pub(crate) expires: Option<String>,
 }
 impl TrafficUsage {
-    pub(super) fn fraction(&self) -> f32 {
+    pub(crate) fn fraction(&self) -> f32 {
         if self.total_bytes == 0 {
             return 0.;
         }
         (self.used_bytes as f64 / self.total_bytes as f64).clamp(0., 1.) as f32
     }
-    pub(super) fn amount(bytes: u64) -> String {
+    pub(crate) fn amount(bytes: u64) -> String {
         let gib = 1024_f64.powi(3);
         if bytes as f64 >= gib {
             format!("{:.1} GB", bytes as f64 / gib)
@@ -53,25 +53,36 @@ impl TrafficUsage {
 }
 
 #[derive(Clone)]
-pub(super) struct Document {
-    pub(super) id: u64,
-    pub(super) name: String,
-    pub(super) url: String,
-    pub(super) content: String,
-    pub(super) kind: DocumentKind,
-    pub(super) enabled: bool,
-    pub(super) scope_profile: Option<u64>,
-    pub(super) scope_name: String,
-    pub(super) auto_update: bool,
-    pub(super) interval: String,
-    pub(super) timeout: String,
-    pub(super) user_agent: String,
-    pub(super) token: String,
-    pub(super) age_key: String,
-    pub(super) usage: Option<TrafficUsage>,
+pub(crate) struct Document {
+    pub(crate) id: u64,
+    pub(crate) name: String,
+    pub(crate) url: String,
+    pub(crate) content: String,
+    pub(crate) kind: DocumentKind,
+    pub(crate) enabled: bool,
+    pub(crate) scope_profile: Option<u64>,
+    pub(crate) scope_name: String,
+    pub(crate) interval: String,
+    pub(crate) timeout: String,
+    pub(crate) user_agent: String,
+    pub(crate) token: String,
+    pub(crate) age_key: String,
+    pub(crate) usage: Option<TrafficUsage>,
+    pub(crate) updated_at: Option<i64>,
+    pub(crate) home: String,
+}
+impl std::fmt::Debug for Document {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("Document")
+            .field("id", &self.id)
+            .field("name", &self.name)
+            .field("kind", &self.kind)
+            .finish_non_exhaustive()
+    }
 }
 impl Document {
-    pub(super) fn new(id: u64, kind: DocumentKind) -> Self {
+    pub(crate) fn new(id: u64, kind: DocumentKind) -> Self {
         Self {
             id,
             name: if kind == DocumentKind::Profile {
@@ -85,16 +96,17 @@ impl Document {
             enabled: true,
             scope_profile: None,
             scope_name: String::new(),
-            auto_update: false,
             interval: "1440".into(),
             timeout: "30".into(),
             user_agent: String::new(),
             token: String::new(),
             age_key: String::new(),
             usage: None,
+            updated_at: None,
+            home: String::new(),
         }
     }
-    pub(super) fn stage(&self) -> &'static str {
+    pub(crate) fn stage(&self) -> &'static str {
         match (self.scope_profile.is_some(), self.kind) {
             (false, DocumentKind::JavaScript) => "全局脚本",
             (false, _) => "全局合并",
@@ -102,19 +114,28 @@ impl Document {
             (true, _) => "订阅合并",
         }
     }
-    pub(super) fn is_remote(&self) -> bool {
+    pub(crate) fn automatic_updates(&self) -> bool {
+        self.is_remote()
+            && self
+                .interval
+                .parse::<u32>()
+                .is_ok_and(|minutes| minutes > 0)
+    }
+    pub(crate) fn is_remote(&self) -> bool {
         !self.url.is_empty()
     }
 }
-pub(super) fn valid_remote_url(value: &str) -> bool {
-    ["https://", "http://"]
-        .iter()
-        .find_map(|prefix| value.strip_prefix(prefix))
-        .is_some_and(|rest| {
-            let host = rest.split('/').next().unwrap_or_default();
-            !host.is_empty() && !rest.chars().any(char::is_whitespace)
+pub(crate) fn valid_remote_url(value: &str) -> bool {
+    value.len() <= 8192
+        && url::Url::parse(value).ok().is_some_and(|url| {
+            matches!(url.scheme(), "http" | "https")
+                && url.host_str().is_some()
+                && url.username().is_empty()
+                && url.password().is_none()
+                && !value.chars().any(char::is_whitespace)
         })
 }
+
 #[cfg(test)]
 mod tests {
     use super::*;

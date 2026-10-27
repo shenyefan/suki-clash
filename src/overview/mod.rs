@@ -1,3 +1,4 @@
+pub(crate) mod statistics;
 mod view;
 
 use crate::session::Session;
@@ -9,6 +10,7 @@ pub(crate) struct Overview {
     period: usize,
     breakdown: usize,
     proxy_only: bool,
+    ranking_scroll: gpui_kit::component::VirtualListScrollHandle,
     _subscription: Subscription,
 }
 impl Overview {
@@ -19,6 +21,7 @@ impl Overview {
             period: 0,
             breakdown: 0,
             proxy_only: false,
+            ranking_scroll: gpui_kit::component::VirtualListScrollHandle::new(),
             _subscription: subscription,
         }
     }

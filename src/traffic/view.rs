@@ -10,7 +10,7 @@ use gpui_kit::{
         button::{Button, ButtonVariants, DropdownButton},
         h_flex,
         input::Input,
-        menu::PopupMenuItem,
+        menu::DropdownMenu,
         scroll::{Scrollbar, ScrollbarMode},
         select::Select,
         tab::{Tab, TabBar},
@@ -22,6 +22,47 @@ use gpui_kit::{
 };
 
 impl TrafficPage {
+    fn search_options(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let search = &self.table.read(cx).delegate().search;
+        let options = [
+            ("case", "区分大小写", search.case_sensitive),
+            ("word", "全词匹配", search.whole_word),
+            ("regex", "正则表达式", search.regular_expression),
+        ];
+        let table = self.table.clone();
+        Button::new("records-search-options")
+            .ghost()
+            .small()
+            .icon(IconName::SlidersHorizontal)
+            .accessibility_label("搜索选项")
+            .dropdown_menu(move |mut menu, _, _| {
+                for (key, label, checked) in options {
+                    let table = table.clone();
+                    menu = menu.item(crate::ui::actions::menu(label).checked(checked).on_click(
+                        move |_, window, cx| {
+                            let error = table.update(cx, |table, cx| {
+                                let search = &mut table.delegate_mut().search;
+                                let value = match key {
+                                    "case" => &mut search.case_sensitive,
+                                    "word" => &mut search.whole_word,
+                                    _ => &mut search.regular_expression,
+                                };
+                                *value = !*value;
+                                table.delegate_mut().rebuild();
+                                let error = table.delegate().search.error.clone();
+                                table.clear_selection(cx);
+                                cx.notify();
+                                error
+                            });
+                            if let Some(error) = error {
+                                ui::show_error(error, window, cx);
+                            }
+                        },
+                    ));
+                }
+                menu
+            })
+    }
     fn sort_button(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let rules = self.kind == TrafficKind::Rules;
         let (sort, reverse) = if rules {
@@ -91,14 +132,16 @@ impl TrafficPage {
             .dropdown_menu(move |mut menu, _, _| {
                 for (index, label) in labels.iter().copied().enumerate() {
                     let owner = owner.clone();
-                    menu = menu.item(PopupMenuItem::new(label).checked(index == sort).on_click(
-                        move |_, _, cx| {
-                            owner.update(cx, |this, cx| {
-                                this.reverse = reverse;
-                                this.apply_sort(index, cx)
-                            })
-                        },
-                    ));
+                    menu = menu.item(
+                        crate::ui::actions::menu(label)
+                            .checked(index == sort)
+                            .on_click(move |_, _, cx| {
+                                owner.update(cx, |this, cx| {
+                                    this.reverse = reverse;
+                                    this.apply_sort(index, cx)
+                                })
+                            }),
+                    );
                 }
                 menu
             })
@@ -139,8 +182,23 @@ impl Render for TrafficPage {
             TrafficKind::Logs => vec!["程序".into(), "内核".into()],
             TrafficKind::Rules => vec![],
         };
-        let speed = if kind == TrafficKind::Connections {
+        let speed = if kind == TrafficKind::Connections
+            && !self.session.read(cx).runtime().connections_live
+        {
+            "实时数据待确认".into()
+        } else if kind == TrafficKind::Connections {
             format!("↑ {up:.0} KB/s    ↓ {:.2} MB/s", down / 1024.)
+        } else if kind == TrafficKind::Rules {
+            let core = self.session.read(cx).core();
+            if !self.session.read(cx).is_running() {
+                "内核未运行".into()
+            } else if (core.rules().generation, core.rules().epoch)
+                != (core.generation(), core.config_epoch())
+            {
+                "规则待刷新".into()
+            } else {
+                String::new()
+            }
         } else {
             String::new()
         };
@@ -165,7 +223,13 @@ impl Render for TrafficPage {
                         .with_size(control::STANDARD)
                         .icon(IconName::RefreshCw)
                         .label("刷新规则")
-                        .on_click(|_, w, cx| ui::request_command("刷新规则", w, cx)),
+                        .disabled(
+                            self.session.read(cx).core_busy()
+                                || !self.session.read(cx).is_running(),
+                        )
+                        .on_click(|_, w, cx| {
+                            crate::core::request(crate::core::Command::Rules, w, cx)
+                        }),
                 )
             })
             .when(kind == TrafficKind::Logs, |row| {
@@ -199,6 +263,9 @@ impl Render for TrafficPage {
                     )
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.paused = !this.paused;
+                        if !this.paused && this.kind == TrafficKind::Connections {
+                            this.sync_connection_rows(cx);
+                        }
                         cx.notify();
                     })),
                 )
@@ -255,6 +322,7 @@ impl Render for TrafficPage {
                                 .with_size(control::STANDARD)
                                 .w_full()
                                 .prefix(Icon::new(IconName::Search).size(layout::ICON))
+                                .suffix(self.search_options(cx))
                                 .cleanable(true)
                                 .aria_label(if kind == TrafficKind::Rules {
                                     "搜索规则、类型或策略"
@@ -289,6 +357,7 @@ impl Render for TrafficPage {
                                         .label("清空已关闭")
                                         .disabled(count1 == 0)
                                         .on_click(cx.listener(|this, _, _, cx| {
+                                            this.connection_records.clear_closed();
                                             this.table.update(cx, |table, cx| {
                                                 table
                                                     .delegate_mut()
@@ -309,7 +378,11 @@ impl Render for TrafficPage {
                                     .with_size(control::STANDARD)
                                     .icon(IconName::Unplug)
                                     .label("关闭全部")
-                                    .disabled(count0 == 0 || tab == 1)
+                                    .disabled(
+                                        count0 == 0
+                                            || tab == 1
+                                            || !self.session.read(cx).runtime().connections_live,
+                                    )
                                     .on_click(
                                         cx.listener(|this, _, w, cx| this.clear_or_close(w, cx)),
                                     ),

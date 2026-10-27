@@ -1,7 +1,7 @@
 use super::*;
 
 fn repository(root: &Path) -> Repository {
-    Repository::open(AppPaths::isolated(root), None).unwrap()
+    Repository::open(AppPaths::isolated(root)).unwrap()
 }
 fn namespace() -> Namespace {
     Namespace::parse("settings").unwrap()
@@ -21,43 +21,25 @@ fn replace_existing_settings_and_roundtrip_unicode_and_escapes() {
 }
 
 #[test]
-fn migration_preserves_sources_and_never_replaces_newer_settings() {
+fn bounded_reads_reject_oversized_storage_without_changing_it() {
     let root = tempfile::tempdir().unwrap();
-    let preview = root.path().join("preview");
-    fs::create_dir_all(preview.join("profiles")).unwrap();
-    fs::write(
-        preview.join("settings.settings"),
-        "ThemeIndex\t浅色\ntext\t%250A%0A中文\n",
-    )
-    .unwrap();
-    fs::write(preview.join("logs.settings"), "source\t1\n").unwrap();
-    fs::write(preview.join("profiles/7.yaml"), "proxies: []\n").unwrap();
-    let paths = AppPaths::isolated(&root.path().join("official"));
-    let store = Repository::open(paths.clone(), None).unwrap();
-    let newer = Values::from([("ThemeIndex".into(), "深色".into())]);
-    store.save(&namespace(), &newer).unwrap();
-    let migrated = Repository::open(paths.clone(), Some(&preview)).unwrap();
-    assert_eq!(migrated.read(&namespace()).unwrap(), newer);
-    assert_eq!(
-        migrated.read(&Namespace::parse("logs").unwrap()).unwrap()["source"],
-        "1"
+    let store = repository(root.path());
+    assert!(store.read_limited(&namespace(), 0).unwrap().is_empty());
+    let values = Values::from([("content".into(), "原始配置".into())]);
+    store.save(&namespace(), &values).unwrap();
+    let before = fs::read(store.path(&namespace())).unwrap();
+    assert!(
+        store
+            .read_limited(&namespace(), before.len() as u64 - 1)
+            .is_err()
     );
     assert_eq!(
-        fs::read_to_string(paths.data().join("profiles/7.yaml")).unwrap(),
-        "proxies: []\n"
+        store
+            .read_limited(&namespace(), before.len() as u64)
+            .unwrap(),
+        values
     );
-    assert!(preview.join("settings.settings").is_file());
-    // A later boot must not resurrect an old file that was intentionally removed.
-    fs::remove_file(paths.settings().join("logs.json")).unwrap();
-    Repository::open(paths.clone(), Some(&preview)).unwrap();
-    assert!(!paths.settings().join("logs.json").exists());
-}
-
-#[test]
-fn legacy_escape_decoding_does_not_decode_literal_percent_sequences_twice() {
-    let values = parse_legacy("text\t%250A%0A中文%09%0D%2525\n").unwrap();
-    assert_eq!(values["text"], "%0A\n中文\t\r%25");
-    assert!(parse_legacy("missing separator").is_err());
+    assert_eq!(fs::read(store.path(&namespace())).unwrap(), before);
 }
 
 #[test]
@@ -80,15 +62,15 @@ fn unsupported_or_corrupt_storage_is_not_silently_replaced() {
     let root = tempfile::tempdir().unwrap();
     let store = repository(root.path());
     let path = store.path(&namespace());
-    fs::write(&path, r#"{"version":99,"values":{}}"#).unwrap();
+    fs::write(&path, r#"{"schema_version":99}"#).unwrap();
     assert!(matches!(
         store.snapshot(),
-        Err(StorageError::UnsupportedVersion(99))
+        Err(StorageError::Document { .. } | StorageError::Settings(_))
     ));
     fs::write(&path, b"broken").unwrap();
     assert!(matches!(
         store.snapshot(),
-        Err(StorageError::InvalidDocument(_))
+        Err(StorageError::Document { .. } | StorageError::Settings(_))
     ));
     assert_eq!(fs::read(&path).unwrap(), b"broken");
 }
@@ -107,23 +89,6 @@ fn restoring_backup_returns_a_draft_without_overwriting_committed_settings() {
     fs::write(backup, b"broken backup").unwrap();
     assert!(store.restore(&namespace()).is_err());
     assert_eq!(store.read(&namespace()).unwrap(), after);
-}
-
-#[cfg(unix)]
-#[test]
-fn migration_rejects_symlinks_and_does_not_mark_an_incomplete_migration_complete() {
-    let root = tempfile::tempdir().unwrap();
-    let preview = root.path().join("preview");
-    fs::create_dir(&preview).unwrap();
-    let outside = root.path().join("outside");
-    fs::write(&outside, "theme\tsecret\n").unwrap();
-    std::os::unix::fs::symlink(&outside, preview.join("settings.settings")).unwrap();
-    let paths = AppPaths::isolated(&root.path().join("official"));
-    assert!(matches!(
-        Repository::open(paths.clone(), Some(&preview)),
-        Err(StorageError::UnsafeMigration(_))
-    ));
-    assert!(!paths.settings().join(".preview-migrated-v1").exists());
 }
 
 #[test]
@@ -149,4 +114,39 @@ fn credential_fields_are_not_written_into_settings_or_backups() {
         store.read(&namespace()).unwrap(),
         Values::from([("ThemeIndex".into(), "深色".into())])
     );
+}
+
+#[test]
+fn snapshot_reads_only_registered_documents_and_preserves_other_files() {
+    let root = tempfile::tempdir().unwrap();
+    let store = repository(root.path());
+    let unrelated = store.paths().settings().join("logs.json");
+    fs::write(&unrelated, b"unowned document").unwrap();
+    let values = Values::from([("ThemeIndex".into(), "dark".into())]);
+    store.save(&namespace(), &values).unwrap();
+    assert_eq!(store.snapshot().unwrap()[&namespace()], values);
+    assert_eq!(fs::read(unrelated).unwrap(), b"unowned document");
+}
+
+#[test]
+fn native_backup_keeps_application_switch_separate_and_restore_does_not_write_settings() {
+    let root = tempfile::tempdir().unwrap();
+    let store = repository(root.path());
+    let dns = Namespace::parse("dns").unwrap();
+    let mut values = crate::preferences::defaults(crate::preferences::SettingsKind::Dns);
+    values.insert("DnsOverrideEnabled".into(), "true".into());
+    store.save(&dns, &values).unwrap();
+    let backup = store.backup(&dns).unwrap();
+    let document: serde_json::Value = serde_json::from_slice(&fs::read(backup).unwrap()).unwrap();
+    assert_eq!(document["enabled"], true);
+    assert!(document["configuration"].get("override-enabled").is_none());
+    values.insert("DnsOverrideEnabled".into(), "false".into());
+    store.save(&dns, &values).unwrap();
+    let before = fs::read(crate::preferences::app::path(store.paths())).unwrap();
+    assert_eq!(store.restore(&dns).unwrap()["DnsOverrideEnabled"], "true");
+    assert_eq!(
+        fs::read(crate::preferences::app::path(store.paths())).unwrap(),
+        before
+    );
+    assert_eq!(store.read(&dns).unwrap()["DnsOverrideEnabled"], "false");
 }

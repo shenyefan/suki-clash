@@ -1,12 +1,14 @@
 use crate::ui::theme::{control, space};
 mod actions;
 mod core;
+mod core_apply;
+mod core_tools;
 mod dns;
 mod fields;
 mod preferences;
 mod resources;
 mod runtime;
-mod schema;
+use crate::preferences::schema;
 mod view;
 use crate::integration as store;
 
@@ -16,11 +18,9 @@ use gpui_kit::{
     component::{
         IndexPath, Sizable, Theme, ThemeMode, WindowExt,
         button::{Button, ButtonVariants},
-        dialog::DialogButtonProps,
         h_flex,
         input::{EditorState, Input, InputEvent, InputState},
         select::SelectState,
-        v_flex,
     },
     *,
 };
@@ -40,53 +40,8 @@ struct SettingField {
     control: FieldControl,
 }
 
-/// Settings destinations are owned by the settings feature, independent of
-/// the application's sidebar routes.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum SettingsKind {
-    Sniffer,
-    Dns,
-    Core,
-    Resources,
-    SysProxy,
-    Tun,
-    General,
-}
+pub(crate) use crate::preferences::SettingsKind;
 impl SettingsKind {
-    pub(crate) const ALL: [Self; 7] = [
-        Self::Sniffer,
-        Self::Dns,
-        Self::Core,
-        Self::Resources,
-        Self::SysProxy,
-        Self::Tun,
-        Self::General,
-    ];
-    pub(super) fn uses_grouped_layout(self) -> bool {
-        true
-    }
-    pub(crate) fn id(self) -> &'static str {
-        match self {
-            Self::Sniffer => "sniffer",
-            Self::Dns => "dns",
-            Self::Core => "core",
-            Self::Resources => "resources",
-            Self::SysProxy => "sysproxy",
-            Self::Tun => "tun",
-            Self::General => "settings",
-        }
-    }
-    pub(crate) fn label(self) -> &'static str {
-        match self {
-            Self::Sniffer => "嗅探",
-            Self::Dns => "DNS",
-            Self::Core => "内核",
-            Self::Resources => "外部资源",
-            Self::SysProxy => "系统代理",
-            Self::Tun => "虚拟网卡",
-            Self::General => "设置",
-        }
-    }
     pub(crate) fn icon(self) -> IconName {
         match self {
             Self::Sniffer => IconName::Radar,
@@ -116,15 +71,18 @@ pub(crate) struct SettingsPage {
     sections: Vec<SectionSpec>,
     fields: BTreeMap<&'static str, SettingField>,
     filter: Entity<InputState>,
-    active_section: usize,
     runtime_tab: usize,
     dirty: bool,
     saving: bool,
-    resource_pending: std::collections::BTreeSet<String>,
+    core_syncing: bool,
+    core_pending: Option<(u64, BTreeMap<String, String>, AnyWindowHandle)>,
+    core_versions: Vec<String>,
+    resource_generation: Option<u64>,
     dns_raw: bool,
     dns_source: Entity<EditorState>,
     dns_document: serde_yaml_ng::Value,
     error: Option<String>,
+    lists: BTreeMap<&'static str, gpui_kit::component::VirtualListScrollHandle>,
     panels: Vec<(u64, String, String)>,
     next_panel_id: u64,
     _subscriptions: Vec<Subscription>,
@@ -138,22 +96,96 @@ impl SettingsPage {
     ) -> Self {
         let sections = schema::sections(kind);
         let saved = store::read(kind.id(), cx);
-        let filter = cx.new(|cx| InputState::new(window, cx).placeholder("搜索设置项…"));
+        let filter = cx.new(|cx| InputState::new(window, cx).placeholder("搜索设置项"));
+        let settings_window = window.window_handle();
         let mut subscriptions = vec![
-            cx.observe(&session, |_, _, cx| cx.notify()),
-            cx.subscribe(&filter, |_, _, _: &InputEvent, cx| cx.notify()),
+            cx.observe(&session, move |this, session, cx| {
+                let observed_core = session.read(cx).core().clone();
+                let observed_busy = session.read(cx).core_busy();
+                let refresh_resources = this.kind == SettingsKind::Resources
+                    && !observed_busy
+                    && this.resource_generation != Some(observed_core.generation());
+                if let Some((id, _, _)) = &this.core_pending
+                    && observed_core.request_id() == Some(*id)
+                    && !observed_busy
+                {
+                    let Some((_, submitted, window)) = this.core_pending.take() else {
+                        return;
+                    };
+                    this.saving = false;
+                    this.error = observed_core.error().map(str::to_owned);
+                    let owner = cx.weak_entity();
+                    cx.defer(move |cx| {
+                        let _ = window.update(cx, |_, window, cx| {
+                            let _ = owner.update(cx, |this, cx| {
+                                if this.error.is_none() {
+                                    this.restore_core_fields(&submitted, window, cx);
+                                }
+                                if this.error.is_none()
+                                    && submitted
+                                        .get("CoreReleaseIndex")
+                                        .is_some_and(|v| v == "指定版本")
+                                {
+                                    this.runtime_command("加载版本列表", window, cx);
+                                }
+                            });
+                        });
+                    });
+                }
+                if refresh_resources {
+                    let owner = cx.weak_entity();
+                    cx.defer(move |cx| {
+                        let _ = settings_window.update(cx, |_, window, cx| {
+                            let _ = owner.update(cx, |this, cx| this.refresh_resources(window, cx));
+                        });
+                    });
+                }
+                cx.notify();
+            }),
+            cx.subscribe(&filter, |this, _, event: &InputEvent, cx| {
+                if matches!(event, InputEvent::Change) {
+                    for handle in this.lists.values() {
+                        handle.set_offset(Point::default());
+                    }
+                }
+                cx.notify()
+            }),
         ];
+        subscriptions.push(cx.observe(&session, move |this, session, cx| {
+            let versions = session.read(cx).core().versions();
+            if this.kind == SettingsKind::Core && this.core_versions != versions {
+                this.core_versions = versions.to_vec();
+                let owner = cx.weak_entity();
+                cx.defer(move |cx| {
+                    let _ = settings_window.update(cx, |_, window, cx| {
+                        let _ = owner.update(cx, |this, cx| this.sync_core_versions(window, cx));
+                    });
+                });
+            }
+        }));
         let dns_source = cx.new(|cx| ui::editor::state("yaml", "", true, window, cx));
-        subscriptions.push(
-            cx.subscribe(&dns_source, |this, _, event: &InputEvent, cx| {
-                if matches!(event, InputEvent::Change) && this.dns_raw {
+        subscriptions.push(cx.subscribe_in(
+            &dns_source,
+            window,
+            |this, _, event: &InputEvent, window, cx| {
+                if this.core_syncing || !this.dns_raw {
+                    return;
+                }
+                if matches!(event, InputEvent::Change) {
                     this.dirty = true;
                     cx.notify();
                 }
-            }),
-        );
+                if matches!(event, InputEvent::Blur) {
+                    this.commit_core(this.values(cx), window, cx);
+                }
+            },
+        ));
         let dns_document = saved
-            .get("DnsYaml")
+            .get(if kind == SettingsKind::Sniffer {
+                "SnifferYaml"
+            } else {
+                "DnsYaml"
+            })
             .and_then(|source| serde_yaml_ng::from_str(source).ok())
             .unwrap_or_default();
         let mut fields = BTreeMap::new();
@@ -168,15 +200,33 @@ impl SettingsPage {
                     let state = cx.new(|cx| {
                         InputState::new(window, cx)
                             .default_value(value.to_owned())
+                            .placeholder(
+                                if kind == SettingsKind::Resources && spec.kind == FieldKind::Text {
+                                    "默认地址"
+                                } else {
+                                    ""
+                                },
+                            )
                             .masked(spec.kind == FieldKind::Secret)
                     });
-                    subscriptions.push(cx.subscribe(&state, |this, _, event: &InputEvent, cx| {
-                        if matches!(event, InputEvent::Change) {
-                            this.dirty = true;
-                            this.error = None;
-                            cx.notify();
-                        }
-                    }));
+                    let key = spec.key;
+                    subscriptions.push(cx.subscribe_in(
+                        &state,
+                        window,
+                        move |this, _, event: &InputEvent, window, cx| {
+                            if this.core_syncing {
+                                return;
+                            }
+                            if matches!(event, InputEvent::Blur) {
+                                this.commit_core_field(key, window, cx);
+                            }
+                            if matches!(event, InputEvent::Change) {
+                                this.dirty = true;
+                                this.error = None;
+                                cx.notify();
+                            }
+                        },
+                    ));
                     FieldControl::Text(state)
                 }
                 FieldKind::Multiline => {
@@ -193,28 +243,38 @@ impl SettingsPage {
                             cx,
                         )
                     });
-                    subscriptions.push(cx.subscribe(&state, |this, _, event: &InputEvent, cx| {
-                        if matches!(event, InputEvent::Change) {
-                            this.dirty = true;
-                            this.error = None;
-                            cx.notify();
-                        }
-                    }));
+                    let key = spec.key;
+                    subscriptions.push(cx.subscribe_in(
+                        &state,
+                        window,
+                        move |this, _, event: &InputEvent, window, cx| {
+                            if this.core_syncing {
+                                return;
+                            }
+                            if matches!(event, InputEvent::Blur) {
+                                this.commit_core_field(key, window, cx);
+                            }
+                            if matches!(event, InputEvent::Change) {
+                                this.dirty = true;
+                                this.error = None;
+                                cx.notify();
+                            }
+                        },
+                    ));
                     FieldControl::Multiline(state)
                 }
                 FieldKind::Select => {
-                    let index = spec.options.iter().position(|v| *v == value).unwrap_or(0);
-                    let state = cx.new(|cx| {
-                        SelectState::new(
-                            spec.options
-                                .iter()
-                                .map(|v| SharedString::from(*v))
-                                .collect::<Vec<_>>(),
-                            Some(IndexPath::new(index)),
-                            window,
-                            cx,
-                        )
-                    });
+                    let items = if spec.key == "CoreSpecificVersion" && !value.is_empty() {
+                        vec![SharedString::from(value.to_owned())]
+                    } else {
+                        spec.options
+                            .iter()
+                            .map(|v| SharedString::from(*v))
+                            .collect::<Vec<_>>()
+                    };
+                    let index = items.iter().position(|v| v.as_ref() == value).unwrap_or(0);
+                    let state = cx
+                        .new(|cx| SelectState::new(items, Some(IndexPath::new(index)), window, cx));
                     let key = spec.key;
                     subscriptions.push(cx.subscribe_in(
                         &state,
@@ -228,7 +288,13 @@ impl SettingsPage {
                               cx| {
                             if matches!(event, gpui_kit::component::select::SelectEvent::Confirm(_))
                             {
+                                if this.core_syncing {
+                                    return;
+                                }
                                 this.dirty = true;
+                                {
+                                    this.commit_core_field(key, window, cx);
+                                }
                                 if key == "ThemeIndex" {
                                     let value = state.read(cx).selected_value().cloned();
                                     match value.as_deref() {
@@ -240,6 +306,9 @@ impl SettingsPage {
                                         }
                                         _ => Theme::sync_system_appearance(Some(window), cx),
                                     }
+                                    ui::configure_theme(cx);
+                                }
+                                if key == "NoticePosition" {
                                     ui::configure_theme(cx);
                                 }
                                 cx.notify();
@@ -260,17 +329,31 @@ impl SettingsPage {
         }
         let panels = schema::panels_from_values(&saved);
         let next_panel_id = panels.iter().map(|panel| panel.0).max().unwrap_or(0) + 1;
+        if kind == SettingsKind::Resources {
+            let owner = cx.weak_entity();
+            cx.defer(move |cx| {
+                let _ = settings_window.update(cx, |_, window, cx| {
+                    let _ = owner.update(cx, |this, cx| this.refresh_resources(window, cx));
+                });
+            });
+        }
         Self {
+            lists: ["panels", "tunnels", "providers"]
+                .into_iter()
+                .map(|name| (name, gpui_kit::component::VirtualListScrollHandle::new()))
+                .collect(),
             kind,
             session,
             sections,
             fields,
             filter,
-            active_section: usize::MAX,
             runtime_tab: 0,
             dirty: false,
             saving: false,
-            resource_pending: Default::default(),
+            core_syncing: false,
+            core_pending: None,
+            core_versions: Vec::new(),
+            resource_generation: None,
             dns_raw: false,
             dns_source,
             dns_document,
@@ -285,7 +368,7 @@ impl SettingsPage {
         self.fields
             .iter()
             .filter_map(|(key, field)| {
-                if field.spec.kind == FieldKind::Secret {
+                if field.spec.kind == FieldKind::Secret && self.kind != SettingsKind::Core {
                     return None;
                 }
                 let value = match &field.control {
@@ -323,7 +406,7 @@ impl SettingsPage {
             let mixed = store::read("core", cx)
                 .get("MixedPort")
                 .cloned()
-                .unwrap_or_else(|| "7890".into());
+                .unwrap_or_else(|| "7897".into());
             if let Some(script) = values.get_mut("PacScript") {
                 *script = script
                     .replace("%proxy_host%", &host)
@@ -345,7 +428,11 @@ impl SettingsPage {
             );
             return;
         }
-        let values = self.command_values(cx);
+        let values = store::read("core", cx);
+        if values.get("EnableExternalController").map(String::as_str) != Some("true") {
+            ui::show_error("请先启用外部控制，再打开 WebUI".into(), window, cx);
+            return;
+        }
         match schema::expand_panel_url(
             url,
             values
@@ -358,120 +445,32 @@ impl SettingsPage {
             Err(error) => ui::show_error(error.to_string(), window, cx),
         }
     }
-    fn save(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.save_inner(false, window, cx);
-    }
     fn save_inner(&mut self, backup: bool, window: &mut Window, cx: &mut Context<Self>) {
-        if self.saving {
-            return;
-        }
-        if self.kind == SettingsKind::Dns
-            && self.dns_raw
-            && let Err(error) = self.read_dns_yaml(window, cx)
-        {
-            ui::show_error(error, window, cx);
-            return;
-        }
-        let mut values = self.values(cx);
-        if self.kind == SettingsKind::Dns {
-            match self.dns_to_yaml(cx) {
-                Ok(source) => {
-                    values.insert("DnsYaml".into(), source);
-                }
-                Err(error) => {
-                    ui::show_error(error, window, cx);
-                    return;
-                }
-            }
-        }
-        if self.kind == SettingsKind::Core {
-            schema::store_panels(&self.panels, &mut values);
-        }
-        if let Some(error) = validate(&self.sections, &values) {
-            ui::show_error(error.clone(), window, cx);
-            self.error = Some(error);
-            cx.notify();
-            return;
-        }
-        let owner = cx.weak_entity();
-        let submitted = values.clone();
-        let submitted_dns_source = self.dns_source.read(cx).value().to_string();
-        self.saving = true;
-        cx.notify();
-        store::save(
-            self.kind.id(),
-            values,
-            Vec::new(),
-            window,
-            cx,
-            move |result, window, cx| {
-                let _ = owner.update(cx, |this, cx| {
-                    this.saving = false;
-                    match result {
-                        Ok(()) => {
-                            let mut current = this.values(cx);
-                            if this.kind == SettingsKind::Dns {
-                                current.insert(
-                                    "DnsYaml".into(),
-                                    this.dns_to_yaml(cx).unwrap_or_default(),
-                                );
-                            }
-                            if this.kind == SettingsKind::Core {
-                                schema::store_panels(&this.panels, &mut current);
-                            }
-                            this.dirty = current != submitted
-                                || (this.kind == SettingsKind::Dns
-                                    && this.dns_raw
-                                    && this.dns_source.read(cx).value().as_ref()
-                                        != submitted_dns_source);
-                            this.error = None;
-                            if this.kind == SettingsKind::General {
-                                ui::configure_theme(cx);
-                                cx.emit(SettingsSaved {
-                                    backdrop: submitted
-                                        .get("BackdropIndex")
-                                        .cloned()
-                                        .unwrap_or_default(),
-                                });
-                            }
-                            window.push_notification(
-                                if crate::storage::contains_session_credentials(&submitted) {
-                                    "已保存设置；密钥和密码仅在本次运行保留"
-                                } else {
-                                    "已保存设置"
-                                },
-                                cx,
-                            );
-                            if backup
-                                && let Ok(namespace) =
-                                    crate::storage::Namespace::parse(this.kind.id())
-                            {
-                                store::execute(
-                                    store::Command::Backup(namespace),
-                                    window,
-                                    cx,
-                                    |result, window, cx| match result {
-                                        Ok(store::Outcome::Backup(path)) => window
-                                            .push_notification(
-                                                format!("本页设置已备份：{}", path.display()),
-                                                cx,
-                                            ),
-                                        Err(error) => ui::show_error(error.to_string(), window, cx),
-                                        _ => {}
-                                    },
-                                );
-                            }
-                        }
-                        Err(error) => {
-                            let message = format!("无法保存设置：{error}");
-                            ui::show_error(message.clone(), window, cx);
-                            this.error = Some(message);
-                        }
+        let values = self.values(cx);
+        self.commit_core(values, window, cx);
+        if backup && let Ok(namespace) = crate::storage::Namespace::parse(self.kind.id()) {
+            store::execute(
+                store::Command::Backup(namespace),
+                window,
+                cx,
+                |result, window, cx| match result {
+                    Ok(store::Outcome::Backup(path)) => {
+                        crate::ui::notifications::push(
+                            window,
+                            format!(
+                                "备份已创建：{}",
+                                path.file_name()
+                                    .and_then(|name| name.to_str())
+                                    .unwrap_or("设置备份")
+                            ),
+                            cx,
+                        );
                     }
-                    cx.notify();
-                });
-            },
-        );
+                    Err(error) => ui::show_error(error.to_string(), window, cx),
+                    _ => {}
+                },
+            );
+        }
     }
     fn assign_values(
         &mut self,
@@ -514,32 +513,71 @@ impl SettingsPage {
         self.error = None;
         cx.notify();
     }
+    pub(crate) fn reopen(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.error.is_none() || self.saving {
+            return;
+        }
+        self.error = None;
+        self.dns_raw = false;
+        let touched = self
+            .fields
+            .keys()
+            .map(|key| ((*key).to_owned(), String::new()))
+            .collect();
+        self.restore_core_fields(&touched, window, cx);
+    }
     fn reset(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let entity = cx.entity();
         window.open_alert_dialog(cx, move |dialog, window, cx| {
             ui::modal_alert(dialog, window, cx)
                 .title("恢复本页默认设置？")
-                .description("恢复当前页面的默认设置，保存后生效。")
-                .button_props(
-                    DialogButtonProps::default()
-                        .ok_text("恢复默认")
-                        .cancel_text("取消")
-                        .show_cancel(true),
-                )
+                .description("恢复当前页面的默认设置。")
+                .footer(ui::dialog_footer("恢复默认"))
                 .on_ok({
                     let entity = entity.clone();
                     move |_, window, cx| {
                         entity.update(cx, |this, cx| {
-                            this.assign_values(&BTreeMap::new(), window, cx)
+                            let defaults = crate::preferences::choices::decode(
+                                crate::preferences::defaults(this.kind),
+                            );
+                            this.core_syncing = true;
+                            this.dns_document = serde_yaml_ng::Value::Null;
+                            this.assign_values(&defaults, window, cx);
+                            if matches!(this.kind, SettingsKind::Dns | SettingsKind::Sniffer)
+                                && let Ok(yaml) = this.dns_to_yaml(cx)
+                            {
+                                this.dns_source
+                                    .update(cx, |state, cx| state.set_value(yaml, window, cx));
+                            }
+                            this.core_syncing = false;
+                            this.commit_core(this.values(cx), window, cx);
                         });
                         true
                     }
                 })
         });
     }
-    fn toggle(&mut self, key: &'static str, value: bool, cx: &mut Context<Self>) {
+    fn toggle(
+        &mut self,
+        key: &'static str,
+        value: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let native_raw =
+            self.dns_raw && matches!(self.kind, SettingsKind::Dns | SettingsKind::Sniffer);
+        if native_raw && let Err(error) = self.read_dns_yaml(window, cx) {
+            ui::show_error(error, window, cx);
+            return;
+        }
         if let Some(field) = self.fields.get_mut(key) {
             field.control = FieldControl::Toggle(value);
+        }
+        if native_raw && let Ok(source) = self.dns_to_yaml(cx) {
+            self.core_syncing = true;
+            self.dns_source
+                .update(cx, |state, cx| state.set_value(source, window, cx));
+            self.core_syncing = false;
         }
         if key == "AutoRoute"
             && !value
@@ -548,6 +586,9 @@ impl SettingsPage {
             field.control = FieldControl::Toggle(false);
         }
         self.dirty = true;
+        {
+            self.commit_core_field(key, window, cx);
+        }
         cx.notify();
     }
     fn field_action(
@@ -557,6 +598,35 @@ impl SettingsPage {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.kind == SettingsKind::Core && matches!(action, "复制地址" | "复制密钥") {
+            let values = crate::integration::read("core", cx);
+            if let Some(value) = values.get(key) {
+                cx.write_to_clipboard(ClipboardItem::new_string(value.clone()));
+                crate::ui::notifications::push(window, "已复制", cx);
+            }
+            return;
+        }
+        if action == "网卡信息" {
+            self.network_dialog(window, cx);
+            return;
+        }
+        if action == "管理隧道" {
+            self.edit_tunnel(None, window, cx);
+            return;
+        }
+        if self.kind == SettingsKind::Core
+            && matches!(
+                action,
+                "校验配置" | "清空 Fake-IP 缓存" | "更新 GeoData" | "刷新版本列表" | "应用所选通道"
+            )
+        {
+            self.runtime_command(action, window, cx);
+            return;
+        }
+        if matches!(action, "打开内核目录" | "打开配置目录" | "打开日志目录") {
+            crate::integration::request(action, window, cx);
+            return;
+        }
         if action == "随机端口" {
             if let Some(SettingField {
                 control: FieldControl::Text(state),
@@ -573,6 +643,7 @@ impl SettingsPage {
                     state.set_value(port.to_string(), window, cx)
                 });
                 self.dirty = true;
+                self.commit_core_field(key, window, cx);
                 cx.notify();
             }
         } else if action == "生成密钥" {
@@ -589,6 +660,7 @@ impl SettingsPage {
             {
                 state.update(cx, |state, cx| state.set_value(value, window, cx));
                 self.dirty = true;
+                self.commit_core_field(key, window, cx);
                 cx.notify();
             }
         } else if matches!(
@@ -603,11 +675,11 @@ impl SettingsPage {
                 | "复制 PAC 地址"
         ) {
             self.action(action, window, cx);
-        } else if self.kind.uses_grouped_layout() {
+        } else {
             let values = self.command_values(cx);
             if matches!(
                 action,
-                "测试 WebDAV 连接" | "上传备份" | "获取远程备份…" | "远程备份历史…"
+                "测试 WebDAV 连接" | "上传备份" | "获取远程备份" | "远程备份历史"
             ) && ["WebDavUrl", "WebDavUsername", "WebDavPassword"]
                 .iter()
                 .any(|key| values.get(*key).is_none_or(|value| value.trim().is_empty()))
@@ -620,8 +692,6 @@ impl SettingsPage {
                 return;
             }
             crate::integration::request_with(action, values, window, cx);
-        } else {
-            self.action(action, window, cx);
         }
     }
     fn action(&mut self, action: &str, window: &mut Window, cx: &mut Context<Self>) {
@@ -629,7 +699,7 @@ impl SettingsPage {
             return;
         }
         match action {
-            "退出应用" => cx.quit(),
+            "退出应用" => crate::core::quit(cx),
             "创建备份" => self.save_inner(true, window, cx),
             "恢复最新备份" => {
                 let owner = cx.weak_entity();
@@ -641,7 +711,10 @@ impl SettingsPage {
                         move |result, window, cx| {
                             let _ = owner.update(cx, |this, cx| match result {
                                 Ok(store::Outcome::Restored(values)) => {
-                                    this.assign_values(&values, window, cx)
+                                    this.core_syncing = true;
+                                    this.assign_values(&values, window, cx);
+                                    this.core_syncing = false;
+                                    this.commit_core(this.values(cx), window, cx);
                                 }
                                 Err(error) => ui::show_error(error.to_string(), window, cx),
                                 _ => {}
@@ -657,12 +730,7 @@ impl SettingsPage {
                     ui::modal_alert(dialog, window, cx)
                         .title("重置应用？")
                         .description("应用设置与配置将由重置服务处理，请先创建备份。")
-                        .button_props(
-                            DialogButtonProps::default()
-                                .ok_text("重置")
-                                .cancel_text("取消")
-                                .show_cancel(true),
-                        )
+                        .footer(ui::dialog_footer("重置"))
                         .on_ok(move |_, window, cx| {
                             crate::integration::request_with(
                                 "重置应用",
@@ -674,12 +742,12 @@ impl SettingsPage {
                         })
                 });
             }
-            "UWP 应用代理" | "选择应用…" => Self::uwp_dialog(window, cx),
+            "UWP 应用代理" | "选择应用" => Self::uwp_dialog(window, cx),
             "添加 WebUI" => self.add_panel(window, cx),
             "恢复默认 WebUI" => {
                 self.panels = schema::default_panels();
                 self.next_panel_id = 4;
-                self.dirty = true;
+                self.commit_panels(window, cx);
                 cx.notify();
             }
             _ => ui::request_command(action, window, cx),
@@ -709,7 +777,7 @@ impl SettingsPage {
         });
         let url = cx.new(|cx| {
             InputState::new(window, cx)
-                .placeholder("https://…")
+                .placeholder("https://")
                 .default_value(
                     existing
                         .as_ref()
@@ -739,15 +807,20 @@ impl SettingsPage {
                 "webui-editor-body",
                 crate::ui::theme::layout::DIALOG_COMPACT_HEIGHT,
                 move |_, _| {
-                    v_flex()
-                        .gap(space::LG)
+                    ui::form()
                         .child(ui::field_label(
                             "名称",
-                            Input::new(&name).with_size(control::STANDARD).w_full(),
+                            Input::new(&name)
+                                .aria_label("面板名称")
+                                .with_size(control::STANDARD)
+                                .w_full(),
                         ))
                         .child(ui::field_label(
                             "地址",
-                            Input::new(&url).with_size(control::STANDARD).w_full(),
+                            Input::new(&url)
+                                .aria_label("面板地址")
+                                .with_size(control::STANDARD)
+                                .w_full(),
                         ))
                         .into_any_element()
                 },
@@ -758,12 +831,14 @@ impl SettingsPage {
                     .gap(space::SM)
                     .child(
                         Button::new("cancel-panel")
+                            .icon(gpui_kit::assets::IconName::X)
                             .with_size(control::STANDARD)
                             .label("取消")
                             .on_click(|_, w, cx| w.close_dialog(cx)),
                     )
                     .child(
                         Button::new("save-panel")
+                            .icon(gpui_kit::assets::IconName::Save)
                             .with_size(control::STANDARD)
                             .primary()
                             .label(if id.is_some() { "保存" } else { "添加" })
@@ -794,6 +869,7 @@ impl SettingsPage {
                                         ));
                                     }
                                     this.dirty = true;
+                                    this.commit_panels(window, cx);
                                     cx.notify();
                                 });
                                 window.close_dialog(cx);
@@ -801,5 +877,242 @@ impl SettingsPage {
                     ),
             )
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Session, SettingsKind, SettingsPage};
+    use gpui_kit::test::TestWindowExt;
+    use gpui_kit::{AppContext, Role, TestAppContext, WindowOptions};
+    #[gpui_kit::test]
+    fn resources_preserve_database_groups_switch_order_and_have_no_save_or_refresh(
+        cx: &mut TestAppContext,
+    ) {
+        let root = tempfile::tempdir().unwrap();
+        let service = crate::integration::Service::start(
+            crate::storage::Repository::open(crate::storage::AppPaths::isolated(root.path()))
+                .unwrap(),
+        )
+        .unwrap();
+        cx.update(|cx| {
+            crate::integration::init(service, cx);
+            gpui_kit::init(cx);
+            cx.set_reduce_motion(true);
+        });
+        let (handle, page) = cx.update(|cx| {
+            gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
+                let session = cx.new(Session::new);
+                cx.new(|cx| SettingsPage::new(SettingsKind::Resources, session, window, cx))
+            })
+            .unwrap()
+        });
+        cx.run_until_parked();
+        handle
+            .update(cx, |_, window, cx| {
+                window.render_frame(cx);
+                assert!(window.try_find("runtime-save").is_none());
+                assert!(window.try_find("refresh-resources").is_none());
+                assert_eq!(
+                    window.find("setting-GeoAutoUpdate").role(),
+                    Some(Role::Switch)
+                );
+                assert!(window.find("resource-update-GeoIpUrl").visible());
+                assert!(!page.read(cx).values(cx)["GeoIpUrl"].is_empty());
+            })
+            .unwrap();
+        crate::integration::finish_test_services(cx);
+    }
+}
+
+#[cfg(test)]
+mod provider_layout_tests {
+    use super::{SettingsKind, SettingsPage};
+    use gpui_kit::{
+        AppContext, Bounds, ScrollStrategy, TestAppContext, WindowBounds, WindowOptions, px, size,
+        test::TestWindowExt,
+    };
+    #[gpui_kit::test]
+    fn provider_pages_fill_available_height_and_keep_one_virtual_scroll_owner(
+        cx: &mut TestAppContext,
+    ) {
+        let root = tempfile::tempdir().unwrap();
+        let paths = crate::storage::AppPaths::isolated(root.path());
+        let service =
+            crate::integration::Service::start(crate::storage::Repository::open(paths).unwrap())
+                .unwrap();
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            crate::integration::init(service, cx);
+            cx.set_reduce_motion(true);
+        });
+        for (tab, kind) in [
+            (1, crate::core::ProviderKind::Proxies),
+            (2, crate::core::ProviderKind::Rules),
+        ] {
+            for count in [2, 200] {
+                let entries = (0..count)
+                    .map(|index| {
+                        (
+                            format!("item-{index:03}"),
+                            serde_json::json!({"vehicleType":"HTTP","ruleCount":50}),
+                        )
+                    })
+                    .collect::<serde_json::Map<_, _>>();
+                let bytes = serde_json::to_vec(&serde_json::json!({"providers":entries})).unwrap();
+                let core = crate::core::Snapshot::ready_with_providers(kind, &bytes).unwrap();
+                let height = if count == 2 { 600. } else { 1000. };
+                let (handle, page) = cx.update(|cx| {
+                    gpui_kit::open_window(
+                        WindowOptions {
+                            window_bounds: Some(WindowBounds::Windowed(Bounds::new(
+                                Default::default(),
+                                size(px(1100.), px(height)),
+                            ))),
+                            ..Default::default()
+                        },
+                        cx,
+                        |window, cx| {
+                            let session = cx.new(|_| {
+                                crate::session::Session::fixture(core, Default::default())
+                            });
+                            cx.new(|cx| {
+                                let mut page =
+                                    SettingsPage::new(SettingsKind::Resources, session, window, cx);
+                                page.runtime_tab = tab;
+                                page
+                            })
+                        },
+                    )
+                    .unwrap()
+                });
+                cx.run_until_parked();
+                cx.update_window(handle, |_, window, cx| {
+                    window.render_frame(cx);
+                    assert!(window.try_find("resources-runtime-scroll").is_none());
+                    let bounds = page.read(cx).lists["providers"].bounds();
+                    assert!(
+                        bounds.size.height > px(height * 0.6),
+                        "viewport must fill page, including short lists: {bounds:?}"
+                    );
+                    let bottom = window.viewport_size().height - bounds.bottom();
+                    assert!(
+                        bottom < px(40.),
+                        "list must reach workspace bottom: {bottom:?}"
+                    );
+                    if count == 200 {
+                        assert!(
+                            window
+                                .try_find(format!("provider-update-{tab}-item-199"))
+                                .is_none()
+                        );
+                        page.update(cx, |page, cx| {
+                            page.lists["providers"].scroll_to_item(199, ScrollStrategy::Top);
+                            cx.notify();
+                        });
+                        window.render_frame(cx);
+                        window.render_frame(cx);
+                        assert!(
+                            window
+                                .find(format!("provider-update-{tab}-item-199"))
+                                .visible()
+                        );
+                    }
+                })
+                .unwrap();
+            }
+        }
+        crate::integration::finish_test_services(cx);
+    }
+}
+
+#[cfg(test)]
+mod yaml_layout_tests {
+    use super::{Session, SettingsKind, SettingsPage};
+    use gpui_kit::test::{TestQueryExt, TestWindowExt};
+    use gpui_kit::{AppContext, Bounds, TestAppContext, WindowBounds, WindowOptions, px, size};
+    #[gpui_kit::test]
+    fn whole_document_yaml_hides_tabs_and_search_and_fills_remaining_height(
+        cx: &mut TestAppContext,
+    ) {
+        let root = tempfile::tempdir().unwrap();
+        let service = crate::integration::Service::start(
+            crate::storage::Repository::open(crate::storage::AppPaths::isolated(root.path()))
+                .unwrap(),
+        )
+        .unwrap();
+        cx.update(|cx| {
+            crate::integration::init(service, cx);
+            gpui_kit::init(cx);
+            cx.set_reduce_motion(true);
+        });
+        for kind in [SettingsKind::Dns, SettingsKind::Sniffer] {
+            let (window, page) = cx.update(|cx| {
+                gpui_kit::open_window(
+                    WindowOptions {
+                        window_bounds: Some(WindowBounds::Windowed(Bounds::new(
+                            Default::default(),
+                            size(px(1100.), px(800.)),
+                        ))),
+                        ..Default::default()
+                    },
+                    cx,
+                    |window, cx| {
+                        let session = cx.new(Session::new);
+                        cx.new(|cx| SettingsPage::new(kind, session, window, cx))
+                    },
+                )
+                .unwrap()
+            });
+            cx.run_until_parked();
+            window
+                .update(cx, |_, window, cx| {
+                    window.render_frame(cx);
+                    assert!(window.elements().iter().any(|element| {
+                        element
+                            .path()
+                            .contains(&gpui_kit::ElementId::from("runtime-tabs"))
+                    }));
+                    window.click("dns-edit-mode", cx);
+                })
+                .unwrap();
+            cx.run_until_parked();
+            window
+                .update(cx, |_, window, cx| {
+                    window.render_frame(cx);
+                    assert!(page.read(cx).dns_raw);
+                    assert!(!window.elements().iter().any(|element| {
+                        element
+                            .path()
+                            .contains(&gpui_kit::ElementId::from("runtime-tabs"))
+                    }));
+                    assert!(
+                        window
+                            .try_find(gpui_kit::SharedString::from(format!(
+                                "{}-runtime-scroll",
+                                kind.id()
+                            )))
+                            .is_none()
+                    );
+                    let viewport = window.find("settings-yaml-viewport").bounds();
+                    assert!(viewport.size.height > px(500.), "{viewport:?}");
+                    assert!(viewport.size.width > px(900.));
+                    window.click("dns-edit-mode", cx);
+                })
+                .unwrap();
+            cx.run_until_parked();
+            window
+                .update(cx, |_, window, cx| {
+                    window.render_frame(cx);
+                    assert!(!page.read(cx).dns_raw);
+                    assert!(window.elements().iter().any(|element| {
+                        element
+                            .path()
+                            .contains(&gpui_kit::ElementId::from("runtime-tabs"))
+                    }));
+                })
+                .unwrap();
+        }
+        crate::integration::finish_test_services(cx);
     }
 }

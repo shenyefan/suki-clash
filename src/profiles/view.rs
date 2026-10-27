@@ -14,8 +14,7 @@ use gpui_kit::{
         checkbox::Checkbox,
         h_flex,
         input::Input,
-        menu::{DropdownMenu, PopupMenuItem},
-        scroll::ScrollableElement,
+        menu::DropdownMenu,
         switch::Switch,
         v_flex,
     },
@@ -28,14 +27,14 @@ impl ProfilesPage {
         ui::detail_dialog(
             document.name.clone(),
             format!(
-                "来源\t{}\n格式\t{}\n更新方式\t{}\n更新间隔\t{} 分钟\n下载超时\t{} 秒\n配置大小\t{} B\n文件行数\t{}\n订阅地址\t{}",
+                "来源\t{}\n格式\t{}\n更新方式\t{}\n更新间隔\t{} 分钟\n下载超时\t{} 秒\n配置大小\t{} B\n文件行数\t{}\n订阅地址\t{}\n最后更新\t{}",
                 if document.is_remote() {
                     "远程"
                 } else {
                     "本地"
                 },
                 document.kind.label(),
-                if document.auto_update {
+                if document.automatic_updates() {
                     "自动"
                 } else {
                     "手动"
@@ -48,7 +47,15 @@ impl ProfilesPage {
                     "—"
                 } else {
                     &document.url
-                }
+                },
+                document
+                    .updated_at
+                    .and_then(|time| chrono::DateTime::from_timestamp(time, 0))
+                    .map(|time| time
+                        .with_timezone(&chrono::Local)
+                        .format("%Y-%m-%d %H:%M:%S")
+                        .to_string())
+                    .unwrap_or_else(|| "—".into()),
             ),
             window,
             cx,
@@ -61,51 +68,67 @@ impl ProfilesPage {
         let owner = cx.entity();
         let details = document.clone();
         let overrides = self.overrides;
+        let home = document.home.clone();
         let menu = ui::icon_button(("document-menu", id), IconName::Ellipsis, "订阅操作")
             .dropdown_menu(move |menu, _, _| {
                 let details = details.clone();
                 let js = details.kind == DocumentKind::JavaScript;
                 let remote = details.is_remote();
                 let mut menu = menu.item(
-                    PopupMenuItem::new("查看详情…")
+                    crate::ui::actions::menu("查看详情")
                         .icon(IconName::Info)
                         .on_click(move |_, w, cx| Self::document_details(&details, w, cx)),
                 );
-                for action in ["编辑信息…", "编辑文件…", "打开文件"] {
+                for action in ["编辑信息", "编辑文件", "打开文件"] {
                     let owner = owner.clone();
-                    menu = menu.item(PopupMenuItem::new(action).on_click(move |_, w, cx| {
+                    menu = menu.item(crate::ui::actions::menu(action).on_click(move |_, w, cx| {
                         owner.update(cx, |this, cx| this.document_action(id, action, w, cx));
                     }));
                 }
                 if !overrides && remote {
-                    for action in ["分享二维码…", "复制链接"] {
+                    for action in ["分享二维码", "复制链接"] {
                         let owner = owner.clone();
-                        menu = menu.item(PopupMenuItem::new(action).on_click(move |_, w, cx| {
-                            owner.update(cx, |this, cx| this.document_action(id, action, w, cx))
-                        }));
+                        menu = menu.item(crate::ui::actions::menu(action).on_click(
+                            move |_, w, cx| {
+                                owner.update(cx, |this, cx| this.document_action(id, action, w, cx))
+                            },
+                        ));
                     }
                 }
+                if !home.is_empty() {
+                    let home = home.clone();
+                    menu = menu.item(
+                        crate::ui::actions::menu("订阅主页")
+                            .on_click(move |_, _, cx| cx.open_url(&home)),
+                    );
+                }
                 if !overrides {
-                    for action in ["编辑规则…", "编辑代理…", "编辑代理组…"] {
+                    for action in ["编辑规则", "编辑代理", "编辑代理组"] {
                         let owner = owner.clone();
-                        menu = menu.item(PopupMenuItem::new(action).on_click(move |_, w, cx| {
-                            owner.update(cx, |this, cx| this.document_action(id, action, w, cx))
-                        }));
+                        menu = menu.item(crate::ui::actions::menu(action).on_click(
+                            move |_, w, cx| {
+                                owner.update(cx, |this, cx| this.document_action(id, action, w, cx))
+                            },
+                        ));
                     }
                 }
                 if js {
                     let owner = owner.clone();
-                    menu = menu.item(PopupMenuItem::new("执行日志…").on_click(move |_, w, cx| {
-                        owner.update(cx, |this, cx| this.document_action(id, "执行日志…", w, cx));
-                    }));
+                    menu = menu.item(crate::ui::actions::menu("执行日志").on_click(
+                        move |_, w, cx| {
+                            owner
+                                .update(cx, |this, cx| this.document_action(id, "执行日志", w, cx));
+                        },
+                    ));
                 }
                 let owner = owner.clone();
-                menu.separator()
-                    .item(PopupMenuItem::new("删除").icon(IconName::Trash).on_click(
-                        move |_, w, cx| {
+                menu.separator().item(
+                    crate::ui::actions::menu("删除")
+                        .icon(IconName::Trash)
+                        .on_click(move |_, w, cx| {
                             owner.update(cx, |this, cx| this.document_action(id, "删除", w, cx))
-                        },
-                    ))
+                        }),
+                )
             });
         let source = if document.is_remote() {
             document
@@ -120,7 +143,7 @@ impl ProfilesPage {
         } else {
             "本地文件".into()
         };
-        let schedule = if document.auto_update {
+        let schedule = if document.automatic_updates() {
             match document.interval.parse::<u32>() {
                 Ok(minutes) if minutes > 0 && minutes % 1440 == 0 => {
                     format!("每 {} 天更新", minutes / 1440)
@@ -136,48 +159,13 @@ impl ProfilesPage {
             document.kind.label().into()
         };
         let focus = self.card_focus[&id].clone();
-        let keyboard_focus = focus.clone();
-        v_flex()
-            .id(("profile-card", id))
-            .track_focus(&focus)
-            .tab_stop(true)
-            .aria_label(format!(
-                "{}{}",
-                document.name,
-                if active { "，当前配置" } else { "" }
-            ))
-            .on_key_down(cx.listener(move |this, event: &KeyDownEvent, w, cx| {
-                if keyboard_focus.is_focused(w)
-                    && matches!(event.keystroke.key.as_str(), "enter" | "space")
-                {
-                    cx.stop_propagation();
-                    if this.batch {
-                        if !this.selected.remove(&id) {
-                            this.selected.insert(id);
-                        }
-                        cx.notify();
-                    } else if !this.overrides {
-                        this.select_profile(id, w, cx);
-                    }
-                }
-            }))
-            .when(!self.overrides, |card| {
-                card.cursor_pointer()
-                    .on_click(cx.listener(move |this, _, w, cx| {
-                        if this.batch {
-                            if !this.selected.remove(&id) {
-                                this.selected.insert(id);
-                            }
-                            cx.notify();
-                        } else if this.session.read(cx).active_profile_id() != Some(id) {
-                            this.select_profile(id, w, cx);
-                        }
-                    }))
-            })
+        div()
+            .id(("profile-card-drag", id))
             .on_drag(
                 super::organize::DocumentDrag {
                     id,
                     name: document.name.clone(),
+                    overrides: false,
                 },
                 |drag, _, _, cx| cx.new(|_| drag.clone()),
             )
@@ -186,159 +174,215 @@ impl ProfilesPage {
             })
             .on_drop(
                 cx.listener(move |this, drag: &super::organize::DocumentDrag, w, cx| {
-                    this.move_document(drag.id, id, w, cx)
+                    if !drag.overrides {
+                        this.move_document(drag.id, id, w, cx)
+                    }
                 }),
             )
             .min_w(space::NONE)
-            .min_h(profile::MIN_HEIGHT)
-            .px(profile::PADDING_X)
-            .py(profile::PADDING_Y)
-            .gap(space::NONE)
-            .rounded(cx.theme().radius)
-            .bg(cx.theme().muted.opacity(opacity::PANEL))
-            .when(active, |card| card.bg(ui::theme::selection_tint(cx)))
-            .focus_visible(|card| card.border_1().border_color(cx.theme().ring))
             .child(
-                h_flex()
-                    .h(profile::HEADER_HEIGHT)
-                    .gap(space::SM)
-                    .when(self.batch, |row| {
-                        row.child(
-                            Checkbox::new(("select-document", id))
-                                .checked(self.selected.contains(&id))
-                                .accessibility_label(format!("选择{}", document.name))
-                                .on_change(cx.listener(move |this, selected, _, cx| {
-                                    if *selected {
-                                        this.selected.insert(id);
-                                    } else {
-                                        this.selected.remove(&id);
-                                    }
-                                    cx.stop_propagation();
-                                    cx.notify();
-                                })),
+                Button::new(("profile-card", id))
+                    .ghost()
+                    .with_size(control::STANDARD)
+                    .h_auto()
+                    .w_full()
+                    .track_focus(&focus)
+                    .disabled(self.saving)
+                    .accessibility_label(format!(
+                        "{}{}",
+                        document.name,
+                        if active { "，当前配置" } else { "" }
+                    ))
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        if this.batch {
+                            if !this.selected.remove(&id) {
+                                this.selected.insert(id);
+                            }
+                            cx.notify();
+                        } else if !this.overrides
+                            && this.session.read(cx).active_profile_id() != Some(id)
+                        {
+                            this.select_profile(id, window, cx);
+                        }
+                    }))
+                    .min_w(space::NONE)
+                    .min_h(profile::MIN_HEIGHT)
+                    .px(profile::PADDING_X)
+                    .py(profile::PADDING_Y)
+                    .gap(space::NONE)
+                    .rounded(cx.theme().radius)
+                    .map(|card| {
+                        ui::selectable_card(
+                            card,
+                            active || (self.batch && self.selected.contains(&id)),
+                            cx,
                         )
                     })
                     .child(
-                        div()
-                            .flex_1()
+                        v_flex()
+                            .w_full()
                             .min_w(space::NONE)
-                            .truncate()
-                            .text_left()
-                            .text_size(profile::NAME_SIZE)
-                            .font_weight(text::HEADING)
-                            .text_color(if active {
-                                cx.theme().primary
-                            } else {
-                                cx.theme().foreground
-                            })
-                            .child(document.name.clone()),
-                    )
-                    .when(document.is_remote(), |row| {
-                        row.child(
-                            ui::icon_button(
-                                ("update-document", id),
-                                IconName::RefreshCw,
-                                "更新订阅",
+                            .gap(space::NONE)
+                            .child(
+                                h_flex()
+                                    .h(profile::HEADER_HEIGHT)
+                                    .gap(space::SM)
+                                    .when(self.batch, |row| {
+                                        row.child(
+                                            Checkbox::new(("select-document", id))
+                                                .checked(self.selected.contains(&id))
+                                                .accessibility_label(format!(
+                                                    "选择{}",
+                                                    document.name
+                                                ))
+                                                .on_change(cx.listener(
+                                                    move |this, selected, _, cx| {
+                                                        if *selected {
+                                                            this.selected.insert(id);
+                                                        } else {
+                                                            this.selected.remove(&id);
+                                                        }
+                                                        cx.stop_propagation();
+                                                        cx.notify();
+                                                    },
+                                                )),
+                                        )
+                                    })
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .min_w(space::NONE)
+                                            .truncate()
+                                            .text_left()
+                                            .text_size(profile::NAME_SIZE)
+                                            .font_weight(text::HEADING)
+                                            .text_color(if active {
+                                                cx.theme().primary
+                                            } else {
+                                                cx.theme().foreground
+                                            })
+                                            .child(document.name.clone()),
+                                    )
+                                    .when(document.is_remote(), |row| {
+                                        row.child(
+                                            ui::icon_button(
+                                                ("update-document", id),
+                                                IconName::RefreshCw,
+                                                "更新订阅",
+                                            )
+                                            .on_click(
+                                                cx.listener(move |this, _, w, cx| {
+                                                    cx.stop_propagation();
+                                                    this.document_action(id, "更新", w, cx);
+                                                }),
+                                            ),
+                                        )
+                                    })
+                                    .child(
+                                        div()
+                                            .id(("profile-menu-boundary", id))
+                                            .on_click(|_, _, cx| cx.stop_propagation())
+                                            .child(menu),
+                                    ),
                             )
-                            .on_click(cx.listener(
-                                move |this, _, w, cx| {
-                                    cx.stop_propagation();
-                                    this.document_action(id, "更新", w, cx);
-                                },
-                            )),
-                        )
-                    })
-                    .child(
-                        div()
-                            .id(("profile-menu-boundary", id))
-                            .on_click(|_, _, cx| cx.stop_propagation())
-                            .child(menu),
+                            .child(
+                                h_flex().gap(space::SM).h(profile::SOURCE_HEIGHT).child(
+                                    ui::muted(format!("{source} · {schedule}"), cx)
+                                        .flex_1()
+                                        .min_w(space::NONE)
+                                        .truncate()
+                                        .text_size(profile::META_SIZE),
+                                ),
+                            )
+                            .when_some(document.usage.as_ref(), |card, usage| {
+                                card.child(
+                                    h_flex()
+                                        .gap(space::SM)
+                                        .justify_between()
+                                        .h(profile::ROW_HEIGHT)
+                                        .child(div().text_size(profile::META_SIZE).child(format!(
+                                            "{} / {}",
+                                            TrafficUsage::amount(usage.used_bytes),
+                                            TrafficUsage::amount(usage.total_bytes)
+                                        )))
+                                        .when_some(usage.expires.as_ref(), |row, expires| {
+                                            row.child(
+                                                ui::muted(expires.clone(), cx)
+                                                    .text_size(profile::META_SIZE),
+                                            )
+                                        }),
+                                )
+                                .child(
+                                    div()
+                                        .h(layout::PROGRESS_HEIGHT)
+                                        .w_full()
+                                        .rounded_full()
+                                        .bg(cx.theme().foreground.opacity(opacity::SELECTED))
+                                        .child(
+                                            div()
+                                                .h_full()
+                                                .w(relative(usage.fraction()))
+                                                .rounded_full()
+                                                .bg(cx.theme().primary),
+                                        ),
+                                )
+                            })
+                            .when(document.usage.is_none(), |card| {
+                                card.child(
+                                    h_flex()
+                                        .h(profile::ROW_HEIGHT)
+                                        .gap(space::SM)
+                                        .justify_between()
+                                        .child(
+                                            ui::muted(
+                                                format!(
+                                                    "{} · {} 行",
+                                                    document.kind.label(),
+                                                    document.content.lines().count()
+                                                ),
+                                                cx,
+                                            )
+                                            .text_size(profile::META_SIZE),
+                                        )
+                                        .when(self.overrides, |row| {
+                                            row.child(
+                                                Switch::new(("enable-override", id))
+                                                    .small()
+                                                    .checked(document.enabled)
+                                                    .accessibility_label(format!(
+                                                        "启用{}",
+                                                        document.name
+                                                    ))
+                                                    .on_change(cx.listener(
+                                                        move |this, value, w, cx| {
+                                                            let mut documents =
+                                                                this.documents.clone();
+                                                            if let Some(doc) = documents
+                                                                .iter_mut()
+                                                                .find(|doc| doc.id == id)
+                                                            {
+                                                                doc.enabled = *value;
+                                                            }
+                                                            if let Err(error) = this
+                                                                .persist_documents(
+                                                                    documents,
+                                                                    None,
+                                                                    w,
+                                                                    cx,
+                                                                    |_, _, _| {},
+                                                                )
+                                                            {
+                                                                ui::show_error(error, w, cx);
+                                                            }
+                                                            cx.notify();
+                                                        },
+                                                    )),
+                                            )
+                                        }),
+                                )
+                            }),
                     ),
             )
-            .child(
-                h_flex().gap(space::SM).h(profile::SOURCE_HEIGHT).child(
-                    ui::muted(format!("{source} · {schedule}"), cx)
-                        .flex_1()
-                        .min_w(space::NONE)
-                        .truncate()
-                        .text_size(profile::META_SIZE),
-                ),
-            )
-            .when_some(document.usage.as_ref(), |card, usage| {
-                card.child(
-                    h_flex()
-                        .gap(space::SM)
-                        .justify_between()
-                        .h(profile::ROW_HEIGHT)
-                        .child(div().text_size(profile::META_SIZE).child(format!(
-                            "{} / {}",
-                            TrafficUsage::amount(usage.used_bytes),
-                            TrafficUsage::amount(usage.total_bytes)
-                        )))
-                        .when_some(usage.expires.as_ref(), |row, expires| {
-                            row.child(ui::muted(expires.clone(), cx).text_size(profile::META_SIZE))
-                        }),
-                )
-                .child(
-                    div()
-                        .h(layout::PROGRESS_HEIGHT)
-                        .w_full()
-                        .rounded_full()
-                        .bg(cx.theme().foreground.opacity(opacity::SELECTED))
-                        .child(
-                            div()
-                                .h_full()
-                                .w(relative(usage.fraction()))
-                                .rounded_full()
-                                .bg(cx.theme().primary),
-                        ),
-                )
-            })
-            .when(document.usage.is_none(), |card| {
-                card.child(
-                    h_flex()
-                        .h(profile::ROW_HEIGHT)
-                        .gap(space::SM)
-                        .justify_between()
-                        .child(
-                            ui::muted(
-                                format!(
-                                    "{} · {} 行",
-                                    document.kind.label(),
-                                    document.content.lines().count()
-                                ),
-                                cx,
-                            )
-                            .text_size(profile::META_SIZE),
-                        )
-                        .when(self.overrides, |row| {
-                            row.child(
-                                Switch::new(("enable-override", id))
-                                    .small()
-                                    .checked(document.enabled)
-                                    .accessibility_label(format!("启用{}", document.name))
-                                    .on_change(cx.listener(move |this, value, w, cx| {
-                                        let mut documents = this.documents.clone();
-                                        if let Some(doc) =
-                                            documents.iter_mut().find(|doc| doc.id == id)
-                                        {
-                                            doc.enabled = *value;
-                                        }
-                                        if let Err(error) = this.persist_documents(
-                                            documents,
-                                            None,
-                                            w,
-                                            cx,
-                                            |_, _, _| {},
-                                        ) {
-                                            ui::show_error(error, w, cx);
-                                        }
-                                        cx.notify();
-                                    })),
-                            )
-                        }),
-                )
-            })
             .into_any_element()
     }
 
@@ -360,7 +404,7 @@ impl ProfilesPage {
                 let yaml = owner.clone();
                 let js = owner.clone();
                 menu.item(
-                    PopupMenuItem::new("从文件导入…")
+                    crate::ui::actions::menu("从文件导入")
                         .icon(IconName::FolderOpen)
                         .on_click(move |_, w, cx| {
                             file.update(cx, |this, cx| this.import_file(w, cx))
@@ -368,7 +412,7 @@ impl ProfilesPage {
                 )
                 .separator()
                 .item(
-                    PopupMenuItem::new("新建 YAML 配置…")
+                    crate::ui::actions::menu("新建 YAML 配置")
                         .icon(IconName::FileCode)
                         .on_click(move |_, w, cx| {
                             yaml.update(cx, |this, cx| {
@@ -385,23 +429,46 @@ impl ProfilesPage {
                         }),
                 )
                 .when(overrides, |menu| {
-                    menu.item(
-                        PopupMenuItem::new("新建 JavaScript…").on_click(move |_, w, cx| {
+                    menu.item(crate::ui::actions::menu("新建 JavaScript").on_click(
+                        move |_, w, cx| {
                             js.update(cx, |this, cx| this.create(DocumentKind::JavaScript, w, cx))
-                        }),
-                    )
+                        },
+                    ))
                 })
             })
     }
 }
 
 impl Render for ProfilesPage {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if self.overrides {
-            return self.overrides_view(cx);
+            return self.overrides_view(window, cx);
         }
-        let documents = self.documents.clone();
-        let count = documents.len();
+        let count = self.documents.len();
+        let columns = usize::from(self.columns.max(1));
+        let height = (profile::MIN_HEIGHT + profile::GAP).to_pixels(window.rem_size());
+        let cards = ui::virtual_rows::rows(
+            cx.entity(),
+            "profile-card-rows",
+            vec![height; count.div_ceil(columns)],
+            &self.list_scroll,
+            move |this, row, _, cx| {
+                let start = row * columns;
+                let end = (start + columns).min(this.documents.len());
+                div()
+                    .h(height)
+                    .pb(profile::GAP)
+                    .grid()
+                    .grid_cols(columns as u16)
+                    .gap(profile::GAP)
+                    .children(
+                        this.documents[start..end]
+                            .iter()
+                            .map(|document| this.card(document, cx)),
+                    )
+                    .into_any_element()
+            },
+        );
         let current = self
             .session
             .read(cx)
@@ -415,6 +482,7 @@ impl Render for ProfilesPage {
                 ui::workspace_header(if self.overrides { "覆写" } else { "订阅" }, "", cx)
                     .child(
                         Button::new("profile-batch")
+                            .icon(gpui_kit::assets::IconName::ListChecks)
                             .ghost()
                             .with_size(control::STANDARD)
                             .label(if self.batch { "完成" } else { "批量管理" })
@@ -428,26 +496,16 @@ impl Render for ProfilesPage {
                         Button::new("update-or-apply")
                             .ghost()
                             .with_size(control::STANDARD)
-                            .icon(if self.overrides {
-                                IconName::CheckCheck
-                            } else {
-                                IconName::RefreshCw
-                            })
-                            .label(if self.overrides {
-                                "应用覆写"
-                            } else {
-                                "全部更新"
-                            })
+                            .icon(IconName::RefreshCw)
+                            .label("全部更新")
                             .on_click(cx.listener(|this, _, w, cx| {
-                                ui::request_command(
-                                    if this.overrides {
-                                        "应用覆写"
-                                    } else {
-                                        "更新全部订阅"
-                                    },
-                                    w,
-                                    cx,
-                                )
+                                let ids = this
+                                    .documents
+                                    .iter()
+                                    .filter(|doc| doc.is_remote())
+                                    .map(|doc| doc.id)
+                                    .collect();
+                                this.update_profiles(ids, w, cx);
                             })),
                     ),
             )
@@ -455,6 +513,7 @@ impl Render for ProfilesPage {
                 ui::workspace_toolbar()
                     .child(
                         Input::new(&self.url)
+                            .aria_label("订阅导入地址")
                             .with_size(control::STANDARD)
                             .flex_1()
                             .min_w(space::NONE)
@@ -476,6 +535,7 @@ impl Render for ProfilesPage {
                     ui::workspace_toolbar()
                         .child(
                             Button::new("select-all-profiles")
+                                .icon(gpui_kit::assets::IconName::CheckCheck)
                                 .ghost()
                                 .with_size(control::STANDARD)
                                 .label("全选")
@@ -487,6 +547,7 @@ impl Render for ProfilesPage {
                         )
                         .child(
                             Button::new("clear-profile-selection")
+                                .icon(gpui_kit::assets::IconName::X)
                                 .ghost()
                                 .with_size(control::STANDARD)
                                 .label("取消选择")
@@ -502,25 +563,19 @@ impl Render for ProfilesPage {
                         .child(div().flex_1())
                         .child(
                             Button::new("update-selected-profiles")
+                                .icon(gpui_kit::assets::IconName::RefreshCw)
                                 .outline()
                                 .with_size(control::STANDARD)
                                 .label("更新所选")
                                 .disabled(self.selected.is_empty())
                                 .on_click(cx.listener(|this, _, w, cx| {
                                     let ids: Vec<_> = this.selected.iter().copied().collect();
-                                    for id in ids {
-                                        if this
-                                            .documents
-                                            .iter()
-                                            .any(|doc| doc.id == id && doc.is_remote())
-                                        {
-                                            this.document_action(id, "更新", w, cx);
-                                        }
-                                    }
+                                    this.update_profiles(ids, w, cx);
                                 })),
                         )
                         .child(
                             Button::new("delete-selected-profiles")
+                                .icon(gpui_kit::assets::IconName::Trash)
                                 .outline()
                                 .with_size(control::STANDARD)
                                 .label("移除所选")
@@ -557,17 +612,11 @@ impl Render for ProfilesPage {
                     .on_drop(cx.listener(|this, paths: &ExternalPaths, w, cx| {
                         this.import_paths(paths.paths().to_vec(), w, cx)
                     }))
-                    .overflow_y_scrollbar()
-                    .child(if documents.is_empty() {
+                    .child(if count == 0 {
                         ui::empty(IconName::Layers, "暂无订阅", "从链接或文件添加配置", cx)
                             .into_any_element()
                     } else {
-                        div()
-                            .grid()
-                            .grid_cols(self.columns)
-                            .gap(profile::GAP)
-                            .children(documents.iter().map(|doc| self.card(doc, cx)))
-                            .into_any_element()
+                        cards
                     }),
             )
             .child(
@@ -580,5 +629,262 @@ impl Render for ProfilesPage {
                         )
                     }),
             )
+    }
+}
+
+#[cfg(test)]
+mod interaction_tests {
+    use super::ProfilesPage;
+    use crate::{
+        profiles::model::{Document, DocumentKind},
+        session::Session,
+    };
+    use gpui_kit::test::TestWindowExt;
+    use gpui_kit::{AppContext, TestAppContext, WindowOptions};
+
+    #[gpui_kit::test]
+    fn import_and_settings_share_the_editor_and_keep_the_address_synchronized(
+        cx: &mut TestAppContext,
+    ) {
+        use gpui_kit::component::WindowExt as _;
+        use gpui_kit::{Bounds, WindowBounds, px, size};
+        let root = tempfile::tempdir().unwrap();
+        let service = crate::integration::Service::start(
+            crate::integration::Repository::open(crate::integration::AppPaths::isolated(
+                root.path(),
+            ))
+            .unwrap(),
+        )
+        .unwrap();
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            crate::integration::init(service, cx);
+            cx.set_reduce_motion(true);
+        });
+        let (handle, page) = cx.update(|cx| {
+            gpui_kit::open_window(
+                WindowOptions {
+                    window_bounds: Some(WindowBounds::Windowed(Bounds::new(
+                        Default::default(),
+                        size(px(1100.), px(850.)),
+                    ))),
+                    ..Default::default()
+                },
+                cx,
+                |window, cx| {
+                    let session = cx.new(|_| Session::default());
+                    cx.new(|cx| ProfilesPage::new(false, session, window, cx))
+                },
+            )
+            .unwrap()
+        });
+        cx.run_until_parked();
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.click("import-url", cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            let name = window.find("document-name").bounds();
+            let url = window.find("document-url").bounds();
+            let agent = window.find("document-agent").bounds();
+            let timeout = window.find("document-timeout").bounds();
+            let interval = window.find("document-interval").bounds();
+            assert_eq!(interval.top(), timeout.top());
+            assert_eq!(agent.size.width, url.size.width);
+            assert!(window.try_find("editor-auto-update").is_none());
+            let token = window.find("document-token").bounds();
+            assert_eq!(name.left(), url.left());
+            assert_eq!(name.right(), url.right());
+            assert_eq!(agent.left(), url.left());
+            assert_eq!(timeout.right(), url.right());
+            assert_eq!(token.right(), url.right());
+            window.close_dialog(cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.update_window(handle, |_, window, cx| {
+            page.update(cx, |page, cx| {
+                page.url.update(cx, |input, cx| {
+                    input.set_value("https://example.com/sub.yaml", window, cx)
+                })
+            });
+            window.render_frame(cx);
+            window.click("download-options", cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            assert!(window.try_find("document-url").is_some());
+            window.click("document-url", cx);
+            window.press(
+                if cx.platform_info().is_mac() {
+                    "cmd-a"
+                } else {
+                    "ctrl-a"
+                },
+                cx,
+            );
+            window.input("https://example.com/changed.yaml", cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.update_window(handle, |_, window, cx| {
+            assert_eq!(
+                page.read(cx).url.read(cx).value().as_ref(),
+                "https://example.com/changed.yaml"
+            );
+            window.close_dialog(cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.click("import-url", cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            assert!(window.try_find("document-url").is_none());
+        })
+        .unwrap();
+        cx.update_window(handle, |_, window, cx| {
+            page.update(cx, |page, cx| {
+                let mut document = Document::new(42, DocumentKind::Profile);
+                document.name = "已保存的订阅".into();
+                document.url = "https://example.com/saved.yaml".into();
+                page.open_editor(document, false, window, cx);
+            });
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            for id in [
+                "document-name",
+                "document-url",
+                "document-agent",
+                "document-timeout",
+                "document-token",
+                "document-age",
+            ] {
+                assert!(window.try_find(id).is_some());
+            }
+        })
+        .unwrap();
+        crate::integration::finish_test_services(cx);
+    }
+    #[gpui_kit::test]
+    fn native_card_keyboard_and_inner_checkbox_change_selection_once(cx: &mut TestAppContext) {
+        let root = tempfile::tempdir().unwrap();
+        let repository = crate::integration::Repository::open(
+            crate::integration::AppPaths::isolated(root.path()),
+        )
+        .unwrap();
+        let service = crate::integration::Service::start(repository).unwrap();
+        cx.update(|cx| {
+            crate::integration::init(service, cx);
+            gpui_kit::init(cx);
+            cx.set_reduce_motion(true);
+        });
+        let (handle, page) = cx.update(|cx| {
+            gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
+                let session = cx.new(|_| Session::default());
+                cx.new(|cx| {
+                    let mut page = ProfilesPage::new(false, session, window, cx);
+                    page.batch = true;
+                    let mut document = Document::new(42, DocumentKind::Profile);
+                    document.name = "测试配置".into();
+                    page.documents = vec![document];
+                    page.card_focus.insert(42, cx.focus_handle());
+                    page
+                })
+            })
+            .unwrap()
+        });
+        cx.run_until_parked();
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.click(("profile-card", 42u64), cx);
+            assert!(page.read(cx).selected.contains(&42));
+            window.render_frame(cx);
+            assert!(page.read(cx).selected.contains(&42));
+            window.hover(("profile-card", 42u64), cx);
+            assert!(page.read(cx).selected.contains(&42));
+            window.click(("select-document", 42u64), cx);
+            assert!(
+                !page.read(cx).selected.contains(&42),
+                "inner checkbox must not also activate its card"
+            );
+            let focus = page.read(cx).card_focus[&42].clone();
+            focus.focus(window, cx);
+            window.press("enter", cx);
+            assert!(page.read(cx).selected.contains(&42));
+            window.press("space", cx);
+            assert!(!page.read(cx).selected.contains(&42));
+        })
+        .unwrap();
+        crate::integration::finish_test_services(cx);
+    }
+    #[gpui_kit::test]
+    fn large_profile_grid_keeps_selection_when_rows_leave_the_viewport(cx: &mut TestAppContext) {
+        use gpui_kit::ScrollStrategy;
+        let root = tempfile::tempdir().unwrap();
+        let repository = crate::integration::Repository::open(
+            crate::integration::AppPaths::isolated(root.path()),
+        )
+        .unwrap();
+        let service = crate::integration::Service::start(repository).unwrap();
+        cx.update(|cx| {
+            crate::integration::init(service, cx);
+            gpui_kit::init(cx);
+            cx.set_reduce_motion(true);
+        });
+        let (window, page) = cx.update(|cx| {
+            gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
+                let session = cx.new(|_| Session::default());
+                cx.new(|cx| {
+                    let mut page = ProfilesPage::new(false, session, window, cx);
+                    page.batch = true;
+                    page.documents = (1..=600)
+                        .map(|id| {
+                            let mut document = Document::new(id, DocumentKind::Profile);
+                            document.name = format!("配置{id}");
+                            page.card_focus.insert(id, cx.focus_handle());
+                            document
+                        })
+                        .collect();
+                    page
+                })
+            })
+            .unwrap()
+        });
+        cx.run_until_parked();
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            assert!(window.try_find(("profile-card", 401u64)).is_none());
+            let columns = usize::from(page.read(cx).columns);
+            page.read(cx)
+                .list_scroll
+                .scroll_to_item(400 / columns, ScrollStrategy::Top);
+            page.update(cx, |_, cx| cx.notify());
+            window.render_frame(cx);
+            window.render_frame(cx);
+            assert!(window.try_find(("profile-card", 401u64)).is_some());
+            window.click(("profile-card", 401u64), cx);
+            assert!(page.read(cx).selected.contains(&401));
+            page.read(cx)
+                .list_scroll
+                .scroll_to_item(0, ScrollStrategy::Top);
+            page.update(cx, |_, cx| cx.notify());
+            window.render_frame(cx);
+            assert!(page.read(cx).selected.contains(&401));
+        })
+        .unwrap();
+        crate::integration::finish_test_services(cx);
     }
 }

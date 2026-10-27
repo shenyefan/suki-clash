@@ -1,4 +1,7 @@
 /target
+/dist/
+/resources/runtime/
+/.cargo-cache/
 /clash-verge-rev-dev/
 /.codex/
 /.claude/

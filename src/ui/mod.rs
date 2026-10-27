@@ -1,15 +1,20 @@
 use self::theme::{control, layout, opacity, space, stroke, text};
 use crate::session::{ProxyMode, Session};
 use gpui_kit::component::tab::{Tab, TabBar};
+pub(crate) mod actions;
+mod download;
+pub(crate) mod notifications;
+pub(crate) mod virtual_rows;
+pub(crate) use download::DownloadToast;
 pub(crate) mod editor;
 mod modal;
 pub(crate) mod motion;
-pub(crate) use modal::{modal, modal_alert, modal_close, modal_content, modal_panel, modal_scroll};
+pub(crate) use modal::{modal, modal_alert, modal_close, modal_content, modal_panel};
 pub(crate) mod theme;
 use gpui_kit::{
     assets::IconName,
     component::{
-        ActiveTheme, Icon, Sizable, WindowExt,
+        ActiveTheme, Disableable, Icon, Selectable, Sizable, WindowExt,
         button::{Button, ButtonVariants},
         h_flex, v_flex,
     },
@@ -17,23 +22,50 @@ use gpui_kit::{
 };
 pub(crate) use theme::{configure_theme, window_tint, workspace_tint};
 
-/// All major regions share this inset, baseline and control density.
-pub(crate) fn page_header(title: &str, icon: IconName, cx: &App) -> Div {
-    h_flex()
-        .h(layout::ROW_HEIGHT)
-        .flex_shrink_0()
-        .px(space::LG)
-        .gap(space::SM)
-        .border_b(stroke::HAIRLINE)
-        .border_color(cx.theme().border)
-        .child(
-            Icon::new(icon)
-                .size(layout::ICON)
-                .text_color(cx.theme().muted_foreground),
-        )
-        .child(div().font_weight(text::HEADING).child(title.to_owned()))
-        .child(div().flex_1())
+/// Live refresh restores identity without invoking the table's navigation scroll.
+pub(crate) fn retain_table_selection<D: gpui_kit::component::table::TableDelegate>(
+    table: &mut gpui_kit::component::table::TableState<D>,
+    selected: Option<usize>,
+    cx: &mut Context<gpui_kit::component::table::TableState<D>>,
+) {
+    if table.selected_row() == selected {
+        return;
+    }
+    let scroll = std::mem::replace(
+        &mut table.vertical_scroll_handle,
+        UniformListScrollHandle::new(),
+    );
+    if let Some(row) = selected {
+        table.set_selected_row(row, cx);
+    } else {
+        table.clear_selection(cx);
+    }
+    table.vertical_scroll_handle = scroll;
 }
+
+pub(crate) fn file_size(bytes: u64) -> String {
+    let units = ["B", "KB", "MB", "GB", "TB", "PB", "EB"];
+    if bytes < 1024 {
+        return format!("{bytes} B");
+    }
+    let mut value = bytes as f64;
+    let mut unit = 0;
+    while value >= 1024. && unit < units.len() - 1 {
+        value /= 1024.;
+        unit += 1;
+    }
+    format!("{value:.1} {}", units[unit])
+}
+
+/// Native selection owns hover/keyboard states; cards share one selected surface.
+pub(crate) fn selectable_card(card: Button, selected: bool, cx: &App) -> Button {
+    use gpui_kit::prelude::FluentBuilder as _;
+    card.selected(selected)
+        .bg(cx.theme().muted.opacity(opacity::PANEL))
+        .when(selected, |card| card.bg(theme::selection_tint(cx)))
+        .focus_visible(|card| card.border_1().border_color(cx.theme().ring))
+}
+
 pub(crate) fn section(title: impl Into<SharedString>, cx: &App) -> Div {
     h_flex()
         .h(layout::CONTROL_HEIGHT)
@@ -49,12 +81,15 @@ pub(crate) fn muted(text: impl Into<SharedString>, cx: &App) -> Div {
         .child(text.into())
 }
 pub(crate) fn icon_button(id: impl Into<ElementId>, icon: IconName, label: &str) -> Button {
+    use gpui_kit::prelude::FluentBuilder as _;
     Button::new(id)
         .ghost()
         .small()
         .icon(icon)
-        .tooltip(label.to_owned())
         .accessibility_label(label.to_owned())
+        .when(!label.starts_with("复制"), |button| {
+            button.tooltip(label.to_owned())
+        })
 }
 
 /// Quiet chrome command: native toggle semantics, color reflects enabled state.
@@ -113,6 +148,13 @@ pub(crate) fn empty(icon: IconName, heading: &str, description: &str, cx: &App) 
         )
         .child(muted(description.to_owned(), cx).text_center())
 }
+/// The same empty-state anatomy, sized for an embedded list or a short dialog.
+pub(crate) fn empty_inline(icon: IconName, heading: &str, description: &str, cx: &App) -> Div {
+    empty(icon, heading, description, cx)
+        .h_auto()
+        .min_h(layout::EMPTY_INLINE_HEIGHT)
+        .py(space::LG)
+}
 pub(crate) fn detail_rows(details: &str, cx: &App) -> Div {
     v_flex()
         .gap(space::XS)
@@ -135,9 +177,10 @@ pub(crate) fn detail_rows(details: &str, cx: &App) -> Div {
             }
         }))
 }
-/// All validation failures share the native bottom-right notification stack.
+/// Validation failures use the shared native notification stack.
 pub(crate) fn show_error(message: String, window: &mut Window, cx: &mut App) {
-    window.push_notification(
+    notifications::push(
+        window,
         gpui_kit::component::notification::Notification::error(message),
         cx,
     );
@@ -162,7 +205,7 @@ pub(crate) fn detail_dialog(
                 crate::ui::theme::layout::DIALOG_FORM_HEIGHT,
                 move |_, cx| {
                     if body.trim().is_empty() {
-                        empty(IconName::ScrollText, "暂无记录", "有记录后会显示在这里", cx)
+                        empty_inline(IconName::ScrollText, "暂无记录", "有记录后会显示在这里", cx)
                             .into_any_element()
                     } else {
                         detail_rows(&body, cx).into_any_element()
@@ -173,29 +216,42 @@ pub(crate) fn detail_dialog(
     })
 }
 
+/// Shared form layout used by core dialogs and all other form dialogs.
+pub(crate) fn form() -> Div {
+    v_flex().w_full().gap(space::LG)
+}
+pub(crate) fn form_row() -> Div {
+    h_flex().w_full().items_start().gap(space::MD)
+}
 pub(crate) fn field_label(label: &str, control: impl IntoElement) -> Div {
     v_flex()
+        .min_w(space::NONE)
         .gap(space::XS)
         .child(div().child(label.to_owned()))
         .child(control)
 }
 pub(crate) fn dialog_footer(commit: &str) -> impl IntoElement {
+    dialog_footer_pending(commit, false)
+}
+pub(crate) fn dialog_footer_pending(commit: &str, pending: bool) -> impl IntoElement {
     use gpui_kit::component::dialog::{DialogAction, DialogFooter};
     DialogFooter::new()
         .child(
             Button::new("dialog-cancel")
+                .icon(gpui_kit::assets::IconName::X)
                 .with_size(control::STANDARD)
                 .label("取消")
                 .on_click(|_, window, cx| window.close_dialog(cx)),
         )
         .child(
-            div().w(layout::VALUE_WIDTH).flex_shrink_0().child(
-                DialogAction::new().child(
-                    Button::new("dialog-commit")
-                        .with_size(control::STANDARD)
-                        .primary()
-                        .label(commit.to_owned()),
-                ),
+            DialogAction::new().child(
+                Button::new("dialog-commit")
+                    .icon(gpui_kit::assets::IconName::Check)
+                    .with_size(control::STANDARD)
+                    .primary()
+                    .loading(pending)
+                    .disabled(pending)
+                    .label(commit.to_owned()),
             ),
         )
 }
@@ -230,6 +286,19 @@ pub(crate) fn workspace_footer() -> Div {
 
 /// Shared title geometry for dashboard, proxies, profiles and traffic.
 pub(crate) fn workspace_header(title: &str, detail: &str, cx: &App) -> Div {
+    workspace_heading(title, detail, None, cx)
+}
+
+/// Optional page control shares the title's alignment and precedes flexible space.
+pub(crate) fn workspace_header_control(
+    title: &str,
+    detail: &str,
+    control: impl IntoElement,
+    cx: &App,
+) -> Div {
+    workspace_heading(title, detail, Some(control.into_any_element()), cx)
+}
+fn workspace_heading(title: &str, detail: &str, control: Option<AnyElement>, cx: &App) -> Div {
     h_flex()
         .min_h(layout::TITLE_HEIGHT)
         .gap(space::MD)
@@ -240,6 +309,7 @@ pub(crate) fn workspace_header(title: &str, detail: &str, cx: &App) -> Div {
                 .font_weight(text::HEADING)
                 .child(title.to_owned()),
         )
+        .children(control)
         .child(muted(detail.to_owned(), cx).text_size(text::CAPTION))
         .child(div().flex_1())
 }
@@ -269,7 +339,15 @@ pub(crate) fn mode_tabs(session: &Entity<Session>, id: &'static str, cx: &App) -
             }),
             None => tabs,
         })
-        .on_click(move |_, window, cx| request_command("切换出站模式", window, cx))
+        .on_click(move |index, window, cx| {
+            crate::core::request(
+                crate::core::Command::Proxy(crate::proxies::runtime::Action::Mode(
+                    [ProxyMode::Rule, ProxyMode::Global, ProxyMode::Direct][*index],
+                )),
+                window,
+                cx,
+            )
+        })
 }
 
 /// Native preferences geometry shared by the core and external-resource pages.
@@ -277,6 +355,23 @@ pub(crate) fn preference_row(
     label: impl Into<SharedString>,
     description: impl Into<SharedString>,
     control: impl IntoElement,
+    cx: &App,
+) -> Div {
+    preference_row_content(label, description, control, false, cx)
+}
+pub(crate) fn data_preference_row(
+    label: impl Into<SharedString>,
+    description: impl Into<SharedString>,
+    control: impl IntoElement,
+    cx: &App,
+) -> Div {
+    preference_row_content(label, description, control, true, cx)
+}
+fn preference_row_content(
+    label: impl Into<SharedString>,
+    description: impl Into<SharedString>,
+    control: impl IntoElement,
+    truncate: bool,
     cx: &App,
 ) -> Div {
     use gpui_kit::prelude::FluentBuilder as _;
@@ -291,9 +386,17 @@ pub(crate) fn preference_row(
                 .flex_1()
                 .min_w(space::NONE)
                 .gap(space::XS)
-                .child(label.into())
+                .child(
+                    div()
+                        .when(truncate, |label| label.truncate())
+                        .child(label.into()),
+                )
                 .when(!description.is_empty(), |label| {
-                    label.child(muted(description, cx).text_size(text::CAPTION))
+                    label.child(
+                        muted(description, cx)
+                            .text_size(text::CAPTION)
+                            .when(truncate, |description| description.truncate()),
+                    )
                 }),
         )
         .child(control)
@@ -324,8 +427,33 @@ pub(crate) fn preferences_group(
         .child(content)
 }
 
+/// A page-sized collection with a fixed section heading and one scrolling list.
+pub(crate) fn preferences_list(
+    title: impl Into<SharedString>,
+    rows: impl IntoElement,
+    cx: &App,
+) -> Div {
+    v_flex()
+        .size_full()
+        .min_h(space::NONE)
+        .gap(space::SM)
+        .child(section(title, cx).px(space::LG).flex_shrink_0())
+        .child(
+            div()
+                .relative()
+                .flex_1()
+                .min_h(space::NONE)
+                .w_full()
+                .rounded(cx.theme().radius_lg)
+                .bg(theme::preferences_tint(cx))
+                .overflow_hidden()
+                .child(rows),
+        )
+}
+
 pub(crate) fn bottom_details(cx: &App) -> Div {
     v_flex()
+        .w_full()
         .h(layout::CONNECTION_DETAILS_HEIGHT)
         .flex_shrink_0()
         .min_w(space::NONE)

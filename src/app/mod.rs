@@ -60,7 +60,8 @@ pub(crate) struct SukiApp {
 impl SukiApp {
     pub(crate) fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         window.set_window_title("Suki Clash");
-        let session = cx.new(|_| Session::default());
+        crate::core::attach_window(window, cx);
+        let session = cx.new(Session::new);
         let overview = cx.new(|cx| Overview::new(session.clone(), cx));
         let proxies = cx.new(|cx| ProxiesPage::new(session.clone(), window, cx));
         let profiles = cx.new(|cx| ProfilesPage::new(false, session.clone(), window, cx));
@@ -89,6 +90,7 @@ impl SukiApp {
             window,
             |_, _, event: &SettingsSaved, window, cx| {
                 self::window::set_background(event.backdrop(), window);
+                ui::configure_theme(cx);
                 cx.notify();
             },
         );
@@ -149,6 +151,20 @@ impl SukiApp {
 
     fn navigate(&mut self, page: Page, cx: &mut Context<Self>) {
         if self.page != page {
+            if page == Page::Override {
+                self.overrides.update(cx, |page, cx| page.reopen(cx));
+            }
+            if let Some(kind) = page.settings_kind()
+                && let Some((_, settings)) = self.settings.iter().find(|(key, _)| *key == kind)
+                && let Some(window) = cx.active_window()
+            {
+                let settings = settings.clone();
+                cx.defer(move |cx| {
+                    let _ = window.update(cx, |_, window, cx| {
+                        settings.update(cx, |page, cx| page.reopen(window, cx))
+                    });
+                });
+            }
             self.page = page;
             cx.notify();
         }
@@ -188,39 +204,48 @@ impl SukiApp {
             .small()
             .w_full()
             .h(layout::NAV_ITEM_HEIGHT)
+            .flex_shrink_0()
             .px(space::MD)
+            .overflow_hidden()
             .rounded(cx.theme().radius)
             .selected(self.page == page)
             .accessibility_label(page.label())
-            .when(collapsed, |button| {
-                button.px(space::NONE).tooltip(page.label())
-            })
+            .when(collapsed, |button| button.tooltip(page.label()))
             .child(
                 h_flex()
                     .w_full()
+                    .min_w_0()
                     .gap(space::MD)
-                    .when(collapsed, |row| row.justify_center().gap(space::NONE))
                     .child(Icon::new(page.icon()).size(layout::ICON).flex_shrink_0())
-                    .when(!collapsed, |row| row.child(div().child(page.label()))),
+                    .child(
+                        div()
+                            .min_w_0()
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .child(page.label()),
+                    ),
             )
             .on_click(cx.listener(move |this, _, _, cx| this.navigate(page, cx)))
     }
 
     fn sidebar(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let width = if self.collapsed {
-            layout::SIDEBAR_COLLAPSED_WIDTH
-        } else {
-            layout::SIDEBAR_WIDTH
-        };
         let motion = cx.theme().motion_tokens();
-        let width = gpui_kit::base::motion::transition(
-            "sidebar-width",
-            width.to_pixels(window.rem_size()),
+        let expanded = gpui_kit::base::motion::transition(
+            "sidebar-expanded",
+            if self.collapsed { 0.0_f32 } else { 1.0 },
             gpui_kit::base::motion::Transition::new(motion.duration_normal)
                 .easing(motion.easing_move.clone()),
             window,
             cx,
         );
+        let collapsed_width = layout::SIDEBAR_COLLAPSED_WIDTH.to_pixels(window.rem_size());
+        let expanded_width = layout::SIDEBAR_WIDTH.to_pixels(window.rem_size());
+        let width = collapsed_width + (expanded_width - collapsed_width) * expanded;
+        let header_height = layout::SIDEBAR_GROUP_HEADER_HEIGHT.to_pixels(window.rem_size());
+        let brand_inset =
+            (collapsed_width - layout::BRAND_LOGO_SIZE.to_pixels(window.rem_size())) / 2.;
+        let brand_inset =
+            brand_inset + (space::LG.to_pixels(window.rem_size()) - brand_inset) * expanded;
         let mut navigation = v_flex().gap(space::LG).px(space::MD).pb(space::MD);
         for (label, pages) in [
             (
@@ -240,22 +265,32 @@ impl SukiApp {
         ] {
             navigation = navigation.child(
                 v_flex()
-                    .gap(space::XS)
-                    .when(!self.collapsed, |column| {
-                        column.child(
-                            div()
-                                .px(space::MD)
-                                .pt(space::XS)
-                                .pb(space::XS)
-                                .text_size(text::CAPTION)
-                                .text_color(cx.theme().muted_foreground)
-                                .child(label),
-                        )
-                    })
-                    .children(pages.into_iter().map(|page| self.nav_item(page, cx))),
+                    .child(
+                        div()
+                            .h(header_height * expanded)
+                            .flex_shrink_0()
+                            .overflow_hidden()
+                            .child(
+                                div()
+                                    .h(header_height)
+                                    .px(space::MD)
+                                    .pt(space::XS)
+                                    .pb(space::XS)
+                                    .text_size(text::CAPTION)
+                                    .text_color(cx.theme().muted_foreground)
+                                    .whitespace_nowrap()
+                                    .child(label),
+                            ),
+                    )
+                    .child(
+                        v_flex()
+                            .gap(space::XS)
+                            .children(pages.into_iter().map(|page| self.nav_item(page, cx))),
+                    ),
             );
         }
         v_flex()
+            .id("sidebar")
             .w(width)
             .overflow_hidden()
             .flex_shrink_0()
@@ -264,21 +299,23 @@ impl SukiApp {
                 h_flex()
                     .h(layout::BRAND_HEIGHT)
                     .flex_shrink_0()
-                    .px(space::LG)
+                    .px(brand_inset)
                     .gap(space::SM)
-                    .when(self.collapsed, |row| {
-                        row.px(space::NONE).gap(space::NONE).justify_center()
-                    })
+                    .overflow_hidden()
                     .child(
                         img(self.logo.clone())
                             .size(layout::BRAND_LOGO_SIZE)
                             .flex_shrink_0()
                             .object_fit(ObjectFit::Contain),
                     )
-                    .when(!self.collapsed, |row| {
-                        row.child(div().font_weight(text::HEADING).child("Suki Clash"))
-                            .child(div().flex_1())
-                    }),
+                    .child(
+                        div()
+                            .min_w_0()
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .font_weight(text::HEADING)
+                            .child("Suki Clash"),
+                    ),
             )
             .child(
                 div()
@@ -290,9 +327,10 @@ impl SukiApp {
             )
             .child(
                 v_flex()
+                    .flex_shrink_0()
                     .px(space::MD)
                     .pb(space::MD)
-                    .gap(space::SM)
+                    .gap(space::XS)
                     .child(self.nav_item(Page::SysProxy, cx))
                     .child(self.nav_item(Page::Tun, cx))
                     .child(self.nav_item(Page::Settings, cx)),
@@ -325,6 +363,7 @@ impl Render for SukiApp {
         let system_proxy = self.session.read(cx).system_proxy();
         let tun = self.session.read(cx).tun();
         let running = self.session.read(cx).is_running();
+        let core_label = self.session.read(cx).core().label();
         v_flex()
             .id("suki-window")
             .key_context("Suki")
@@ -350,14 +389,19 @@ impl Render for SukiApp {
                     .bg(cx.theme().background.opacity(opacity::TRANSPARENT))
                     .child(
                         h_flex()
-                            .w_full()
+                            .flex_1()
+                            .min_w_0()
                             .gap(space::SM)
                             .pr(space::SM)
-                            .child(
+                            .child(window::titlebar_control(
                                 ui::icon_button(
                                     "toggle-sidebar",
                                     IconName::PanelLeft,
-                                    "切换侧栏 · ⌘B",
+                                    if cx.platform_info().is_mac() {
+                                        "切换侧栏 · ⌘B"
+                                    } else {
+                                        "切换侧栏 · Ctrl+B"
+                                    },
                                 )
                                 .on_click(cx.listener(
                                     |this, _, _, cx| {
@@ -365,36 +409,28 @@ impl Render for SukiApp {
                                         cx.notify();
                                     },
                                 )),
-                            )
+                            ))
                             .when(self.page != Page::Overview, |bar| {
                                 bar.child(ui::muted("Suki Clash", cx).text_size(text::CAPTION))
                             })
                             .child(div().flex_1())
-                            .child(
+                            .child(window::titlebar_control(
                                 ui::icon_button(
                                     "core-status",
                                     IconName::Cpu,
-                                    if running {
-                                        "内核运行中 · 打开内核设置"
-                                    } else {
-                                        "内核已停止 · 打开内核设置"
-                                    },
+                                    &format!("内核{core_label} · 打开内核设置"),
                                 )
                                 .text_color(if running {
                                     cx.theme().primary
                                 } else {
                                     cx.theme().muted_foreground
                                 })
-                                .accessibility_label(if running {
-                                    "内核：运行中"
-                                } else {
-                                    "内核：已停止"
-                                })
+                                .accessibility_label(format!("内核：{core_label}"))
                                 .on_click(
                                     cx.listener(|this, _, _, cx| this.navigate(Page::Core, cx)),
                                 ),
-                            )
-                            .child(
+                            ))
+                            .child(window::titlebar_control(
                                 ui::status_toggle(
                                     "system-proxy",
                                     IconName::Globe,
@@ -405,13 +441,13 @@ impl Render for SukiApp {
                                 .on_click(move |_, window, cx| {
                                     ui::request_command("切换系统代理", window, cx)
                                 }),
-                            )
-                            .child(
+                            ))
+                            .child(window::titlebar_control(
                                 ui::status_toggle("tun", IconName::Network, "虚拟网卡", tun, cx)
                                     .on_click(move |_, window, cx| {
                                         ui::request_command("切换虚拟网卡", window, cx)
                                     }),
-                            ),
+                            )),
                     ),
             )
             .child(
@@ -456,14 +492,133 @@ mod tests {
     use super::{Page, SukiApp};
     use gpui_kit::test::TestWindowExt;
     use gpui_kit::{AppContext as _, TestAppContext, px, size};
+
+    #[gpui_kit::test]
+    fn startup_failure_keeps_navigation_and_settings_visible(cx: &mut TestAppContext) {
+        let root = tempfile::tempdir().unwrap();
+        let paths = crate::storage::AppPaths::isolated(root.path());
+        let repository = crate::storage::Repository::open(paths.clone()).unwrap();
+        let broken = paths.settings().join("settings.json");
+        std::fs::write(&broken, b"broken settings").unwrap();
+        let service = crate::integration::Service::start(repository).unwrap();
+        assert!(service.startup_error().is_some());
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            crate::integration::init(service, cx);
+            cx.set_reduce_motion(true);
+        });
+        let handle = cx.open_window(size(px(1220.), px(820.)), |window, cx| {
+            let app = cx.new(|cx| SukiApp::new(window, cx));
+            gpui_kit::base::Root::new(app, window, cx)
+        });
+        cx.run_until_parked();
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            assert!(window.find("nav-overview").bounds().size.width > px(0.));
+            window.click("nav-settings", cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            assert!(window.find("nav-settings").bounds().size.width > px(0.));
+            window.click("nav-logs", cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            assert!(window.find("logs-clear").bounds().size.width > px(0.));
+        })
+        .unwrap();
+        assert_eq!(std::fs::read(broken).unwrap(), b"broken settings");
+        crate::integration::finish_test_services(cx);
+    }
+    #[gpui_kit::test]
+    fn sidebar_geometry_moves_together_and_reverses_without_jumps(cx: &mut TestAppContext) {
+        let root = tempfile::tempdir().unwrap();
+        let service = crate::integration::Service::start(
+            crate::integration::Repository::open(crate::integration::AppPaths::isolated(
+                root.path(),
+            ))
+            .unwrap(),
+        )
+        .unwrap();
+        cx.update(|cx| {
+            crate::integration::init(service, cx);
+            gpui_kit::init(cx);
+            cx.set_reduce_motion(false);
+        });
+        let owner = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let captured = owner.clone();
+        let handle = cx.open_window(size(px(1220.), px(820.)), move |window, cx| {
+            let view = cx.new(|cx| SukiApp::new(window, cx));
+            *captured.borrow_mut() = Some(view.clone());
+            gpui_kit::base::Root::new(view, window, cx)
+        });
+        cx.run_until_parked();
+        let app = owner.borrow().as_ref().unwrap().clone();
+        let geometry = |cx: &mut TestAppContext| {
+            cx.update_window(handle.into(), |_, window, cx| {
+                window.render_frame(cx);
+                ["nav-overview", "nav-rules", "nav-settings"].map(|id| window.find(id).bounds())
+            })
+            .unwrap()
+        };
+        let initial = geometry(cx);
+        app.update(cx, |app, cx| {
+            app.collapsed = true;
+            cx.notify();
+        });
+        let start = geometry(cx);
+        assert_eq!(
+            start, initial,
+            "collapse must not immediately rearrange navigation"
+        );
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(70));
+        let midway = geometry(cx);
+        assert!(midway[0].size.width < initial[0].size.width);
+        assert!(midway[0].top() < initial[0].top());
+        assert!(midway[1].top() < initial[1].top());
+        assert_eq!(
+            midway[2].top(),
+            initial[2].top(),
+            "footer must remain anchored"
+        );
+
+        app.update(cx, |app, cx| {
+            app.collapsed = false;
+            cx.notify();
+        });
+        let reversed = geometry(cx);
+        for (before, after) in midway.into_iter().zip(reversed) {
+            assert!((before.size.width - after.size.width).abs() < px(0.01));
+            assert!((before.top() - after.top()).abs() < px(0.01));
+        }
+        cx.update(|cx| cx.set_reduce_motion(true));
+        assert_eq!(geometry(cx), initial);
+        app.update(cx, |app, cx| {
+            app.collapsed = true;
+            cx.notify();
+        });
+        let collapsed = geometry(cx);
+        assert!(collapsed[0].size.width < midway[0].size.width);
+        assert!(collapsed[0].top() < midway[0].top());
+        cx.update_window(handle.into(), |_, window, cx| window.click("nav-rules", cx))
+            .unwrap();
+        cx.run_until_parked();
+        cx.update(|cx| assert_eq!(app.read(cx).page, Page::Rules));
+        crate::integration::finish_test_services(cx);
+    }
+
     #[gpui_kit::test]
     fn empty_workspace_renders_all_routes_without_preview_fallback(cx: &mut TestAppContext) {
         let root = tempfile::tempdir().unwrap();
         let service = crate::integration::Service::start(
-            crate::integration::Repository::open(
-                crate::integration::AppPaths::isolated(root.path()),
-                None,
-            )
+            crate::integration::Repository::open(crate::integration::AppPaths::isolated(
+                root.path(),
+            ))
             .unwrap(),
         )
         .unwrap();
@@ -482,6 +637,31 @@ mod tests {
             });
             cx.run_until_parked();
             let app = owner.borrow().as_ref().unwrap().clone();
+            cx.update_window(window.into(), |_, window, cx| {
+                window.click("toggle-sidebar", cx);
+            })
+            .unwrap();
+            cx.run_until_parked();
+            cx.update(|cx| assert!(app.read(cx).collapsed));
+            cx.update_window(window.into(), |_, window, cx| {
+                window.press(
+                    if cx.platform_info().is_mac() {
+                        "cmd-b"
+                    } else {
+                        "ctrl-b"
+                    },
+                    cx,
+                );
+            })
+            .unwrap();
+            cx.run_until_parked();
+            cx.update(|cx| assert!(!app.read(cx).collapsed));
+            cx.update_window(window.into(), |_, window, cx| {
+                window.click("core-status", cx);
+            })
+            .unwrap();
+            cx.run_until_parked();
+            cx.update(|cx| assert_eq!(app.read(cx).page, Page::Core));
             for page in Page::ALL {
                 app.update(cx, |app, cx| app.navigate(page, cx));
                 cx.run_until_parked();
@@ -512,5 +692,6 @@ mod tests {
                 .unwrap();
             }
         }
+        crate::integration::finish_test_services(cx);
     }
 }

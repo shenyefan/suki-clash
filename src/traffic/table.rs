@@ -7,8 +7,8 @@ use crate::ui::theme::{column, layout, space, text};
 use gpui_kit::{
     assets::IconName,
     component::{
-        ActiveTheme, Sizable, h_flex,
-        menu::{PopupMenu, PopupMenuItem},
+        ActiveTheme, Disableable, Sizable, h_flex,
+        menu::PopupMenu,
         table::{Column, ColumnSort, TableDelegate, TableState},
     },
     *,
@@ -42,9 +42,11 @@ pub(super) const CONNECTION_COLUMNS: [(&str, f32); 12] = [
 
 pub(super) struct RecordsTable {
     pub(super) kind: TrafficKind,
+    pub(super) live: bool,
     pub(super) records: Vec<Record>,
     pub(super) visible: Vec<usize>,
     pub(super) query: String,
+    pub(super) search: crate::search::Search,
     pub(super) tab: usize,
     pub(super) filter: String,
     pub(super) sort: Option<(usize, bool)>,
@@ -56,9 +58,11 @@ impl RecordsTable {
     pub(super) fn new(kind: TrafficKind) -> Self {
         let mut table = Self {
             kind,
+            live: false,
             records: Vec::new(),
             visible: vec![],
             query: String::new(),
+            search: Default::default(),
             tab: 0,
             filter: String::new(),
             sort: None,
@@ -70,6 +74,7 @@ impl RecordsTable {
         table
     }
     pub(super) fn rebuild(&mut self) {
+        self.search.compile(&self.query);
         self.visible = {
             self.records
                 .iter()
@@ -84,11 +89,7 @@ impl RecordsTable {
                         || self.filter == "全部"
                         || self.filter == "全部类型"
                         || r.cells.iter().any(|v| v == &self.filter);
-                    matches_tab
-                        && matches_filter
-                        && r.cells
-                            .iter()
-                            .any(|v| v.to_lowercase().contains(&self.query))
+                    matches_tab && matches_filter && self.search.matches(&r.cells.join("  "))
                 })
                 .map(|(index, _)| index)
                 .collect()
@@ -142,6 +143,7 @@ impl RecordsTable {
 
     fn actions(&self, row: Record, _cx: &mut Context<TableState<Self>>) -> AnyElement {
         let id = row.id;
+        let target = row.connection.clone();
         let title = match self.kind {
             TrafficKind::Connections => "连接详情",
             TrafficKind::Rules => "规则详情",
@@ -152,7 +154,7 @@ impl RecordsTable {
         h_flex()
             .gap(space::XS)
             .child(
-                ui::icon_button(("record-details", id), IconName::Info, "查看详情…")
+                ui::icon_button(("record-details", id), IconName::Info, "查看详情")
                     .small()
                     .on_click(move |_, window, cx| {
                         ui::detail_dialog(title, details.clone(), window, cx)
@@ -162,7 +164,10 @@ impl RecordsTable {
                 TrafficKind::Connections if row.active => {
                     ui::icon_button(("close-connection", id), IconName::X, "关闭此连接")
                         .small()
-                        .on_click(move |_, window, cx| ui::request_command("关闭连接", window, cx))
+                        .disabled(!self.live)
+                        .on_click(move |_, window, cx| {
+                            super::close_connection(target.clone(), window, cx)
+                        })
                         .into_any_element()
                 }
                 TrafficKind::Rules => {
@@ -360,7 +365,7 @@ impl TableDelegate for RecordsTable {
             if let Some(record) = self.visible.get(row).map(|index| &self.records[*index]) {
                 let value = rule_text(record);
                 return menu.item(
-                    PopupMenuItem::new("复制规则")
+                    crate::ui::actions::menu("复制规则")
                         .icon(IconName::Copy)
                         .on_click(move |_, _, cx| {
                             cx.write_to_clipboard(ClipboardItem::new_string(value.clone()))
@@ -382,7 +387,7 @@ impl TableDelegate for RecordsTable {
         let id = record.id;
         let owner = cx.entity();
         menu = menu.item(
-            PopupMenuItem::new("查看连接详情")
+            crate::ui::actions::menu("查看连接详情")
                 .icon(IconName::Info)
                 .on_click(move |_, _, cx| {
                     owner.update(cx, |table, cx| {
@@ -400,21 +405,22 @@ impl TableDelegate for RecordsTable {
             ("复制规则", 6),
         ] {
             let value = record.cells[index].clone();
-            menu = menu.item(PopupMenuItem::new(label).on_click(move |_, _, cx| {
+            menu = menu.item(crate::ui::actions::menu(label).on_click(move |_, _, cx| {
                 cx.write_to_clipboard(ClipboardItem::new_string(value.clone()))
             }));
         }
         let details = record.details.clone();
         menu = menu.item(
-            PopupMenuItem::new("复制全部详情").on_click(move |_, _, cx| {
+            crate::ui::actions::menu("复制全部详情").on_click(move |_, _, cx| {
                 cx.write_to_clipboard(ClipboardItem::new_string(details.clone()))
             }),
         );
+        let target = record.connection.clone();
         menu.separator().item(
-            PopupMenuItem::new("关闭连接")
+            crate::ui::actions::menu("关闭连接")
                 .icon(IconName::X)
-                .disabled(!record.active)
-                .on_click(move |_, window, cx| ui::request_command("关闭连接", window, cx)),
+                .disabled(!record.active || !self.live)
+                .on_click(move |_, window, cx| super::close_connection(target.clone(), window, cx)),
         )
     }
 

@@ -45,11 +45,9 @@ pub(crate) mod layout {
     pub(crate) const CONNECTION_DETAILS_COLUMNS: u16 = 4;
     pub(crate) const CONNECTION_DETAILS_HEIGHT: Rems = rems(15.);
     pub(crate) const TABLE_ACTIONS_WIDTH: Rems = rems(5.);
-    pub(crate) const TABLE_HEADER_HEIGHT: Rems = rems(1.75);
     pub(crate) const CONTROL_HEIGHT: Rems = rems(2.);
-    pub(crate) const RANKING_ROW_HEIGHT: Rems = rems(2.25);
     pub(crate) const NAV_ITEM_HEIGHT: Rems = rems(2.5);
-    pub(crate) const ROW_HEIGHT: Rems = rems(3.);
+    pub(crate) const SIDEBAR_GROUP_HEADER_HEIGHT: Rems = rems(2.);
     pub(crate) const TITLE_HEIGHT: Rems = rems(3.5);
     pub(crate) const BRAND_LOGO_SIZE: Rems = rems(1.75);
     pub(crate) const BRAND_HEIGHT: Rems = rems(4.);
@@ -68,10 +66,7 @@ pub(crate) mod layout {
     pub(crate) const DIALOG_RESERVED_HEIGHT: Rems = rems(12.);
     pub(crate) const FORM_MAX_HEIGHT: Rems = rems(28.);
     pub(crate) const METRIC_WIDTH: Rems = rems(4.);
-    pub(crate) const VALUE_WIDTH: Rems = rems(5.);
     pub(crate) const FILTER_WIDTH: Rems = rems(10.);
-    pub(crate) const LABEL_WIDTH: Rems = rems(11.);
-    pub(crate) const FIELD_WIDTH: Rems = rems(12.);
     pub(crate) const SIDEBAR_WIDTH: Rems = rems(13.5);
     pub(crate) const LONG_FIELD_WIDTH: Rems = rems(14.);
     pub(crate) const SEARCH_WIDTH: Rems = rems(20.);
@@ -116,8 +111,9 @@ pub(crate) mod proxy_card {
 
 /// List spacing policy, separate from the shared spacing scale.
 pub(crate) mod list {
+    pub(crate) const DETAIL_ROW_HEIGHT: Rems = rems(4.);
+    pub(crate) const MAX_VISIBLE_ROWS: usize = 8;
     use super::*;
-    pub(crate) const GROUP_GAP: Rems = space::NONE;
     pub(crate) const INSET_X: Rems = space::SM;
     pub(crate) const INSET_Y: Rems = space::XS;
     pub(crate) const PADDING_X: Rems = space::MD;
@@ -159,7 +155,6 @@ pub(crate) mod opacity {
     pub(crate) const SELECTED: f32 = 0.12;
     pub(crate) const ACTIVE_DARK: f32 = 0.55;
     pub(crate) const ACTIVE_LIGHT: f32 = 0.18;
-    pub(crate) const GROUP_HEADER: f32 = 0.28;
     pub(crate) const PANEL: f32 = 0.3;
     pub(crate) const DASHBOARD: f32 = 0.9;
     pub(crate) const CONTROL_LIGHT: f32 = 0.65;
@@ -169,15 +164,43 @@ pub(crate) mod opacity {
     const CHROME_LIGHT: f32 = 0.72;
     const WORKSPACE_DARK: f32 = 0.18;
     const WORKSPACE_LIGHT: f32 = 0.88;
+    const ACRYLIC_CHROME_DARK: f32 = 0.73;
+    const ACRYLIC_CHROME_LIGHT: f32 = 0.68;
+    const ACRYLIC_WORKSPACE_DARK: f32 = 0.12;
+    const ACRYLIC_WORKSPACE_LIGHT: f32 = 0.30;
 
     pub(super) fn chrome(dark: bool) -> f32 {
-        if dark { CHROME_DARK } else { CHROME_LIGHT }
+        if cfg!(target_os = "windows") {
+            acrylic_chrome(dark)
+        } else if dark {
+            CHROME_DARK
+        } else {
+            CHROME_LIGHT
+        }
     }
     pub(super) fn workspace(dark: bool) -> f32 {
-        if dark {
+        if cfg!(target_os = "windows") {
+            acrylic_workspace(dark)
+        } else if dark {
             WORKSPACE_DARK
         } else {
             WORKSPACE_LIGHT
+        }
+    }
+
+    pub(super) fn acrylic_chrome(dark: bool) -> f32 {
+        if dark {
+            ACRYLIC_CHROME_DARK
+        } else {
+            ACRYLIC_CHROME_LIGHT
+        }
+    }
+
+    pub(super) fn acrylic_workspace(dark: bool) -> f32 {
+        if dark {
+            ACRYLIC_WORKSPACE_DARK
+        } else {
+            ACRYLIC_WORKSPACE_LIGHT
         }
     }
 }
@@ -199,6 +222,7 @@ pub(crate) mod column {
     pub(crate) const TIME: f32 = 6.5;
     pub(crate) const MESSAGE: f32 = 25.;
     pub(crate) const LOG_LEVEL: f32 = 7.;
+    pub(crate) const LOG_TIME: f32 = 10.5;
 }
 
 // 2. 深浅调色板：同一个语义在两种外观中有独立取值。
@@ -304,7 +328,8 @@ pub(crate) fn configure_theme(cx: &mut App) {
             Some("右上角") => Anchor::TopRight,
             Some("左上角") => Anchor::TopLeft,
             Some("左下角") => Anchor::BottomLeft,
-            _ => Anchor::BottomRight,
+            Some("右下角") => Anchor::BottomRight,
+            _ => Anchor::TopCenter,
         };
     });
 }
@@ -320,7 +345,7 @@ fn apply(theme: &mut Theme) {
     }
     .into();
     theme.font_size = text::BASE;
-    theme.notification.placement = Anchor::BottomRight;
+    theme.notification.placement = Anchor::TopCenter;
     theme.radius = radius::CONTROL;
     theme.radius_lg = radius::SURFACE;
     theme.colors.background = if theme.is_dark() {
@@ -427,53 +452,58 @@ mod tests {
     fn text_remains_readable_over_light_and_dark_backdrops_in_both_themes() {
         for dark in [true, false] {
             let p = palette(dark);
-            for backdrop in [0x000000, 0xffffff] {
-                let chrome = blend(
-                    channels(p.chrome),
-                    opacity::chrome(dark),
-                    channels(backdrop),
-                );
-                let workspace = blend(channels(p.workspace), opacity::workspace(dark), chrome);
-                for surface in [
-                    chrome,
-                    workspace,
-                    channels(p.background),
-                    blend(channels(p.dashboard), opacity::DASHBOARD, chrome),
-                    blend(
-                        channels(if dark { p.foreground } else { p.background }),
-                        if dark {
-                            opacity::SELECTED
-                        } else {
-                            opacity::CONTROL_LIGHT
-                        },
-                        workspace,
-                    ),
-                    blend(channels(p.accent), opacity::PANEL, workspace),
-                    blend(
-                        channels(p.selected),
-                        if dark {
-                            opacity::ACTIVE_DARK
-                        } else {
-                            opacity::ACTIVE_LIGHT
-                        },
+            // Exercise Windows Acrylic contrast on every development platform.
+            for (chrome_opacity, workspace_opacity) in [
+                (opacity::chrome(dark), opacity::workspace(dark)),
+                (
+                    opacity::acrylic_chrome(dark),
+                    opacity::acrylic_workspace(dark),
+                ),
+            ] {
+                for backdrop in [0x000000, 0xffffff] {
+                    let chrome = blend(channels(p.chrome), chrome_opacity, channels(backdrop));
+                    let workspace = blend(channels(p.workspace), workspace_opacity, chrome);
+                    for surface in [
                         chrome,
-                    ),
-                    blend(
-                        channels(p.selected),
-                        if dark {
-                            opacity::ACTIVE_DARK
-                        } else {
-                            opacity::ACTIVE_LIGHT
-                        },
                         workspace,
-                    ),
-                ] {
-                    for text in [p.foreground, p.muted_foreground] {
-                        assert!(
-                            contrast(channels(text), surface) >= 4.5,
-                            "theme dark={dark}, text={text:x}, contrast={}",
-                            contrast(channels(text), surface)
-                        );
+                        channels(p.background),
+                        blend(channels(p.dashboard), opacity::DASHBOARD, chrome),
+                        blend(
+                            channels(if dark { p.foreground } else { p.background }),
+                            if dark {
+                                opacity::SELECTED
+                            } else {
+                                opacity::CONTROL_LIGHT
+                            },
+                            workspace,
+                        ),
+                        blend(channels(p.accent), opacity::PANEL, workspace),
+                        blend(
+                            channels(p.selected),
+                            if dark {
+                                opacity::ACTIVE_DARK
+                            } else {
+                                opacity::ACTIVE_LIGHT
+                            },
+                            chrome,
+                        ),
+                        blend(
+                            channels(p.selected),
+                            if dark {
+                                opacity::ACTIVE_DARK
+                            } else {
+                                opacity::ACTIVE_LIGHT
+                            },
+                            workspace,
+                        ),
+                    ] {
+                        for text in [p.foreground, p.muted_foreground] {
+                            assert!(
+                                contrast(channels(text), surface) >= 4.5,
+                                "theme dark={dark}, text={text:x}, contrast={}",
+                                contrast(channels(text), surface)
+                            );
+                        }
                     }
                 }
             }

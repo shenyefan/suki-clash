@@ -9,7 +9,7 @@ use gpui_kit::{
         Disableable, Sizable,
         button::{Button, ButtonVariants},
         h_flex,
-        menu::{DropdownMenu, PopupMenuItem},
+        menu::DropdownMenu,
         scroll::ScrollableElement,
         tag::Tag,
         v_flex,
@@ -31,7 +31,7 @@ impl TrafficPage {
                     let table = table.clone();
                     let visible = !hidden.contains(&index);
                     menu = menu.item(
-                        PopupMenuItem::new(*label)
+                        crate::ui::actions::menu(*label)
                             .checked(visible)
                             .disabled(visible && hidden.len() + 1 == CONNECTION_COLUMNS.len())
                             .on_click(move |_, _, cx| {
@@ -48,15 +48,17 @@ impl TrafficPage {
                 }
                 let table = table.clone();
                 menu.separator()
-                    .item(PopupMenuItem::new("恢复默认列").on_click(move |_, _, cx| {
-                        table.update(cx, |table, cx| {
-                            table.delegate_mut().hidden_columns.clear();
-                            table.delegate_mut().column_order =
-                                (0..CONNECTION_COLUMNS.len()).collect();
-                            table.refresh(cx);
-                            cx.notify();
-                        });
-                    }))
+                    .item(
+                        crate::ui::actions::menu("恢复默认列").on_click(move |_, _, cx| {
+                            table.update(cx, |table, cx| {
+                                table.delegate_mut().hidden_columns.clear();
+                                table.delegate_mut().column_order =
+                                    (0..CONNECTION_COLUMNS.len()).collect();
+                                table.refresh(cx);
+                                cx.notify();
+                            });
+                        }),
+                    )
             })
     }
 
@@ -115,6 +117,7 @@ impl TrafficPage {
     }
 
     pub(super) fn connection_details(&self, record: Record, cx: &mut Context<Self>) -> Div {
+        let target = record.connection.clone();
         let fields = |indices: &[usize]| {
             v_flex()
                 .gap(space::MD)
@@ -159,9 +162,11 @@ impl TrafficPage {
                             .with_size(control::STANDARD)
                             .icon(IconName::X)
                             .label("关闭连接")
-                            .disabled(!record.active)
+                            .disabled(
+                                !record.active || !self.session.read(cx).runtime().connections_live,
+                            )
                             .on_click(move |_, window, cx| {
-                                ui::request_command("关闭连接", window, cx)
+                                super::close_connection(target.clone(), window, cx)
                             }),
                     )
                     .child(

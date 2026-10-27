@@ -1,5 +1,3 @@
-use regex::{Regex, RegexBuilder};
-
 pub(super) const MAX_LOGS: usize = 1000;
 
 #[derive(Clone)]
@@ -8,11 +6,21 @@ pub(crate) struct LogEntry {
     pub(crate) time: String,
     pub(crate) level: String,
     pub(crate) source: usize,
+    pub(crate) origin: String,
     pub(crate) message: String,
 }
 impl LogEntry {
+    pub(super) fn time_key(&self) -> (Option<chrono::DateTime<chrono::FixedOffset>>, u64) {
+        (
+            chrono::DateTime::parse_from_rfc3339(&self.time).ok(),
+            self.id,
+        )
+    }
     pub(super) fn text(&self) -> String {
-        format!("{}  {}  {}", self.time, self.level, self.message)
+        format!(
+            "{}  {}  [{}]  {}",
+            self.time, self.level, self.origin, self.message
+        )
     }
 }
 
@@ -33,12 +41,28 @@ impl LogBuffer {
                 "err" | "error" => "ERROR".into(),
                 level => level.to_ascii_uppercase(),
             };
-            self.next_id += 1;
-            entry.id = self.next_id;
+            self.next_id = self.next_id.max(entry.id);
+            if entry.id == 0 {
+                self.next_id += 1;
+                entry.id = self.next_id;
+            }
             self.entries.push(entry);
         }
-        if self.entries.len() > MAX_LOGS {
-            self.entries.drain(..self.entries.len() - MAX_LOGS);
+        for source in [0, 1] {
+            let mut excess = self
+                .entries
+                .iter()
+                .filter(|entry| entry.source == source)
+                .count()
+                .saturating_sub(MAX_LOGS);
+            self.entries.retain(|entry| {
+                if entry.source == source && excess > 0 {
+                    excess -= 1;
+                    false
+                } else {
+                    true
+                }
+            });
         }
     }
     pub(super) fn clear(&mut self, source: usize) {
@@ -46,52 +70,7 @@ impl LogBuffer {
     }
 }
 
-#[derive(Default)]
-pub(super) struct LogSearch {
-    pub(super) case_sensitive: bool,
-    pub(super) whole_word: bool,
-    pub(super) regular_expression: bool,
-    pub(super) matcher: Option<Regex>,
-    pub(super) error: Option<String>,
-}
-impl LogSearch {
-    pub(super) fn compile(&mut self, query: &str) {
-        self.error = None;
-        if query.is_empty() {
-            self.matcher = None;
-            return;
-        }
-        let pattern = if self.regular_expression {
-            query.to_owned()
-        } else {
-            regex::escape(query)
-        };
-        let pattern = if self.whole_word {
-            format!(r"\b(?:{pattern})\b")
-        } else {
-            pattern
-        };
-        match RegexBuilder::new(&pattern)
-            .case_insensitive(!self.case_sensitive)
-            .build()
-        {
-            Ok(matcher) => self.matcher = Some(matcher),
-            Err(error) => {
-                self.error = Some(format!("正则表达式无效：{error}"));
-                // Match Clash Verge's literal fallback while the expression is incomplete.
-                self.matcher = RegexBuilder::new(&regex::escape(query))
-                    .case_insensitive(!self.case_sensitive)
-                    .build()
-                    .ok();
-            }
-        }
-    }
-    pub(super) fn matches(&self, entry: &LogEntry) -> bool {
-        self.matcher
-            .as_ref()
-            .is_none_or(|matcher| matcher.is_match(&entry.text()))
-    }
-}
+pub(super) use crate::search::Search as LogSearch;
 
 #[cfg(test)]
 pub(super) fn initial_entries() -> Vec<LogEntry> {
@@ -127,6 +106,7 @@ pub(super) fn initial_entries() -> Vec<LogEntry> {
         time: time.into(),
         level: level.into(),
         source,
+        origin: if source == 0 { "mihomo" } else { "application" }.into(),
         message: message.into(),
     })
     .collect()
@@ -138,10 +118,18 @@ mod tests {
     #[test]
     fn retention_pause_and_clear_preserve_other_source() {
         let mut buffer = LogBuffer::default();
-        for _ in 0..120 {
+        for _ in 0..240 {
             buffer.append(initial_entries());
         }
-        assert_eq!(buffer.entries.len(), MAX_LOGS);
+        assert_eq!(buffer.entries.len(), 1960);
+        assert!(
+            buffer
+                .entries
+                .iter()
+                .filter(|entry| entry.source == 0)
+                .count()
+                <= MAX_LOGS
+        );
         let last = buffer.entries.last().unwrap().id;
         buffer.paused = true;
         buffer.append(initial_entries());
@@ -175,21 +163,21 @@ mod tests {
         let entry = &initial_entries()[4];
         let mut search = LogSearch::default();
         search.compile("mixed");
-        assert!(search.matches(entry));
+        assert!(search.matches(&entry.text()));
         search.case_sensitive = true;
         search.compile("mixed");
-        assert!(!search.matches(entry));
+        assert!(!search.matches(&entry.text()));
         search.case_sensitive = false;
         search.whole_word = true;
         search.compile("mix");
-        assert!(!search.matches(entry));
+        assert!(!search.matches(&entry.text()));
         search.regular_expression = true;
         search.compile("Mixed.*listening");
-        assert!(search.matches(entry));
+        assert!(search.matches(&entry.text()));
         search.compile("[");
         assert!(search.error.is_some());
         search.whole_word = false;
         search.compile("代理组");
-        assert!(search.matches(&initial_entries()[2]));
+        assert!(search.matches(&initial_entries()[2].text()));
     }
 }

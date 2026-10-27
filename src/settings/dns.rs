@@ -1,217 +1,57 @@
-use super::{SettingsPage, schema::FieldKind};
+use super::SettingsPage;
 use crate::ui;
 use gpui_kit::*;
-use serde_yaml_ng::{Mapping, Value};
 
 // UI field names and Mihomo document keys stay at the document boundary.
-const KEYS: &[(&str, &str)] = &[
-    ("DnsEnabled", "enable"),
-    ("DnsListen", "listen"),
-    ("EnhancedModeIndex", "enhanced-mode"),
-    ("UseSystemHosts", "use-system-hosts"),
-    ("UseHosts", "use-hosts"),
-    ("DnsIpv6", "ipv6"),
-    ("PreferH3", "prefer-h3"),
-    ("RespectRules", "respect-rules"),
-    (
-        "DirectNameserverFollowPolicy",
-        "direct-nameserver-follow-policy",
-    ),
-    ("FakeIpRange", "fake-ip-range"),
-    ("FakeIpRange6", "fake-ip-range6"),
-    ("FakeIpFilter", "fake-ip-filter"),
-    ("FakeIpFilterModeIndex", "fake-ip-filter-mode"),
-    ("Nameserver", "nameserver"),
-    ("Fallback", "fallback"),
-    ("DefaultNameserver", "default-nameserver"),
-    ("DirectNameserver", "direct-nameserver"),
-    ("ProxyServerNameserver", "proxy-server-nameserver"),
-    ("NameserverPolicy", "nameserver-policy"),
-    ("FallbackGeoIp", "fallback-filter.geoip"),
-    ("FallbackGeoIpCode", "fallback-filter.geoip-code"),
-    ("FallbackIpCidr", "fallback-filter.ipcidr"),
-    ("FallbackDomain", "fallback-filter.domain"),
-];
-fn scalar(value: &Value) -> String {
-    match value {
-        Value::String(v) => v.clone(),
-        Value::Bool(v) => v.to_string(),
-        Value::Number(v) => v.to_string(),
-        _ => String::new(),
-    }
-}
-fn entries(value: &str) -> Vec<&str> {
-    value
-        .lines()
-        .map(str::trim)
-        .filter(|v| !v.is_empty())
-        .collect()
-}
-fn parse_mapping(text: &str) -> Result<Value, String> {
-    let mut map = Mapping::new();
-    for line in entries(text) {
-        let (key, value) = line
-            .split_once('=')
-            .ok_or_else(|| format!("映射需使用 域名=值 格式：{line}"))?;
-        if key.trim().is_empty() || value.trim().is_empty() {
-            return Err(format!("映射的域名和值不能为空：{line}"));
-        }
-        let values: Vec<_> = value
-            .split(';')
-            .map(str::trim)
-            .filter(|v| !v.is_empty())
-            .map(|v| Value::String(v.into()))
-            .collect();
-        map.insert(
-            Value::String(key.trim().into()),
-            if values.len() == 1 {
-                values[0].clone()
-            } else {
-                Value::Sequence(values)
-            },
-        );
-    }
-    Ok(Value::Mapping(map))
-}
-fn mapping_text(value: &Value) -> Result<String, String> {
-    let Some(map) = value.as_mapping() else {
-        return Err("Hosts 和解析策略必须是映射".into());
-    };
-    map.iter()
-        .map(|(key, value)| {
-            let key = key.as_str().ok_or("域名必须是文本")?;
-            let text = if let Some(values) = value.as_sequence() {
-                values.iter().map(scalar).collect::<Vec<_>>().join(";")
-            } else {
-                scalar(value)
-            };
-            if text.is_empty() {
-                return Err(format!("{key} 的映射值不受支持"));
-            }
-            Ok(format!("{key}={text}"))
-        })
-        .collect::<Result<Vec<_>, _>>()
-        .map(|lines| lines.join("\n"))
-}
-fn get<'a>(root: &'a Value, path: &str) -> Option<&'a Value> {
-    path.split('.').try_fold(root, |value, key| value.get(key))
-}
-fn put(root: &mut Value, path: &str, value: Value) {
-    if !root.is_mapping() {
-        *root = Value::Mapping(Mapping::new());
-    }
-    if let Some((key, rest)) = path.split_once('.') {
-        let child = root
-            .as_mapping_mut()
-            .unwrap()
-            .entry(Value::String(key.into()))
-            .or_insert_with(|| Value::Mapping(Mapping::new()));
-        put(child, rest, value);
-    } else {
-        root.as_mapping_mut()
-            .unwrap()
-            .insert(Value::String(path.into()), value);
-    }
-}
 impl SettingsPage {
-    pub(super) fn dns_to_yaml(&self, cx: &App) -> Result<String, String> {
-        let values = self.values(cx);
-        let mut root = self.dns_document.clone();
-        for (field, key) in KEYS {
-            let Some(spec) = self.fields.get(field) else {
-                continue;
-            };
-            let text = values.get(*field).map(String::as_str).unwrap_or("");
-            let value = if *field == "NameserverPolicy" {
-                parse_mapping(text)?
-            } else if spec.spec.kind == FieldKind::Toggle {
-                Value::Bool(text == "true")
-            } else if spec.spec.kind == FieldKind::Multiline {
-                Value::Sequence(
-                    entries(text)
-                        .into_iter()
-                        .map(|v| Value::String(v.into()))
-                        .collect(),
-                )
-            } else if *field == "FakeIpFilterModeIndex" {
-                Value::String(
-                    if text.contains("whitelist") {
-                        "whitelist"
-                    } else if text.contains("blacklist") {
-                        "blacklist"
-                    } else {
-                        "rule"
-                    }
-                    .into(),
-                )
-            } else {
-                Value::String(text.into())
-            };
-            put(&mut root, &format!("dns.{key}"), value);
-        }
-        put(
-            &mut root,
-            "hosts",
-            parse_mapping(values.get("Hosts").map(String::as_str).unwrap_or(""))?,
-        );
-        serde_yaml_ng::to_string(&root).map_err(|e| e.to_string())
+    pub(super) fn dns_to_yaml(&self, _cx: &App) -> Result<String, String> {
+        let root = if self.dns_document.is_null() {
+            crate::preferences::native::initial(self.kind)?
+        } else {
+            self.dns_document.clone()
+        };
+        serde_yaml_ng::to_string(&root).map_err(|_| "无法编码 YAML 配置".into())
     }
     pub(super) fn read_dns_yaml(
         &mut self,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Result<(), String> {
-        let root: Value = serde_yaml_ng::from_str(self.dns_source.read(cx).value().as_ref())
-            .map_err(|e| format!("YAML 格式错误：{e}"))?;
-        if !root.is_mapping() || !root.get("dns").is_some_and(Value::is_mapping) {
-            return Err("配置需包含 dns 映射".into());
-        }
-        let mut values = self.values(cx);
-        for (field, key) in KEYS {
-            let Some(value) = get(&root, &format!("dns.{key}")) else {
-                continue;
-            };
-            let spec = &self.fields[field].spec;
-            let text = if *field == "NameserverPolicy" {
-                mapping_text(value)?
-            } else if spec.kind == FieldKind::Toggle {
-                value
-                    .as_bool()
-                    .ok_or_else(|| format!("{key} 需为 true 或 false"))?
-                    .to_string()
-            } else if spec.kind == FieldKind::Multiline {
-                value
-                    .as_sequence()
-                    .ok_or_else(|| format!("{key} 需为列表"))?
-                    .iter()
-                    .map(scalar)
-                    .collect::<Vec<_>>()
-                    .join("\n")
-            } else if *field == "FakeIpFilterModeIndex" {
-                match value.as_str() {
-                    Some("blacklist") => "黑名单（blacklist）",
-                    Some("whitelist") => "白名单（whitelist）",
-                    Some("rule") => "规则（rule）",
-                    _ => return Err("不支持的 Fake-IP 过滤模式".into()),
-                }
-                .into()
-            } else {
-                value
-                    .as_str()
-                    .ok_or_else(|| format!("{key} 需为文本"))?
-                    .to_owned()
-            };
-            if spec.kind == FieldKind::Select && !spec.options.contains(&text.as_str()) {
-                return Err(format!("{key} 的值不受支持"));
-            }
-            values.insert((*field).into(), text);
-        }
-        if let Some(hosts) = root.get("hosts") {
-            values.insert("Hosts".into(), mapping_text(hosts)?);
-        }
-        self.dns_document = root;
-        self.assign_values(&values, window, cx);
+        let mut values = crate::preferences::native::decode(
+            self.kind,
+            self.dns_source.read(cx).value().as_bytes(),
+        )?;
+        let flag = crate::preferences::native::flag(self.kind);
+        values.insert(
+            flag.into(),
+            self.values(cx)
+                .get(flag)
+                .cloned()
+                .unwrap_or_else(|| "false".into()),
+        );
+        let key = crate::preferences::native::key(self.kind).ok_or("不是 YAML 设置")?;
+        self.dns_document =
+            serde_yaml_ng::from_str(&values[key]).map_err(|_| "无法读取 YAML 文档")?;
+        self.core_syncing = true;
+        self.assign_values(&crate::preferences::choices::decode(values), window, cx);
+        self.core_syncing = false;
         Ok(())
+    }
+    fn dns_form_changes(&self, cx: &App) -> Result<crate::storage::Values, String> {
+        let root = if self.dns_document.is_null() {
+            crate::preferences::native::initial(self.kind)?
+        } else {
+            self.dns_document.clone()
+        };
+        let form = crate::preferences::choices::encode(self.values(cx));
+        let enabled = form
+            .get(crate::preferences::native::flag(self.kind))
+            .is_some_and(|value| value == "true");
+        let projected = crate::preferences::native::project(self.kind, &root, enabled)?;
+        Ok(form
+            .into_iter()
+            .filter(|(key, value)| projected.get(key) != Some(value))
+            .collect())
     }
     pub(super) fn switch_dns_mode(
         &mut self,
@@ -223,12 +63,27 @@ impl SettingsPage {
             return;
         }
         let result = if raw {
-            self.dns_to_yaml(cx).map(|source| {
-                self.dns_source
-                    .update(cx, |state, cx| state.set_value(source, window, cx))
+            self.dns_form_changes(cx).and_then(|changes| {
+                if !changes.is_empty() {
+                    let root = if self.dns_document.is_null() {
+                        crate::preferences::native::initial(self.kind)?
+                    } else {
+                        self.dns_document.clone()
+                    };
+                    self.dns_document =
+                        crate::preferences::native::patch(self.kind, &root, &changes)?;
+                    self.commit_core(changes, window, cx);
+                }
+                self.dns_to_yaml(cx).map(|source| {
+                    self.dns_source
+                        .update(cx, |state, cx| state.set_value(source, window, cx))
+                })
             })
         } else {
-            self.read_dns_yaml(window, cx)
+            self.read_dns_yaml(window, cx).map(|()| {
+                // A mode-button click may precede the editor's blur event.
+                self.commit_core(self.values(cx), window, cx);
+            })
         };
         match result {
             Ok(()) => self.dns_raw = raw,
@@ -240,7 +95,7 @@ impl SettingsPage {
 
 #[cfg(test)]
 mod tests {
-    use super::{get, mapping_text, parse_mapping, put};
+    use crate::configuration::flow::{get, mapping_text, parse_mapping, put};
     use serde_yaml_ng::Value;
     #[test]
     fn hosts_and_policy_roundtrip_multiple_values_and_ipv6() {
@@ -264,5 +119,185 @@ mod tests {
                 .unwrap()
                 .is_sequence()
         );
+    }
+}
+
+#[cfg(test)]
+mod synchronization_tests {
+    use crate::settings::{FieldControl, SettingsKind, SettingsPage};
+    use gpui_kit::component::WindowExt;
+    use gpui_kit::test::TestWindowExt;
+    use gpui_kit::{AppContext, Bounds, TestAppContext, WindowBounds, WindowOptions, px, size};
+    #[gpui_kit::test]
+    fn form_switches_and_yaml_share_the_complete_persisted_document(cx: &mut TestAppContext) {
+        let root = tempfile::tempdir().unwrap();
+        let paths = crate::storage::AppPaths::isolated(root.path());
+        let repository = crate::storage::Repository::open(paths).unwrap();
+        for (kind, source) in [
+            (
+                SettingsKind::Dns,
+                "dns: {enable: true, ipv6: true, nameserver: ['1.1.1.1'], cache-algorithm: arc}",
+            ),
+            (
+                SettingsKind::Sniffer,
+                "sniffer: {enable: true, custom: retained}",
+            ),
+        ] {
+            let mut values = crate::preferences::native::decode(kind, source.as_bytes()).unwrap();
+            values.insert(crate::preferences::native::flag(kind).into(), "true".into());
+            repository
+                .save(
+                    &crate::storage::Namespace::parse(kind.id()).unwrap(),
+                    &values,
+                )
+                .unwrap();
+        }
+        let service = crate::integration::Service::start(repository).unwrap();
+        cx.update(|cx| {
+            crate::integration::init(service, cx);
+            gpui_kit::init(cx);
+            cx.set_reduce_motion(true);
+        });
+        for (kind, global, service) in [
+            (SettingsKind::Dns, "DnsOverrideEnabled", "DnsEnabled"),
+            (
+                SettingsKind::Sniffer,
+                "SnifferOverrideEnabled",
+                "SnifferEnabled",
+            ),
+        ] {
+            let (window, page) = cx.update(|cx| {
+                gpui_kit::open_window(
+                    WindowOptions {
+                        window_bounds: Some(WindowBounds::Windowed(Bounds::new(
+                            Default::default(),
+                            size(px(1280.), px(900.)),
+                        ))),
+                        ..Default::default()
+                    },
+                    cx,
+                    |window, cx| {
+                        let session = cx.new(crate::session::Session::new);
+                        cx.new(|cx| SettingsPage::new(kind, session, window, cx))
+                    },
+                )
+                .unwrap()
+            });
+            cx.run_until_parked();
+            window
+                .update(cx, |_, window, cx| {
+                    window.render_frame(cx);
+                    let header_switch = window
+                        .find(gpui_kit::SharedString::from(format!("setting-{global}")))
+                        .bounds();
+                    let service_switch = window
+                        .find(gpui_kit::SharedString::from(format!("setting-{service}")))
+                        .bounds();
+                    assert!(header_switch.origin.y < service_switch.origin.y);
+                    assert_eq!(
+                        window
+                            .find_all(gpui_kit::SharedString::from(format!("setting-{global}")))
+                            .len(),
+                        1
+                    );
+                    window.click(
+                        gpui_kit::SharedString::from(format!("setting-{service}")),
+                        cx,
+                    );
+                    window.clear_notifications(cx);
+                    window.click(
+                        gpui_kit::SharedString::from(format!("setting-{global}")),
+                        cx,
+                    );
+                    window.clear_notifications(cx);
+                    page.update(cx, |page, cx| {
+                        page.switch_dns_mode(!page.dns_raw, window, cx)
+                    });
+                    assert!(
+                        page.read(cx).dns_raw,
+                        "mode {:?}: {:?}",
+                        kind,
+                        page.read(cx).error
+                    );
+                    let text = page.read(cx).dns_source.read(cx).value();
+                    let yaml: serde_yaml_ng::Value =
+                        serde_yaml_ng::from_str(text.as_ref()).unwrap();
+                    assert!(yaml.get("override-enabled").is_none());
+                    assert_eq!(yaml[kind.id()]["enable"], false);
+                    window.render_frame(cx);
+                    assert!(!page.read(cx).dns_source.read(cx).is_editable());
+
+                    if kind == SettingsKind::Dns {
+                        assert_eq!(yaml["dns"]["cache-algorithm"], "arc");
+                    } else {
+                        assert_eq!(yaml["sniffer"]["custom"], "retained");
+                    }
+                    let mut yaml = yaml;
+                    yaml[kind.id()]["enable"] = true.into();
+                    if kind == SettingsKind::Dns {
+                        yaml["dns"]["nameserver"] = serde_yaml_ng::from_str("[8.8.8.8]").unwrap();
+                    }
+                    page.read(cx).dns_source.clone().update(cx, |state, cx| {
+                        state.set_value(serde_yaml_ng::to_string(&yaml).unwrap(), window, cx)
+                    });
+                    window.clear_notifications(cx);
+                    page.update(cx, |page, cx| {
+                        page.switch_dns_mode(!page.dns_raw, window, cx)
+                    });
+                    assert!(!page.read(cx).dns_raw);
+                    assert!(matches!(
+                        page.read(cx).fields[global].control,
+                        FieldControl::Toggle(false)
+                    ));
+                    assert!(matches!(
+                        page.read(cx).fields[service].control,
+                        FieldControl::Toggle(true)
+                    ));
+                    if kind == SettingsKind::Dns {
+                        // Switch mode before the input's blur: the current form value must win.
+                        let FieldControl::Multiline(state) =
+                            &page.read(cx).fields["Nameserver"].control
+                        else {
+                            panic!("nameserver editor");
+                        };
+                        state
+                            .clone()
+                            .update(cx, |state, cx| state.set_value("9.9.9.9", window, cx));
+                    }
+                    window.clear_notifications(cx);
+                    page.update(cx, |page, cx| {
+                        page.switch_dns_mode(!page.dns_raw, window, cx)
+                    });
+                    assert!(
+                        page.read(cx).dns_raw,
+                        "mode {:?}: {:?}",
+                        kind,
+                        page.read(cx).error
+                    );
+                    let text = page.read(cx).dns_source.read(cx).value();
+                    let yaml: serde_yaml_ng::Value =
+                        serde_yaml_ng::from_str(text.as_ref()).unwrap();
+                    assert!(yaml.get("override-enabled").is_none());
+                    assert_eq!(yaml[kind.id()]["enable"], true);
+                    if kind == SettingsKind::Dns {
+                        assert_eq!(yaml["dns"]["nameserver"][0], "9.9.9.9");
+                    }
+                    page.update(cx, |page, cx| page.toggle(global, true, window, cx));
+                    assert!(matches!(
+                        page.read(cx).fields[global].control,
+                        FieldControl::Toggle(true)
+                    ));
+                    let text = page.read(cx).dns_source.read(cx).value();
+                    let yaml: serde_yaml_ng::Value =
+                        serde_yaml_ng::from_str(text.as_ref()).unwrap();
+                    assert!(yaml.get("override-enabled").is_none());
+                    assert_eq!(yaml[kind.id()]["enable"], true);
+                    window.clear_notifications(cx);
+                    window.render_frame(cx);
+                    assert!(page.read(cx).dns_source.read(cx).is_editable());
+                })
+                .unwrap();
+        }
+        crate::integration::finish_test_services(cx);
     }
 }

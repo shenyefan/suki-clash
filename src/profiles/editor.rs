@@ -3,12 +3,11 @@ use super::{
     model::{Document, DocumentKind, valid_remote_url},
 };
 use crate::ui;
-use crate::ui::theme::{control, layout, space, text};
-use gpui_kit::prelude::FluentBuilder as _;
+use crate::ui::theme::{control, layout, space};
 use gpui_kit::{
     assets::IconName,
     component::{
-        ActiveTheme, Icon, IndexPath, Sizable, WindowExt,
+        ActiveTheme, Icon, IndexPath, Sizable,
         button::{Button, ButtonVariants},
         h_flex,
         input::{Editor, EditorState, Input, InputState},
@@ -19,10 +18,22 @@ use gpui_kit::{
     *,
 };
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum EditorMode {
+    Content,
+    Information,
+    Import,
+}
+pub(super) struct ImportInputs {
+    pub(super) url: Entity<InputState>,
+    pub(super) token: Entity<InputState>,
+    pub(super) agent: Entity<InputState>,
+    pub(super) age: Entity<InputState>,
+}
 pub(super) struct DocumentEditor {
     owner: WeakEntity<ProfilesPage>,
     document: Document,
-    content_only: bool,
+    mode: EditorMode,
     scope: Entity<SelectState<Vec<SharedString>>>,
     scopes: Vec<(Option<u64>, String)>,
     name: Entity<InputState>,
@@ -38,7 +49,8 @@ impl DocumentEditor {
     pub(super) fn new(
         owner: WeakEntity<ProfilesPage>,
         document: Document,
-        content_only: bool,
+        mode: EditorMode,
+        import_inputs: Option<ImportInputs>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -70,27 +82,63 @@ impl DocumentEditor {
                 cx,
             )
         });
-        let name = cx.new(|cx| InputState::new(window, cx).default_value(document.name.clone()));
-        let url = cx.new(|cx| {
+        let importing = mode == EditorMode::Import;
+
+        let name = cx.new(|cx| {
             InputState::new(window, cx)
-                .default_value(document.url.clone())
-                .placeholder("https://example.com/config.yaml")
+                .default_value(if importing {
+                    String::new()
+                } else {
+                    document.name.clone()
+                })
+                .placeholder(if importing {
+                    "自动获取"
+                } else {
+                    "配置名称"
+                })
         });
-        let token = cx.new(|cx| {
-            InputState::new(window, cx)
-                .default_value(document.token.clone())
-                .masked(true)
-        });
-        let agent = cx.new(|cx| {
-            InputState::new(window, cx)
-                .default_value(document.user_agent.clone())
-                .placeholder("留空使用全局默认")
-        });
-        let age = cx.new(|cx| {
-            InputState::new(window, cx)
-                .default_value(document.age_key.clone())
-                .masked(true)
-        });
+        let url = import_inputs
+            .as_ref()
+            .map(|inputs| inputs.url.clone())
+            .unwrap_or_else(|| {
+                cx.new(|cx| {
+                    InputState::new(window, cx)
+                        .default_value(document.url.clone())
+                        .placeholder("https://example.com/config.yaml")
+                })
+            });
+        let token = import_inputs
+            .as_ref()
+            .map(|inputs| inputs.token.clone())
+            .unwrap_or_else(|| {
+                cx.new(|cx| {
+                    InputState::new(window, cx)
+                        .default_value(document.token.clone())
+                        .placeholder("留空保留已保存凭据")
+                        .masked(true)
+                })
+            });
+        let agent = import_inputs
+            .as_ref()
+            .map(|inputs| inputs.agent.clone())
+            .unwrap_or_else(|| {
+                cx.new(|cx| {
+                    InputState::new(window, cx)
+                        .default_value(document.user_agent.clone())
+                        .placeholder("留空使用全局默认")
+                })
+            });
+        let age = import_inputs
+            .as_ref()
+            .map(|inputs| inputs.age.clone())
+            .unwrap_or_else(|| {
+                cx.new(|cx| {
+                    InputState::new(window, cx)
+                        .default_value(document.age_key.clone())
+                        .placeholder("留空保留已保存凭据")
+                        .masked(true)
+                })
+            });
         let interval =
             cx.new(|cx| InputState::new(window, cx).default_value(document.interval.clone()));
         let timeout =
@@ -111,7 +159,7 @@ impl DocumentEditor {
         Self {
             owner,
             document,
-            content_only,
+            mode,
             scope,
             scopes,
             name,
@@ -139,12 +187,18 @@ impl DocumentEditor {
                 .selected_value()
                 .map(ToString::to_string)
                 .unwrap_or_default(),
-            self.document.auto_update.to_string(),
         ]
     }
     pub(super) fn commit(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if self
+            .owner
+            .upgrade()
+            .is_some_and(|owner| owner.read(cx).saving)
+        {
+            return false;
+        }
         let mut document = self.document.clone();
-        if self.content_only {
+        if self.mode == EditorMode::Content {
             document.content = self.content.read(cx).value().to_string();
         } else {
             let label = self.scope.read(cx).selected_value().cloned();
@@ -158,12 +212,22 @@ impl DocumentEditor {
             }
             document.name = self.name.read(cx).value().to_string().trim().to_owned();
             document.url = self.url.read(cx).value().to_string().trim().to_owned();
+            if document.name.is_empty() && self.mode == EditorMode::Import {
+                document.name = if document.kind == DocumentKind::Profile {
+                    "远程订阅"
+                } else {
+                    "远程覆写"
+                }
+                .into();
+            }
             if document.name.is_empty() {
                 ui::show_error("填写配置名称".into(), window, cx);
                 cx.notify();
                 return false;
             }
-            if !document.url.is_empty() && !valid_remote_url(&document.url) {
+            if (self.mode == EditorMode::Import || !document.url.is_empty())
+                && !valid_remote_url(&document.url)
+            {
                 ui::show_error(
                     "地址需以 http:// 或 https:// 开头，并包含有效主机名".into(),
                     window,
@@ -174,16 +238,14 @@ impl DocumentEditor {
             }
             document.interval = self.interval.read(cx).value().to_string();
             document.timeout = self.timeout.read(cx).value().to_string();
-            if document.auto_update
-                && document
-                    .interval
-                    .parse::<u32>()
-                    .ok()
-                    .filter(|n| *n > 0)
-                    .is_none()
+            if document
+                .interval
+                .parse::<u32>()
+                .ok()
+                .filter(|value| *value <= 525600)
+                .is_none()
             {
-                ui::show_error("自动更新间隔需为大于 0 的整数".into(), window, cx);
-                cx.notify();
+                ui::show_error("更新间隔需为 0–525600 分钟".into(), window, cx);
                 return false;
             }
             if document.is_remote()
@@ -202,10 +264,6 @@ impl DocumentEditor {
             document.user_agent = self.agent.read(cx).value().to_string();
             document.age_key = self.age.read(cx).value().to_string();
         }
-        if document.is_remote() && document.content.is_empty() {
-            ui::request_command("下载远程配置", window, cx);
-            return false;
-        }
         let editor = (cx.weak_entity(), self.revision(cx));
         match self.owner.update(cx, |owner, cx| {
             owner.save_document_with(document, Some(editor), window, cx)
@@ -223,7 +281,7 @@ impl DocumentEditor {
 impl Render for DocumentEditor {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let mut content = v_flex().gap(space::LG);
-        if self.content_only {
+        if self.mode == EditorMode::Content {
             return content
                 .size_full()
                 .min_h(space::NONE)
@@ -239,26 +297,39 @@ impl Render for DocumentEditor {
                             self.document.kind.extension()
                         ))
                         .child(div().flex_1())
-                        .when(self.document.kind != DocumentKind::JavaScript, |row| {
-                            row.child(
-                                Button::new("validate-document-yaml")
-                                    .ghost()
-                                    .with_size(control::STANDARD)
-                                    .label("检查 YAML")
-                                    .on_click(cx.listener(|this, _, w, cx| {
-                                        match serde_yaml_ng::from_str::<serde_yaml_ng::Value>(
-                                            this.content.read(cx).value().as_ref(),
-                                        ) {
-                                            Ok(_) => {
-                                                w.push_notification("YAML 格式正确", cx);
-                                            }
-                                            Err(error) => ui::show_error(error.to_string(), w, cx),
-                                        }
-                                    })),
-                            )
-                        })
+                        .child(
+                            Button::new("validate-document-yaml")
+                                .icon(gpui_kit::assets::IconName::Check)
+                                .ghost()
+                                .with_size(control::STANDARD)
+                                .label("检查语法")
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    crate::core::request(
+                                        crate::core::Command::CheckDocument {
+                                            kind: this.document.kind,
+                                            content: this.content.read(cx).value().to_string(),
+                                        },
+                                        window,
+                                        cx,
+                                    );
+                                })),
+                        )
+                        .child(
+                            Button::new("reset-document-template")
+                                .icon(gpui_kit::assets::IconName::RotateCcw)
+                                .ghost()
+                                .with_size(control::STANDARD)
+                                .label("重置模板")
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.content.update(cx, |state, cx| {
+                                        state.set_value(this.document.kind.template(), window, cx)
+                                    });
+                                    cx.notify();
+                                })),
+                        )
                         .child(
                             Button::new("copy-editor-file")
+                                .icon(gpui_kit::assets::IconName::Copy)
                                 .ghost()
                                 .with_size(control::STANDARD)
                                 .label("复制")
@@ -282,74 +353,78 @@ impl Render for DocumentEditor {
                         ),
                 );
         }
-        let mut form = v_flex().gap(space::LG).pr(space::SM).child(ui::field_label(
+        let mut form = ui::form().child(ui::field_label(
             "名称",
             Input::new(&self.name)
+                .id("document-name")
                 .with_size(control::STANDARD)
                 .w_full()
                 .aria_label("名称"),
         ));
-        if self.document.is_remote() {
+        let remote = self.mode == EditorMode::Import || self.document.is_remote();
+        if remote {
             form = form
                 .child(ui::field_label(
                     "订阅地址",
                     Input::new(&self.url)
+                        .id("document-url")
                         .with_size(control::STANDARD)
                         .w_full()
                         .aria_label("订阅地址"),
                 ))
                 .child(ui::field_label(
-                    "访问令牌",
-                    Input::new(&self.token)
-                        .with_size(control::STANDARD)
-                        .w_full()
-                        .aria_label("访问令牌"),
-                ))
-                .child(ui::field_label(
                     "User-Agent",
                     Input::new(&self.agent)
+                        .id("document-agent")
                         .with_size(control::STANDARD)
                         .w_full()
                         .aria_label("User-Agent"),
                 ))
-                .when(self.document.kind == DocumentKind::Profile, |el| {
-                    el.child(ui::field_label(
-                        "Age 私钥",
-                        Input::new(&self.age)
-                            .with_size(control::STANDARD)
-                            .w_full()
-                            .aria_label("Age 私钥"),
-                    ))
-                })
                 .child(
-                    h_flex().justify_between().child("自动更新").child(
-                        Switch::new("editor-auto-update")
-                            .checked(self.document.auto_update)
-                            .accessibility_label("自动更新")
-                            .on_change(cx.listener(|this, value, _, cx| {
-                                this.document.auto_update = *value;
-                                cx.notify();
-                            })),
-                    ),
+                    ui::form_row()
+                        .child(
+                            ui::field_label(
+                                "更新间隔（分钟）",
+                                Input::new(&self.interval)
+                                    .id("document-interval")
+                                    .with_size(control::STANDARD)
+                                    .w_full()
+                                    .aria_label("更新间隔（分钟）"),
+                            )
+                            .flex_1(),
+                        )
+                        .child(
+                            ui::field_label(
+                                "超时（秒）",
+                                Input::new(&self.timeout)
+                                    .id("document-timeout")
+                                    .with_size(control::STANDARD)
+                                    .w_full()
+                                    .aria_label("下载超时（秒）"),
+                            )
+                            .flex_1(),
+                        ),
                 )
-                .child(
-                    h_flex()
-                        .gap(space::LG)
-                        .child(ui::field_label(
-                            "更新间隔（分钟）",
-                            Input::new(&self.interval)
-                                .with_size(control::STANDARD)
-                                .w_full()
-                                .aria_label("更新间隔（分钟）"),
-                        ))
-                        .child(ui::field_label(
-                            "下载超时（秒）",
-                            Input::new(&self.timeout)
-                                .with_size(control::STANDARD)
-                                .w_full()
-                                .aria_label("下载超时（秒）"),
-                        )),
-                );
+                .child(ui::field_label(
+                    "访问令牌",
+                    Input::new(&self.token)
+                        .id("document-token")
+                        .mask_toggle()
+                        .with_size(control::STANDARD)
+                        .w_full()
+                        .aria_label("访问令牌"),
+                ));
+            if self.document.kind == DocumentKind::Profile {
+                form = form.child(ui::field_label(
+                    "Age 私钥",
+                    Input::new(&self.age)
+                        .id("document-age")
+                        .mask_toggle()
+                        .with_size(control::STANDARD)
+                        .w_full()
+                        .aria_label("Age 私钥"),
+                ));
+            }
         }
         if self.document.kind != DocumentKind::Profile {
             form = form
@@ -361,22 +436,16 @@ impl Render for DocumentEditor {
                         .accessibility_label("覆写作用范围"),
                 ))
                 .child(
-                    h_flex()
-                        .justify_between()
-                        .child(
-                            v_flex().gap(space::XS).child("启用此覆写").child(
-                                ui::muted("应用覆写时包含此项目", cx).text_size(text::CAPTION),
-                            ),
-                        )
-                        .child(
-                            Switch::new("editor-enabled")
-                                .checked(self.document.enabled)
-                                .accessibility_label("启用此覆写")
-                                .on_change(cx.listener(|this, value, _, cx| {
-                                    this.document.enabled = *value;
-                                    cx.notify();
-                                })),
-                        ),
+                    ui::form_row().justify_between().child("启用此覆写").child(
+                        Switch::new("editor-enabled")
+                            .with_size(control::STANDARD)
+                            .checked(self.document.enabled)
+                            .accessibility_label("启用此覆写")
+                            .on_change(cx.listener(|this, value, _, cx| {
+                                this.document.enabled = *value;
+                                cx.notify();
+                            })),
+                    ),
                 );
         }
         content = content.child(form);

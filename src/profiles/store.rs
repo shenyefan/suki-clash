@@ -1,4 +1,4 @@
-//! Document metadata is separate from UI entities; secrets remain session-only.
+//! Document metadata is separate from UI entities; subscription secrets use the credential store.
 use super::model::{Document, DocumentKind, TrafficUsage};
 use crate::integration as storage;
 use std::{collections::BTreeMap, fs, path::PathBuf};
@@ -13,7 +13,9 @@ pub(super) fn key(overrides: bool) -> &'static str {
 pub(super) fn load(overrides: bool, cx: &gpui_kit::App) -> Option<(Vec<Document>, Option<u64>)> {
     load_values(storage::read(key(overrides), cx))
 }
-fn load_values(values: BTreeMap<String, String>) -> Option<(Vec<Document>, Option<u64>)> {
+pub(crate) fn load_values(
+    values: BTreeMap<String, String>,
+) -> Option<(Vec<Document>, Option<u64>)> {
     if values.get("format").map(String::as_str) != Some("1") {
         return None;
     }
@@ -22,7 +24,7 @@ fn load_values(values: BTreeMap<String, String>) -> Option<(Vec<Document>, Optio
         .split(',')
         .filter_map(|id| id.parse::<u64>().ok());
     let documents = ids
-        .filter_map(|id| {
+        .map(|id| {
             let get = |field: &str| {
                 values
                     .get(&format!("{id}/{field}"))
@@ -34,9 +36,6 @@ fn load_values(values: BTreeMap<String, String>) -> Option<(Vec<Document>, Optio
                 "YAML" => DocumentKind::Yaml,
                 _ => DocumentKind::Profile,
             };
-            if get("sample") == "true" {
-                return None;
-            }
             let mut doc = Document::new(id, kind);
             doc.name = get("name");
             doc.url = get("url");
@@ -44,10 +43,11 @@ fn load_values(values: BTreeMap<String, String>) -> Option<(Vec<Document>, Optio
             doc.enabled = get("enabled") == "true";
             doc.scope_profile = get("scope-profile").parse().ok();
             doc.scope_name = get("scope-name");
-            doc.auto_update = get("auto-update") == "true";
             doc.interval = get("interval");
             doc.timeout = get("timeout");
             doc.user_agent = get("agent");
+            doc.updated_at = get("updated").parse().ok();
+            doc.home = get("home");
             doc.usage = if get("usage-source") == "subscription-header" {
                 get("usage-total")
                     .parse::<u64>()
@@ -61,7 +61,7 @@ fn load_values(values: BTreeMap<String, String>) -> Option<(Vec<Document>, Optio
             } else {
                 None
             };
-            Some(doc)
+            doc
         })
         .collect();
     Some((
@@ -69,7 +69,7 @@ fn load_values(values: BTreeMap<String, String>) -> Option<(Vec<Document>, Optio
         values.get("active").and_then(|id| id.parse().ok()),
     ))
 }
-pub(super) fn values(documents: &[Document], active: Option<u64>) -> BTreeMap<String, String> {
+pub(crate) fn values(documents: &[Document], active: Option<u64>) -> BTreeMap<String, String> {
     let mut values = BTreeMap::from([
         ("format".into(), "1".into()),
         (
@@ -116,10 +116,16 @@ pub(super) fn values(documents: &[Document], active: Option<u64>) -> BTreeMap<St
                     .unwrap_or_default(),
             ),
             ("scope-name", doc.scope_name.clone()),
-            ("auto-update", doc.auto_update.to_string()),
             ("interval", doc.interval.clone()),
             ("timeout", doc.timeout.clone()),
             ("agent", doc.user_agent.clone()),
+            (
+                "updated",
+                doc.updated_at
+                    .map(|value| value.to_string())
+                    .unwrap_or_default(),
+            ),
+            ("home", doc.home.clone()),
         ] {
             values.insert(format!("{}/{field}", doc.id), value);
         }
@@ -128,7 +134,11 @@ pub(super) fn values(documents: &[Document], active: Option<u64>) -> BTreeMap<St
 }
 
 /// All profile file locations share the same storage policy as preferences.
-pub(super) fn document_path(overrides: bool, document: &Document, cx: &gpui_kit::App) -> PathBuf {
+pub(super) fn document_path(
+    overrides: bool,
+    document: &Document,
+    cx: &gpui_kit::App,
+) -> Result<PathBuf, String> {
     storage::document_path(overrides, document.id, document.kind.extension(), cx)
 }
 
@@ -154,30 +164,4 @@ pub(super) fn read_document(path: PathBuf) -> Result<(String, String, bool), Str
         content,
         extension == "js",
     ))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn legacy_preview_entries_are_filtered_without_removing_user_documents() {
-        let values = BTreeMap::from([
-            ("format".into(), "1".into()),
-            ("ids".into(), "1,2".into()),
-            ("1/sample".into(), "true".into()),
-            ("1/name".into(), "old preview".into()),
-            ("2/name".into(), "user document".into()),
-            ("2/content".into(), "proxies: []".into()),
-            ("2/usage-total".into(), "214748364800".into()),
-            ("2/usage-used".into(), "19756849561".into()),
-        ]);
-        let (documents, _) = load_values(values).unwrap();
-        assert_eq!(documents.len(), 1);
-        assert_eq!(documents[0].name, "user document");
-        assert_eq!(documents[0].content, "proxies: []");
-        assert!(
-            documents[0].usage.is_none(),
-            "legacy usage had no real download source"
-        );
-    }
 }

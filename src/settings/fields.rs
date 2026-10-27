@@ -1,11 +1,11 @@
 use super::{FieldControl, SettingsPage, schema::FieldKind};
 use crate::ui;
-use crate::ui::theme::{control, layout, space, stroke, text};
+use crate::ui::theme::{control, layout, space, text};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     assets::IconName,
     component::{
-        ActiveTheme, Disableable, Sizable,
+        Disableable, Sizable,
         button::Button,
         h_flex,
         input::{Editor, Input},
@@ -21,20 +21,20 @@ impl SettingsPage {
         let field = &self.fields[key];
         let spec = &field.spec;
         let policy = self.values(cx);
-        let disabled = !super::schema::field_enabled(self.kind, key, &policy);
+        let disabled = !super::schema::field_enabled(self.kind, key, &policy)
+            || self.saving
+            || self.session.read(cx).core_busy();
         let control = match &field.control {
             FieldControl::Toggle(value) => {
                 let checked = *value;
                 Switch::new(SharedString::from(format!("setting-{key}")))
-                    .with_size(if self.kind.uses_grouped_layout() {
-                        control::STANDARD
-                    } else {
-                        gpui_kit::component::Size::Small
-                    })
+                    .with_size(control::STANDARD)
                     .checked(checked)
                     .disabled(disabled)
                     .accessibility_label(spec.label)
-                    .on_change(cx.listener(move |this, value, _, cx| this.toggle(key, *value, cx)))
+                    .on_change(cx.listener(move |this, value, window, cx| {
+                        this.toggle(key, *value, window, cx)
+                    }))
                     .into_any_element()
             }
             FieldControl::Text(state) if key != "NewWebUiName" => div()
@@ -44,6 +44,7 @@ impl SettingsPage {
                     Input::new(state)
                         .w_full()
                         .with_size(control::STANDARD)
+                        .when(spec.kind == FieldKind::Secret, |input| input.mask_toggle())
                         .disabled(disabled)
                         .aria_label(spec.label),
                 )
@@ -94,7 +95,12 @@ impl SettingsPage {
             .iter()
             .map(|action| {
                 let action = *action;
-                let icon = if action.contains("随机") {
+                let busy = self.saving || self.session.read(cx).core_busy();
+                let icon = if action.contains("复制") {
+                    IconName::Copy
+                } else if action == "网卡信息" {
+                    IconName::Network
+                } else if action.contains("随机") {
                     IconName::Shuffle
                 } else if action.contains("打开") {
                     IconName::FolderOpen
@@ -103,16 +109,21 @@ impl SettingsPage {
                 } else if action.contains("添加") {
                     IconName::Plus
                 } else if action.contains("选择") {
-                    IconName::Ellipsis
+                    IconName::FolderOpen
                 } else if action.contains("创建备份") {
                     IconName::Archive
                 } else {
                     IconName::RefreshCw
                 };
-                if spec.kind == FieldKind::ReadOnly && self.kind.uses_grouped_layout() {
+                if spec.kind == FieldKind::ReadOnly
+                    && !(self.kind == super::SettingsKind::Core
+                        && matches!(action, "打开内核目录" | "打开配置目录" | "校验配置"))
+                {
                     return Button::new(SharedString::from(format!("action-{key}-{action}")))
                         .with_size(control::STANDARD)
                         .label(action)
+                        .icon(icon)
+                        .disabled(busy)
                         .on_click(cx.listener(move |this, _, w, cx| {
                             this.field_action(key, action, w, cx)
                         }));
@@ -122,6 +133,7 @@ impl SettingsPage {
                     icon,
                     action,
                 )
+                .disabled(busy || disabled)
                 .on_click(cx.listener(move |this, _, window, cx| {
                     this.field_action(key, action, window, cx)
                 }))
@@ -147,7 +159,7 @@ impl SettingsPage {
                                     ui::icon_button(
                                         SharedString::from(format!("expand-{key}")),
                                         IconName::Maximize,
-                                        "展开编辑…",
+                                        "展开编辑",
                                     )
                                     .on_click(
                                         move |_, w, cx| {
@@ -174,59 +186,24 @@ impl SettingsPage {
                         .child(div().flex_1().min_w(space::NONE).child(control))
                         .children(actions),
                 );
-            return if self.kind.uses_grouped_layout() {
-                row.px(space::LG).into_any_element()
-            } else {
-                row.border_b(stroke::HAIRLINE)
-                    .border_color(cx.theme().border)
-                    .into_any_element()
-            };
+            return row.px(space::LG).into_any_element();
         }
-        if self.kind.uses_grouped_layout() {
-            let control = if matches!(
-                field.control,
-                FieldControl::Toggle(_) | FieldControl::ReadOnly
-            ) {
-                h_flex()
-                    .gap(space::SM)
-                    .justify_end()
-                    .child(control)
-                    .children(actions)
-            } else {
-                h_flex()
-                    .gap(space::SM)
-                    .justify_end()
-                    .child(div().w(layout::LONG_FIELD_WIDTH).child(control))
-                    .children(actions)
-            };
-            return ui::preference_row(spec.label, spec.description, control, cx)
-                .into_any_element();
-        }
-        let label = div()
-            .w(layout::LABEL_WIDTH)
-            .flex_shrink_0()
-            .child(spec.label);
-        h_flex()
-            .min_h(layout::RANKING_ROW_HEIGHT)
-            .gap(space::MD)
-            .py(space::XS)
-            .border_b(stroke::HAIRLINE)
-            .border_color(cx.theme().border)
-            .child(label)
-            .child(
-                h_flex()
-                    .w(layout::LONG_FIELD_WIDTH)
-                    .flex_shrink_0()
-                    .gap(space::XS)
-                    .child(control)
-                    .children(actions),
-            )
-            .child(
-                ui::muted(spec.description, cx)
-                    .text_size(text::CAPTION)
-                    .flex_1()
-                    .min_w(space::NONE),
-            )
-            .into_any_element()
+        let control = if matches!(
+            field.control,
+            FieldControl::Toggle(_) | FieldControl::ReadOnly
+        ) {
+            h_flex()
+                .gap(space::SM)
+                .justify_end()
+                .child(control)
+                .children(actions)
+        } else {
+            h_flex()
+                .gap(space::SM)
+                .justify_end()
+                .child(div().w(layout::LONG_FIELD_WIDTH).child(control))
+                .children(actions)
+        };
+        ui::preference_row(spec.label, spec.description, control, cx).into_any_element()
     }
 }

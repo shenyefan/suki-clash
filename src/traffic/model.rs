@@ -4,6 +4,7 @@ use super::TrafficKind;
 #[derive(Clone)]
 pub(super) struct Record {
     pub(super) id: u64,
+    pub(super) connection: Option<super::ConnectionTarget>,
     pub(super) cells: Vec<String>,
     pub(super) numbers: Vec<f64>,
     pub(super) active: bool,
@@ -16,6 +17,7 @@ impl Record {
     fn new(id: u64, cells: &[&str]) -> Self {
         Self {
             id,
+            connection: None,
             cells: cells.iter().map(|s| (*s).to_owned()).collect(),
             numbers: vec![],
             active: true,

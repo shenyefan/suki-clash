@@ -1,9 +1,12 @@
 use super::Overview;
 use crate::ui;
 use crate::ui::theme::{self, layout, opacity, space, stroke, text};
+use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     component::{
-        ActiveTheme, Sizable, h_flex,
+        ActiveTheme, Sizable,
+        chart::LineChart,
+        h_flex,
         scroll::ScrollableElement,
         tab::{Tab, TabBar},
         v_flex,
@@ -11,6 +14,16 @@ use gpui_kit::{
     *,
 };
 
+fn bytes(value: u64) -> String {
+    let units = ["B", "KiB", "MiB", "GiB", "TiB"];
+    let mut number = value as f64;
+    let mut unit = 0;
+    while number >= 1024. && unit < units.len() - 1 {
+        number /= 1024.;
+        unit += 1;
+    }
+    format!("{number:.1} {}", units[unit])
+}
 impl Overview {
     fn empty_plot(id: &'static str, message: &'static str, cx: &App) -> impl IntoElement + Styled {
         let plot = div().id(id);
@@ -67,6 +80,57 @@ impl Overview {
     }
 
     fn rate_card(&self, upload: bool, cx: &App) -> Div {
+        let runtime = self.session.read(cx).runtime();
+        let statistics = &runtime.statistics;
+        let rate = if upload {
+            statistics.upload_rate
+        } else {
+            statistics.download_rate
+        };
+        let value = rate.map(bytes).unwrap_or_else(|| "—".into());
+        let plot = if statistics.rates.is_empty() {
+            Self::empty_plot(
+                if upload {
+                    "upload-empty-plot"
+                } else {
+                    "download-empty-plot"
+                },
+                "暂无速率记录",
+                cx,
+            )
+            .into_any_element()
+        } else {
+            let chart = LineChart::new(statistics.rates.clone())
+                .x(|point: &super::statistics::Point| point.time.clone())
+                .y(move |point: &super::statistics::Point| {
+                    if upload {
+                        point.upload as f64
+                    } else {
+                        point.download as f64
+                    }
+                })
+                .stroke(if upload {
+                    theme::upload_color(cx)
+                } else {
+                    theme::download_color(cx)
+                })
+                .x_axis(false)
+                .y_axis(false)
+                .grid(true);
+            let frame = div()
+                .id(if upload {
+                    "upload-rate-plot"
+                } else {
+                    "download-rate-plot"
+                })
+                .size_full();
+            #[cfg(test)]
+            let frame = {
+                use gpui_kit::test::TestSupportExt;
+                frame.test_support()
+            };
+            frame.child(chart).into_any_element()
+        };
         ui::surface(cx)
             .flex_1()
             .min_w(space::NONE)
@@ -79,8 +143,8 @@ impl Overview {
             })
             .child(div().p(space::XL).child(Self::value(
                 if upload { "上传" } else { "下载" },
-                "—",
-                "",
+                &value,
+                if rate.is_some() { "/s" } else { "" },
                 cx,
             )))
             .child(
@@ -90,18 +154,7 @@ impl Overview {
                     .px(space::XL)
                     .pb(space::LG)
                     .gap(space::SM)
-                    .child(
-                        Self::empty_plot(
-                            if upload {
-                                "upload-empty-plot"
-                            } else {
-                                "download-empty-plot"
-                            },
-                            "暂无速率记录",
-                            cx,
-                        )
-                        .flex_1(),
-                    )
+                    .child(div().size_full().child(plot).flex_1())
                     .child(
                         h_flex()
                             .justify_between()
@@ -111,28 +164,93 @@ impl Overview {
             )
     }
     fn latency_card(&self, cx: &App) -> Div {
+        let runtime = self.session.read(cx).runtime();
+        let latency = runtime
+            .latency
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "—".into());
         ui::surface(cx)
             .flex_1()
             .min_w(space::NONE)
             .h(layout::OVERVIEW_TOP_HEIGHT)
             .p(space::XL)
             .justify_between()
-            .child(Self::value("INTERNET 延迟", "—", "", cx))
-            .child(h_flex().gap(space::LG).children(
-                ["路由", "DNS", "代理"].map(|label| Self::context(label, "—".into(), cx)),
+            .child(Self::value(
+                "出口请求耗时",
+                &latency,
+                if runtime.latency.is_some() { "ms" } else { "" },
+                cx,
             ))
+            .child(
+                h_flex().gap(space::LG).children(
+                    [
+                        (
+                            "路由",
+                            runtime
+                                .mode
+                                .map(|mode| mode.label().to_owned())
+                                .unwrap_or_else(|| "—".into()),
+                        ),
+                        (
+                            "DNS",
+                            runtime.dns_mode.clone().unwrap_or_else(|| "—".into()),
+                        ),
+                        (
+                            "代理",
+                            if runtime.connected {
+                                runtime
+                                    .proxy_port
+                                    .map(|port| format!("127.0.0.1:{port}"))
+                                    .unwrap_or_else(|| "未启用".into())
+                            } else {
+                                "未连接".into()
+                            },
+                        ),
+                    ]
+                    .map(|(label, value)| Self::context(label, value, cx)),
+                ),
+            )
     }
     fn connections_card(&self, cx: &App) -> Div {
+        let runtime = self.session.read(cx).runtime();
+        let statistics = &runtime.statistics;
+        let count = statistics
+            .connections
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "—".into());
         ui::surface(cx)
             .h(layout::OVERVIEW_SUMMARY_HEIGHT)
             .p(space::XL)
             .justify_between()
-            .child(Self::value("活动连接", "—", "", cx))
-            .child(h_flex().gap(space::LG).children(
-                ["进程", "代理连接", "直连"].map(|label| Self::context(label, "—".into(), cx)),
-            ))
+            .child(Self::value("活动连接", &count, "", cx))
+            .child(
+                h_flex().gap(space::LG).children(
+                    [
+                        ("进程", statistics.processes),
+                        ("代理连接", statistics.proxy_connections),
+                        ("直连", statistics.direct_connections),
+                    ]
+                    .map(|(label, value)| {
+                        Self::context(
+                            label,
+                            if statistics.connections.is_some() {
+                                value.to_string()
+                            } else {
+                                "—".into()
+                            },
+                            cx,
+                        )
+                    }),
+                ),
+            )
     }
     fn totals_card(&self, cx: &mut Context<Self>) -> Div {
+        let runtime = self.session.read(cx).runtime();
+        let totals = if self.period == 0 {
+            &runtime.statistics.today
+        } else {
+            &runtime.statistics.month
+        };
         ui::surface(cx)
             .h(layout::OVERVIEW_SUMMARY_HEIGHT)
             .p(space::XL)
@@ -142,7 +260,7 @@ impl Overview {
                     .items_start()
                     .justify_between()
                     .gap(space::SM)
-                    .child(Self::value("总计", "—", "", cx))
+                    .child(Self::value("已采集流量", &bytes(totals.bytes()), "", cx))
                     .child(
                         TabBar::new("overview-period")
                             .segmented()
@@ -158,11 +276,38 @@ impl Overview {
             .child(
                 h_flex()
                     .justify_between()
-                    .child(ui::muted("DIRECT  —", cx))
-                    .child(ui::muted("代理  —", cx)),
+                    .child(ui::muted(format!("DIRECT  {}", bytes(totals.direct)), cx))
+                    .child(ui::muted(format!("代理  {}", bytes(totals.proxy)), cx)),
             )
     }
-    fn traffic_card(&self, cx: &mut Context<Self>) -> Div {
+    fn traffic_card(&self, window: &mut Window, cx: &mut Context<Self>) -> Div {
+        let runtime = self.session.read(cx).runtime();
+        let statistics = &runtime.statistics;
+        let ranks = if self.proxy_only {
+            &statistics.proxy_rankings
+        } else {
+            &statistics.rankings
+        };
+        let ranks = ranks.get(self.breakdown).cloned().unwrap_or_default();
+        let plot = if statistics.hours.iter().all(|hour| hour.1 == 0) {
+            Self::empty_plot("hourly-empty-plot", "暂无小时流量记录", cx).into_any_element()
+        } else {
+            let proxy = self.proxy_only;
+            LineChart::new(statistics.hours.clone())
+                .x(|point: &(String, u64, u64)| point.0.clone())
+                .y(move |point: &(String, u64, u64)| {
+                    if proxy {
+                        point.2 as f64
+                    } else {
+                        point.1 as f64
+                    }
+                })
+                .stroke(theme::download_color(cx))
+                .x_axis(false)
+                .y_axis(false)
+                .grid(true)
+                .into_any_element()
+        };
         let ranking = v_flex().id("traffic-ranking-empty");
         #[cfg(test)]
         let ranking = {
@@ -178,7 +323,7 @@ impl Overview {
                 h_flex()
                     .justify_between()
                     .gap(space::SM)
-                    .child(ui::muted("流量", cx))
+                    .child(ui::muted("今日采集流量 · 分类为采样统计", cx))
                     .child(
                         TabBar::new("traffic-scope")
                             .segmented()
@@ -195,11 +340,7 @@ impl Overview {
                 div()
                     .h(layout::OVERVIEW_HISTORY_HEIGHT)
                     .flex_shrink_0()
-                    .child(Self::empty_plot(
-                        "hourly-empty-plot",
-                        "暂无小时流量记录",
-                        cx,
-                    )),
+                    .child(plot),
             )
             .child(
                 h_flex()
@@ -228,24 +369,67 @@ impl Overview {
                 ranking
                     .min_h(layout::OVERVIEW_RANKING_HEIGHT)
                     .flex_1()
-                    .items_center()
-                    .justify_center()
                     .gap(space::SM)
-                    .child(ui::muted(
-                        ["暂无进程流量排行", "暂无域名流量排行", "暂无策略流量排行"]
-                            [self.breakdown],
-                        cx,
-                    ))
-                    .child(ui::muted("产生流量后显示统计结果", cx).text_size(text::CAPTION)),
+                    .when(ranks.is_empty(), |view| {
+                        view.items_center().justify_center().child(ui::muted(
+                            ["暂无进程流量排行", "暂无域名流量排行", "暂无策略流量排行"]
+                                [self.breakdown],
+                            cx,
+                        ))
+                    })
+                    .when(!ranks.is_empty(), |view| {
+                        let height = layout::CONTROL_HEIGHT.to_pixels(window.rem_size());
+                        let count = ranks.len();
+                        let ranks = std::rc::Rc::new(ranks);
+                        view.child(div().h(layout::OVERVIEW_RANKING_HEIGHT).w_full().child(
+                            ui::virtual_rows::rows(
+                                cx.entity(),
+                                "traffic-ranking-rows",
+                                vec![height; count],
+                                &self.ranking_scroll,
+                                move |_, index, _, cx| {
+                                    let (name, amount) = &ranks[index];
+                                    h_flex()
+                                        .h_full()
+                                        .gap(space::SM)
+                                        .child(
+                                            div()
+                                                .flex_1()
+                                                .min_w(space::NONE)
+                                                .truncate()
+                                                .child(name.clone()),
+                                        )
+                                        .child(ui::muted(bytes(*amount), cx))
+                                        .into_any_element()
+                                },
+                            ),
+                        ))
+                    })
+                    .child(
+                        ui::muted(
+                            format!(
+                                "未分类 {} · 采集中断 {} 次",
+                                bytes(statistics.today.unclassified),
+                                statistics.gaps
+                            ),
+                            cx,
+                        )
+                        .text_size(text::CAPTION),
+                    ),
             )
     }
 }
 
 impl Render for Overview {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let state = self.session.read(cx);
         let profile = state.profile_name().unwrap_or("未选择配置").to_owned();
-        let node = state.selected_node("节点选择").unwrap_or("—").to_owned();
+        let runtime = state.runtime();
+        let node = runtime
+            .mode
+            .and_then(|mode| runtime.proxies.current_node(mode))
+            .unwrap_or("—")
+            .to_owned();
         ui::workspace()
             .child(ui::workspace_header("仪表盘", "", cx))
             .child(
@@ -261,8 +445,12 @@ impl Render for Overview {
                                     .gap(space::SECTION)
                                     .pb(space::SM)
                                     .child(Self::context("配置", profile, cx))
-                                    .child(Self::context("当前节点", node, cx))
-                                    .child(Self::context("外部 IP", "—".into(), cx))
+                                    .child(Self::context("策略节点", node, cx))
+                                    .child(Self::context(
+                                        "外部 IP",
+                                        runtime.external_ip.clone().unwrap_or_else(|| "—".into()),
+                                        cx,
+                                    ))
                                     .child(
                                         v_flex()
                                             .flex_1()
@@ -314,7 +502,7 @@ impl Render for Overview {
                                         v_flex()
                                             .flex_1()
                                             .min_w(space::NONE)
-                                            .child(self.traffic_card(cx).w_full()),
+                                            .child(self.traffic_card(window, cx).w_full()),
                                     ),
                             ),
                     ),

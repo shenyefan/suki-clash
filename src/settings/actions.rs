@@ -27,7 +27,7 @@ impl SettingsPage {
                 let port = storage::read("core", cx)
                     .get("MixedPort")
                     .cloned()
-                    .unwrap_or_else(|| "7890".into());
+                    .unwrap_or_else(|| "7897".into());
                 let host = if host.contains(':') && !host.starts_with('[') {
                     format!("[{host}]")
                 } else {

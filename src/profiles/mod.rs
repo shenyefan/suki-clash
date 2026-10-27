@@ -1,27 +1,32 @@
-use crate::ui::theme::{control, layout, space};
+use crate::ui::theme::{control, layout};
+mod credentials;
 mod editor;
 mod enhance;
-mod model;
+pub(crate) mod model;
+pub(crate) mod override_repository;
+pub(crate) mod remote;
+pub(crate) mod repository;
+pub(crate) use credentials::CredentialStore;
 mod organize;
 mod overrides;
-mod store;
+pub(crate) mod store;
 mod view;
 
 use crate::{session::Session, ui};
-use editor::DocumentEditor;
+use editor::{DocumentEditor, EditorMode, ImportInputs};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     component::{
         Sizable, WindowExt,
         button::{Button, ButtonVariants},
-        h_flex,
-        input::{Input, InputState},
-        v_flex,
+        input::InputState,
     },
     *,
 };
 use model::{Document, DocumentKind, valid_remote_url};
 
+type ProfileCompletion =
+    Box<dyn FnOnce(&mut ProfilesPage, &mut Window, &mut Context<ProfilesPage>)>;
 pub(crate) struct ProfilesPage {
     overrides: bool,
     batch: bool,
@@ -30,14 +35,19 @@ pub(crate) struct ProfilesPage {
     documents: Vec<Document>,
     next_id: u64,
     desired_profile: Option<u64>,
+    core_revision: u64,
     saving: bool,
+    rejected: bool,
+    import_task: Option<Task<()>>,
     url: Entity<InputState>,
     columns: u16,
+    list_scroll: gpui_kit::component::VirtualListScrollHandle,
     card_focus: std::collections::BTreeMap<u64, FocusHandle>,
     import_token: Entity<InputState>,
     import_agent: Entity<InputState>,
     import_age: Entity<InputState>,
     _subscriptions: Vec<Subscription>,
+    pending_profile: Option<(u64, ProfileCompletion)>,
 }
 impl ProfilesPage {
     pub(crate) fn new(
@@ -48,9 +58,9 @@ impl ProfilesPage {
     ) -> Self {
         let url = cx.new(|cx| {
             InputState::new(window, cx).placeholder(if overrides {
-                "远程覆写地址…"
+                "远程覆写地址"
             } else {
-                "粘贴订阅链接…"
+                "粘贴订阅链接"
             })
         });
         let import_token = cx.new(|cx| {
@@ -61,19 +71,71 @@ impl ProfilesPage {
         let import_agent = cx.new(|cx| InputState::new(window, cx).placeholder("留空使用全局默认"));
         let import_age = cx.new(|cx| {
             InputState::new(window, cx)
-                .placeholder("AGE-SECRET-KEY-…")
+                .placeholder("AGE-SECRET-KEY-")
                 .masked(true)
         });
-        let subscriptions = vec![cx.observe(&session, |_, _, cx| cx.notify())];
+        let subscriptions = vec![
+            cx.observe_in(&session, window, |this, session, window, cx| {
+                {
+                    let revision = session.read(cx).core().revision();
+                    if this.core_revision == revision {
+                        return;
+                    }
+                    this.core_revision = revision;
+                    let core = session.read(cx).core().clone();
+                    if !session.read(cx).core_busy() {
+                        let completed = this.pending_profile.as_ref().is_some_and(|(id, _)| {
+                            core.request_id().is_some_and(|request| request >= *id)
+                        });
+                        if completed {
+                            this.saving = false;
+                            this.rejected = core.error().is_some();
+                        }
+                        if !this.rejected
+                            && let Some(values) = core.settings(store::key(this.overrides))
+                            && let Some((documents, _)) = store::load_values(values.clone())
+                        {
+                            this.documents = documents;
+                            this.desired_profile =
+                                values.get("active").and_then(|value| value.parse().ok());
+                            this.next_id = this.next_id.max(
+                                this.documents
+                                    .iter()
+                                    .map(|doc| doc.id)
+                                    .max()
+                                    .unwrap_or(0)
+                                    .saturating_add(1),
+                            );
+                            for document in &this.documents {
+                                this.card_focus
+                                    .entry(document.id)
+                                    .or_insert_with(|| cx.focus_handle());
+                            }
+                            this.selected
+                                .retain(|id| this.documents.iter().any(|doc| doc.id == *id));
+                        }
+                        if completed
+                            && let Some((_, complete)) = this.pending_profile.take()
+                            && core.error().is_none()
+                        {
+                            complete(this, window, cx);
+                        }
+                    }
+                }
+                cx.notify();
+            }),
+        ];
         let stored = store::load(overrides, cx);
         let (documents, active) = stored.unwrap_or_default();
-        let next_id = documents.iter().map(|d| d.id).max().unwrap_or(0) + 1;
+        let next_id = (documents.iter().map(|d| d.id).max().unwrap_or(0) + 1)
+            .max(chrono::Utc::now().timestamp_millis().max(1) as u64);
         let desired_profile = active.filter(|id| documents.iter().any(|doc| doc.id == *id));
         let card_focus = documents
             .iter()
             .map(|doc| (doc.id, cx.focus_handle()))
             .collect();
         Self {
+            list_scroll: gpui_kit::component::VirtualListScrollHandle::new(),
             card_focus,
             overrides,
             batch: false,
@@ -83,13 +145,28 @@ impl ProfilesPage {
             documents,
             next_id,
             desired_profile,
+            core_revision: 0,
             saving: false,
+            rejected: false,
+            import_task: None,
             url,
             import_token,
             import_agent,
             import_age,
             _subscriptions: subscriptions,
+            pending_profile: None,
         }
+    }
+    pub(crate) fn reopen(&mut self, cx: &mut Context<Self>) {
+        if !self.rejected || self.saving {
+            return;
+        }
+        if let Some((documents, active)) = store::load(self.overrides, cx) {
+            self.documents = documents;
+            self.desired_profile = active;
+        }
+        self.rejected = false;
+        cx.notify();
     }
     fn open_editor(
         &mut self,
@@ -98,7 +175,32 @@ impl ProfilesPage {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let title = if content_only {
+        self.show_editor(
+            document,
+            if content_only {
+                EditorMode::Content
+            } else {
+                EditorMode::Information
+            },
+            window,
+            cx,
+        );
+    }
+    fn show_editor(
+        &mut self,
+        document: Document,
+        mode: EditorMode,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let content_only = mode == EditorMode::Content;
+        let title = if mode == EditorMode::Import {
+            if self.overrides {
+                "导入远程覆写".into()
+            } else {
+                "导入订阅".into()
+            }
+        } else if content_only {
             format!("编辑文件 · {}", document.name)
         } else {
             format!(
@@ -111,7 +213,15 @@ impl ProfilesPage {
             )
         };
         let owner = cx.weak_entity();
-        let editor = cx.new(|cx| DocumentEditor::new(owner, document, content_only, window, cx));
+        let import_inputs = (mode == EditorMode::Import).then(|| ImportInputs {
+            url: self.url.clone(),
+            token: self.import_token.clone(),
+            agent: self.import_agent.clone(),
+            age: self.import_age.clone(),
+        });
+        let editor = cx.new(|cx| {
+            DocumentEditor::new(owner.clone(), document, mode, import_inputs, window, cx)
+        });
         let width = if content_only {
             layout::EDITOR_DIALOG_WIDTH
         } else {
@@ -134,7 +244,14 @@ impl ProfilesPage {
                         ))
                     }
                 })
-                .footer(ui::dialog_footer("保存"))
+                .footer(ui::dialog_footer_pending(
+                    if mode == EditorMode::Import {
+                        "导入"
+                    } else {
+                        "保存"
+                    },
+                    owner.upgrade().is_some_and(|owner| owner.read(cx).saving),
+                ))
                 .on_ok(move |_, window, cx| {
                     commit.update(cx, |editor, cx| editor.commit(window, cx))
                 })
@@ -145,17 +262,16 @@ impl ProfilesPage {
         self.next_id += 1;
         self.open_editor(Document::new(id, kind), true, window, cx);
     }
-    fn import_remote(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let url = self.url.read(cx).value().to_string().trim().to_owned();
-        if !valid_remote_url(&url) {
-            ui::show_error("填写有效的 HTTP 或 HTTPS 地址".into(), window, cx);
-            cx.notify();
-            return;
-        }
+    fn remote_document(&mut self, cx: &App) -> Document {
+        let url = self.url.read(cx).value().trim().to_owned();
         let id = self.next_id;
-        self.next_id += 1;
+        self.next_id = self.next_id.saturating_add(1);
         let kind = if self.overrides {
-            if url.split('?').next().is_some_and(|p| p.ends_with(".js")) {
+            if url
+                .split('?')
+                .next()
+                .is_some_and(|path| path.ends_with(".js"))
+            {
                 DocumentKind::JavaScript
             } else {
                 DocumentKind::Yaml
@@ -171,96 +287,49 @@ impl ProfilesPage {
         }
         .into();
         document.url = url;
-        document.content = String::new();
+        document.content.clear();
+        if let Some(timeout) = crate::integration::read("settings", cx).get("SubscriptionTimeout") {
+            document.timeout = timeout.clone();
+        }
         document.token = self.import_token.read(cx).value().to_string();
         document.user_agent = self.import_agent.read(cx).value().to_string();
         document.age_key = self.import_age.read(cx).value().to_string();
-        self.open_editor(document, false, window, cx);
+        document
+    }
+    fn import_remote(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.saving || self.session.read(cx).core_busy() {
+            ui::show_error("已有配置操作正在执行".into(), window, cx);
+            return;
+        }
+        let url = self.url.read(cx).value().trim().to_owned();
+        if url.is_empty() {
+            self.import_dialog(window, cx);
+            return;
+        }
+        if !valid_remote_url(&url) {
+            ui::show_error("填写有效的 HTTP 或 HTTPS 地址".into(), window, cx);
+            return;
+        }
+        let document = self.remote_document(cx);
+        if let Err(error) = self.save_document(document, window, cx) {
+            ui::show_error(error, window, cx);
+        }
     }
     fn import_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let token = self.import_token.clone();
-        let agent = self.import_agent.clone();
-        let age = self.import_age.clone();
-        let overrides = self.overrides;
-        let url = self.url.clone();
-        let owner = cx.entity();
-        window.open_dialog(cx, move |dialog, window, cx| {
-            let owner = owner.clone();
-            let (url, token, agent, age) = (url.clone(), token.clone(), agent.clone(), age.clone());
-            ui::modal(
-                dialog,
-                if overrides {
-                    "导入远程覆写"
-                } else {
-                    "导入订阅"
-                },
-                layout::DIALOG_WIDTH,
-                window,
-                cx,
-            )
-            .content(ui::modal_content(
-                "import-document-body",
-                crate::ui::theme::layout::DIALOG_FORM_HEIGHT,
-                move |_, _| {
-                    v_flex()
-                        .gap(space::LG)
-                        .child(ui::field_label(
-                            "订阅地址",
-                            Input::new(&url)
-                                .with_size(control::STANDARD)
-                                .w_full()
-                                .aria_label("订阅地址"),
-                        ))
-                        .child(ui::field_label(
-                            "访问令牌",
-                            Input::new(&token)
-                                .with_size(control::STANDARD)
-                                .w_full()
-                                .aria_label("导入访问令牌"),
-                        ))
-                        .child(ui::field_label(
-                            "User-Agent",
-                            Input::new(&agent)
-                                .with_size(control::STANDARD)
-                                .w_full()
-                                .aria_label("导入 User-Agent"),
-                        ))
-                        .when(!overrides, |el| {
-                            el.child(ui::field_label(
-                                "Age 私钥",
-                                Input::new(&age)
-                                    .with_size(control::STANDARD)
-                                    .w_full()
-                                    .aria_label("导入 Age 私钥"),
-                            ))
-                        })
-                        .into_any_element()
-                },
-            ))
-            .footer(
-                h_flex().justify_end().child(
-                    Button::new("done-advanced")
-                        .with_size(control::STANDARD)
-                        .label("继续")
-                        .on_click(move |_, window, cx| {
-                            window.close_dialog(cx);
-                            let owner = owner.clone();
-                            window.defer(cx, move |window, cx| {
-                                owner.update(cx, |this, cx| this.import_remote(window, cx))
-                            });
-                        }),
-                ),
-            )
-        });
+        let document = self.remote_document(cx);
+        self.show_editor(document, EditorMode::Import, window, cx);
     }
     fn import_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.import_task.is_some() {
+            return;
+        }
         let receiver = cx.prompt_for_paths(PathPromptOptions {
             files: true,
             directories: false,
             multiple: false,
             prompt: Some("导入 YAML 或 JavaScript 配置".into()),
         });
-        cx.spawn_in(window, async move |owner, cx| {
+        self.import_task = Some(cx.spawn_in(window, async move |owner, cx| {
             let result = match receiver.await {
                 Ok(Ok(Some(paths))) => match paths.into_iter().next() {
                     Some(path) => Some(
@@ -310,8 +379,13 @@ impl ProfilesPage {
                     });
                 });
             }
-        })
-        .detach();
+            let _ = owner.update(cx, |this, cx| {
+                if let Some(task) = this.import_task.take() {
+                    task.detach();
+                }
+                cx.notify();
+            });
+        }));
     }
     fn persist_documents(
         &mut self,
@@ -324,44 +398,23 @@ impl ProfilesPage {
         if self.saving {
             return Err("正在保存配置，请稍后重试".into());
         }
-        let writes = documents
-            .iter()
-            .filter(|doc| !doc.is_remote() || !doc.content.is_empty())
-            .map(|doc| crate::integration::DocumentWrite {
-                path: store::document_path(self.overrides, doc, cx),
-                content: doc.content.clone(),
+        let expected = crate::integration::read(store::key(self.overrides), cx);
+        let command = if self.overrides {
+            crate::core::Command::Overrides(crate::core::OverrideChange::Save {
+                expected,
+                documents,
             })
-            .collect();
-        let values = store::values(&documents, active);
-        let owner = cx.weak_entity();
+        } else {
+            crate::core::Command::Profiles(crate::core::ProfileCommand::Save {
+                expected,
+                documents,
+            })
+        };
+        let id = crate::core::submit(command, window, cx)?;
         self.saving = true;
+        self.pending_profile = Some((id, Box::new(complete)));
         cx.notify();
-        crate::integration::save(
-            store::key(self.overrides),
-            values,
-            writes,
-            window,
-            cx,
-            move |result, window, cx| {
-                let _ = owner.update(cx, |this, cx| {
-                    this.saving = false;
-                    match result {
-                        Ok(()) => {
-                            this.documents = documents;
-                            this.desired_profile = active;
-                            for doc in &this.documents {
-                                this.card_focus
-                                    .entry(doc.id)
-                                    .or_insert_with(|| cx.focus_handle());
-                            }
-                            complete(this, window, cx);
-                        }
-                        Err(error) => ui::show_error(error, window, cx),
-                    }
-                    cx.notify();
-                });
-            },
-        );
+        let _ = active;
         Ok(())
     }
     fn save_document(
@@ -379,6 +432,9 @@ impl ProfilesPage {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Result<(), String> {
+        let imported =
+            document.is_remote() && !self.documents.iter().any(|value| value.id == document.id);
+        let submitted_url = document.url.clone();
         let mut documents = self.documents.clone();
         if let Some(existing) = documents.iter_mut().find(|d| d.id == document.id) {
             *existing = document;
@@ -387,16 +443,24 @@ impl ProfilesPage {
         }
         let active = self.desired_profile;
         let submit_focus = window.focused(cx);
-        self.persist_documents(documents, active, window, cx, move |_, window, cx| {
-            if submit_focus
+        self.persist_documents(documents, active, window, cx, move |this, window, cx| {
+            let close = submit_focus
                 .as_ref()
                 .is_some_and(|focus| focus.is_focused(window))
                 && editor.is_some_and(|(owner, revision)| {
                     owner
                         .upgrade()
                         .is_some_and(|editor| editor.read(cx).revision(cx) == revision)
-                })
-            {
+                });
+            if imported && this.url.read(cx).value().trim() == submitted_url {
+                this.url
+                    .update(cx, |state, cx| state.set_value("", window, cx));
+                this.import_token
+                    .update(cx, |state, cx| state.set_value("", window, cx));
+                this.import_age
+                    .update(cx, |state, cx| state.set_value("", window, cx));
+            }
+            if close {
                 window.close_dialog(cx);
             }
         })
@@ -412,19 +476,49 @@ impl ProfilesPage {
             return;
         };
         match action {
-            "分享二维码…" => Self::share_qr(&document, window, cx),
+            "分享二维码" => Self::share_qr(&document, window, cx),
             "复制链接" => cx.write_to_clipboard(ClipboardItem::new_string(document.url)),
-            "编辑规则…" => enhance::open(document, 0, window, cx),
-            "编辑代理…" => enhance::open(document, 1, window, cx),
-            "编辑代理组…" => enhance::open(document, 2, window, cx),
-            "编辑信息…" => self.open_editor(document, false, window, cx),
-            "编辑文件…" => self.open_editor(document, true, window, cx),
-            "更新" => ui::request_command(&format!("更新订阅:{id}"), window, cx),
-            "执行日志…" => {
-                ui::detail_dialog(format!("执行日志 · {}", document.name), "", window, cx)
+            "编辑规则" => {
+                enhance::open(document, 0, window, cx);
+            }
+            "编辑代理" => {
+                enhance::open(document, 1, window, cx);
+            }
+            "编辑代理组" => {
+                enhance::open(document, 2, window, cx);
+            }
+            "编辑信息" => self.open_editor(document, false, window, cx),
+            "编辑文件" => self.open_editor(document, true, window, cx),
+            "更新" => self.update_profiles(vec![id], window, cx),
+            "执行日志" => {
+                let title = format!("执行日志 · {}", document.name);
+                if let Err(error) = crate::core::execute(
+                    crate::core::Command::ScriptLogs(id),
+                    window,
+                    cx,
+                    move |result, window, cx| {
+                        if result.is_ok() {
+                            let text = crate::core::controller(cx)
+                                .read(cx)
+                                .snapshot()
+                                .script_log(id)
+                                .unwrap_or("暂无执行记录")
+                                .to_owned();
+                            ui::detail_dialog(title, text, window, cx);
+                        }
+                    },
+                ) {
+                    ui::show_error(error, window, cx);
+                }
             }
             "打开文件" => {
-                let path = store::document_path(self.overrides, &document, cx);
+                let path = match store::document_path(self.overrides, &document, cx) {
+                    Ok(path) => path,
+                    Err(error) => {
+                        ui::show_error(error, window, cx);
+                        return;
+                    }
+                };
                 crate::integration::execute(
                     crate::integration::Command::OpenDocument(path),
                     window,
@@ -439,10 +533,6 @@ impl ProfilesPage {
                 );
             }
             "删除" => {
-                if self.session.read(cx).active_profile_id() == Some(id) {
-                    ui::request_command("删除正在使用的订阅", window, cx);
-                    return;
-                }
                 let candidate = self
                     .documents
                     .iter()
@@ -454,28 +544,20 @@ impl ProfilesPage {
                     self.persist_documents(candidate, active, window, cx, move |_, window, cx| {
                         cx.notify();
                         let owner = cx.entity();
-                        window.push_notification(
+                        crate::ui::notifications::push(
+                            window,
                             gpui_kit::component::notification::Notification::new()
                                 .message(format!("已移除“{}”", document.name))
                                 .action(move |_, _, _| {
                                     let owner = owner.clone();
-                                    let document = document.clone();
                                     Button::new("undo-delete")
+                                        .icon(gpui_kit::assets::IconName::RotateCcw)
                                         .with_size(control::STANDARD)
                                         .ghost()
                                         .label("撤销")
                                         .on_click(move |_, window, cx| {
                                             owner.update(cx, |this, cx| {
-                                                if !this.documents.iter().any(|d| d.id == id)
-                                                    && let Err(error) = this.save_document(
-                                                        document.clone(),
-                                                        window,
-                                                        cx,
-                                                    )
-                                                {
-                                                    ui::show_error(error, window, cx);
-                                                    cx.notify();
-                                                }
+                                                this.restore_deleted(vec![id], window, cx);
                                             })
                                         })
                                 }),
@@ -489,7 +571,59 @@ impl ProfilesPage {
             _ => {}
         }
     }
-    fn select_profile(&mut self, _id: u64, window: &mut Window, cx: &mut Context<Self>) {
-        ui::request_command("激活订阅", window, cx);
+    fn restore_deleted(&mut self, ids: Vec<u64>, window: &mut Window, cx: &mut Context<Self>) {
+        match crate::core::submit(
+            if self.overrides {
+                crate::core::Command::Overrides(crate::core::OverrideChange::Restore { ids })
+            } else {
+                crate::core::Command::Profiles(crate::core::ProfileCommand::Restore { ids })
+            },
+            window,
+            cx,
+        ) {
+            Ok(id) => {
+                self.saving = true;
+                self.pending_profile = Some((id, Box::new(|_, _, _| {})));
+                cx.notify();
+            }
+            Err(error) => ui::show_error(error, window, cx),
+        }
+    }
+    fn update_profiles(&mut self, ids: Vec<u64>, window: &mut Window, cx: &mut Context<Self>) {
+        if self.saving || self.session.read(cx).core_busy() {
+            ui::show_error("已有配置操作正在执行".into(), window, cx);
+            return;
+        }
+        if ids.is_empty() {
+            return;
+        }
+        match crate::core::submit(
+            if self.overrides {
+                crate::core::Command::Overrides(crate::core::OverrideChange::Update {
+                    ids,
+                    automatic: false,
+                })
+            } else {
+                crate::core::Command::Profiles(crate::core::ProfileCommand::Update {
+                    ids,
+                    automatic: false,
+                })
+            },
+            window,
+            cx,
+        ) {
+            Ok(id) => {
+                self.saving = true;
+                self.pending_profile = Some((id, Box::new(|_, _, _| {})));
+                cx.notify();
+            }
+            Err(error) => ui::show_error(error, window, cx),
+        }
+    }
+    fn select_profile(&mut self, id: u64, window: &mut Window, cx: &mut Context<Self>) {
+        if self.saving || self.session.read(cx).core_busy() {
+            return;
+        }
+        crate::core::request(crate::core::Command::Activate(id), window, cx);
     }
 }

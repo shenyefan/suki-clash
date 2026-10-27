@@ -7,7 +7,7 @@ use gpui_kit::{
     assets::IconName,
     component::{
         ActiveTheme,
-        menu::{PopupMenu, PopupMenuItem},
+        menu::PopupMenu,
         table::{Column, ColumnSort, TableDelegate, TableState},
     },
     *,
@@ -21,14 +21,24 @@ pub(super) struct LogTable {
     pub(super) detail_id: Option<u64>,
     pub(super) sort: Option<(usize, bool)>,
     pub(super) descending: bool,
+    pub(super) viewport_width: Pixels,
 }
 impl LogTable {
     pub(super) fn sort_entries(&mut self) {
         let (column, descending) = self.sort.unwrap_or((0, self.descending));
+        if column == 0 {
+            self.entries.sort_by_cached_key(LogEntry::time_key);
+            if descending {
+                self.entries.reverse();
+            }
+            return;
+        }
         self.entries.sort_by(|a, b| {
             let order = match column {
-                1 => a.level.cmp(&b.level).then(a.id.cmp(&b.id)),
-                2 => a.source.cmp(&b.source).then(a.id.cmp(&b.id)),
+                1 => crate::logging::Level::parse(&a.level)
+                    .cmp(&crate::logging::Level::parse(&b.level))
+                    .then(a.id.cmp(&b.id)),
+                2 => a.origin.cmp(&b.origin).then(a.id.cmp(&b.id)),
                 3 => a.message.cmp(&b.message).then(a.id.cmp(&b.id)),
                 _ => a.id.cmp(&b.id),
             };
@@ -67,14 +77,33 @@ impl TableDelegate for LogTable {
     }
     fn column(&self, ix: usize, cx: &App) -> Column {
         let (key, label, width) = [
-            ("time", "时间", column::TIME),
+            ("time", "时间", column::LOG_TIME),
             ("level", "级别", column::LOG_LEVEL),
             ("source", "来源", column::PROCESS),
             ("message", "内容", column::MESSAGE),
         ][ix];
-        Column::new(key, label)
-            .width(cx.theme().font_size * width)
-            .sortable()
+        let width = if ix == 3 {
+            (self.viewport_width
+                - cx.theme().font_size * (column::LOG_TIME + column::LOG_LEVEL + column::PROCESS))
+                .max(cx.theme().font_size * width)
+        } else {
+            cx.theme().font_size * width
+        };
+        let (sorted, descending) = self.sort.unwrap_or((0, self.descending));
+        Column::new(key, label).width(width).sort(if ix != sorted {
+            ColumnSort::Default
+        } else if descending {
+            ColumnSort::Descending
+        } else {
+            ColumnSort::Ascending
+        })
+    }
+    fn render_last_empty_col(
+        &mut self,
+        _: &mut Window,
+        _: &mut Context<TableState<Self>>,
+    ) -> impl IntoElement {
+        div()
     }
     fn render_tr(
         &mut self,
@@ -95,14 +124,15 @@ impl TableDelegate for LogTable {
     ) -> impl IntoElement {
         let entry = &self.entries[row];
         let value = match column {
-            0 => entry.time.clone(),
+            0 => chrono::DateTime::parse_from_rfc3339(&entry.time)
+                .map(|time| {
+                    time.with_timezone(&chrono::Local)
+                        .format("%H:%M:%S%.3f")
+                        .to_string()
+                })
+                .unwrap_or_else(|_| entry.time.clone()),
             1 => entry.level.clone(),
-            2 => if entry.source == 0 {
-                "内核"
-            } else {
-                "程序"
-            }
-            .into(),
+            2 => entry.origin.clone(),
             _ => entry.message.clone(),
         };
         let color = match (column, entry.level.as_str()) {
@@ -155,11 +185,13 @@ impl TableDelegate for LogTable {
         };
         let message = entry.message.clone();
         let text = entry.text();
-        menu.item(PopupMenuItem::new("复制内容").on_click(move |_, _, cx| {
-            cx.write_to_clipboard(ClipboardItem::new_string(message.clone()))
-        }))
+        menu.item(
+            crate::ui::actions::menu("复制内容").on_click(move |_, _, cx| {
+                cx.write_to_clipboard(ClipboardItem::new_string(message.clone()))
+            }),
+        )
         .item(
-            PopupMenuItem::new("复制完整日志").on_click(move |_, _, cx| {
+            crate::ui::actions::menu("复制完整日志").on_click(move |_, _, cx| {
                 cx.write_to_clipboard(ClipboardItem::new_string(text.clone()))
             }),
         )
@@ -186,6 +218,7 @@ mod tests {
                     time: "18:42:00".into(),
                     level: "INFO".into(),
                     source: 0,
+                    origin: "mihomo".into(),
                     message: format!("entry {id}"),
                 })
                 .collect(),

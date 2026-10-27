@@ -1,0 +1,451 @@
+use http_body_util::{BodyExt as _, Full};
+use hyper::{Method, Request, body::Bytes, client::conn::http1};
+use hyper_util::rt::TokioIo;
+use serde::Deserialize;
+#[cfg(unix)]
+use std::path::PathBuf;
+use std::{io, time::Duration};
+use tokio::io::{AsyncRead, AsyncWrite};
+
+const RESPONSE_LIMIT: usize = 8 * 1024 * 1024;
+
+#[derive(Clone)]
+pub(super) enum Endpoint {
+    #[cfg(unix)]
+    Unix(PathBuf),
+    #[cfg(windows)]
+    Pipe(String),
+}
+
+#[derive(Clone)]
+pub(super) struct Client {
+    endpoint: Endpoint,
+    // Deliberately no Debug implementation: authentication never enters diagnostics.
+    secret: String,
+}
+
+#[derive(Deserialize)]
+struct Version {
+    version: String,
+}
+
+pub(super) trait Ipc: AsyncRead + AsyncWrite + Unpin + Send {}
+impl<T: AsyncRead + AsyncWrite + Unpin + Send> Ipc for T {}
+pub(super) type Socket = tokio_tungstenite::WebSocketStream<Box<dyn Ipc>>;
+impl Client {
+    async fn connect(&self) -> Result<Box<dyn Ipc>, String> {
+        match &self.endpoint {
+            #[cfg(unix)]
+            Endpoint::Unix(path) => tokio::net::UnixStream::connect(path)
+                .await
+                .map(|stream| Box::new(stream) as Box<dyn Ipc>)
+                .map_err(|error| format!("连接内核本地通道失败：{}", error.kind())),
+            #[cfg(windows)]
+            Endpoint::Pipe(path) => tokio::net::windows::named_pipe::ClientOptions::new()
+                .open(path)
+                .map(|stream| Box::new(stream) as Box<dyn Ipc>)
+                .map_err(|error| format!("连接内核命名管道失败：{}", error.kind())),
+        }
+    }
+    pub(super) async fn websocket(&self, path: &str) -> Result<Socket, String> {
+        use tokio_tungstenite::tungstenite::{
+            client::IntoClientRequest, http::HeaderValue, protocol::WebSocketConfig,
+        };
+        let work = async {
+            let stream = self.connect().await?;
+            let mut request = format!("ws://localhost{path}")
+                .into_client_request()
+                .map_err(|_| "无法构造内核 WebSocket 请求")?;
+            let mut authorization = HeaderValue::from_str(&format!("Bearer {}", self.secret))
+                .map_err(|_| "内核鉴权配置无效")?;
+            authorization.set_sensitive(true);
+            request.headers_mut().insert("Authorization", authorization);
+            let config = WebSocketConfig::default()
+                .max_message_size(Some(RESPONSE_LIMIT))
+                .max_frame_size(Some(RESPONSE_LIMIT));
+            let (socket, _) =
+                tokio_tungstenite::client_async_with_config(request, stream, Some(config))
+                    .await
+                    .map_err(|error| match error {
+                        tokio_tungstenite::tungstenite::Error::Http(response) => {
+                            format!("内核 WebSocket 返回 HTTP {}", response.status().as_u16())
+                        }
+                        _ => "内核 WebSocket 握手失败".into(),
+                    })?;
+            Ok(socket)
+        };
+        tokio::time::timeout(Duration::from_secs(5), work)
+            .await
+            .map_err(|_| "内核 WebSocket 连接超时".to_owned())?
+    }
+    pub(super) async fn close_connections(&self, id: Option<&str>) -> Result<(), String> {
+        let path = id
+            .map(|id| format!("/connections/{}", super::resources::escaped_name(id)))
+            .unwrap_or_else(|| "/connections".into());
+        self.request(Method::DELETE, &path, Duration::from_secs(5))
+            .await
+            .map(|_| ())
+    }
+    pub(super) async fn json(&self, path: &str) -> Result<serde_json::Value, String> {
+        serde_json::from_slice(&self.get(path).await?).map_err(|_| "内核 JSON 响应无效".into())
+    }
+    pub(super) async fn rules(
+        &self,
+        generation: u64,
+        epoch: u64,
+    ) -> Result<crate::traffic::rules::Snapshot, String> {
+        crate::traffic::rules::Snapshot::parse(&self.get("/rules").await?, generation, epoch)
+    }
+    pub(super) async fn proxies(
+        &self,
+        order: &[String],
+    ) -> Result<crate::proxies::runtime::Proxies, String> {
+        let (proxies, providers) =
+            tokio::try_join!(self.get("/proxies"), self.get("/providers/proxies"))?;
+        let mut proxies = crate::proxies::runtime::Proxies::parse(&proxies, order)?;
+        proxies.include_providers(&providers)?;
+        Ok(proxies)
+    }
+    pub(super) async fn select_proxy(&self, group: &str, node: Option<&str>) -> Result<(), String> {
+        let path = format!("/proxies/{}", super::resources::escaped_name(group));
+        if let Some(node) = node {
+            self.request_body(
+                Method::PUT,
+                &path,
+                Duration::from_secs(5),
+                serde_json::to_vec(&serde_json::json!({"name":node}))
+                    .map_err(|_| "节点名称无效")?,
+            )
+            .await?;
+        } else {
+            self.request(Method::DELETE, &path, Duration::from_secs(5))
+                .await?;
+        }
+        Ok(())
+    }
+    pub(super) async fn patch_mode(&self, mode: crate::session::ProxyMode) -> Result<(), String> {
+        self.request_body(
+            Method::PATCH,
+            "/configs",
+            Duration::from_secs(5),
+            serde_json::to_vec(&serde_json::json!({"mode":mode.label()}))
+                .map_err(|_| "模式无效")?,
+        )
+        .await
+        .map(|_| ())
+    }
+    pub(super) async fn node_delay(
+        &self,
+        name: &str,
+        provider: Option<&str>,
+        url: &str,
+        timeout: u64,
+    ) -> Result<u32, String> {
+        let query = url::form_urlencoded::Serializer::new(String::new())
+            .append_pair("url", url)
+            .append_pair("timeout", &timeout.to_string())
+            .finish();
+        let name = super::resources::escaped_name(name);
+        let path = match provider {
+            Some(provider) => format!(
+                "/providers/proxies/{}/{name}/healthcheck?{query}",
+                super::resources::escaped_name(provider)
+            ),
+            None => format!("/proxies/{name}/delay?{query}"),
+        };
+        let body = self
+            .request(
+                Method::GET,
+                &path,
+                Duration::from_millis(timeout.saturating_add(2000)),
+            )
+            .await?;
+        #[derive(Deserialize)]
+        struct Delay {
+            delay: u32,
+        }
+        serde_json::from_slice::<Delay>(&body)
+            .map(|value| value.delay)
+            .map_err(|_| "延迟测试响应无效".into())
+    }
+    pub(super) async fn reload(&self, yaml: &str) -> Result<(), String> {
+        let body = serde_json::to_vec(&serde_json::json!({"payload": yaml}))
+            .map_err(|_| "无法编码热更新请求")?;
+        self.request_body(
+            Method::PUT,
+            "/configs?force=true",
+            Duration::from_secs(15),
+            body,
+        )
+        .await
+        .map(|_| ())
+    }
+    pub(super) async fn proxy_names(&self) -> Result<Vec<String>, String> {
+        let body = self.get("/proxies").await?;
+        let value: serde_json::Value =
+            serde_json::from_slice(&body).map_err(|_| "代理列表响应无效")?;
+        let proxies = value
+            .get("proxies")
+            .and_then(serde_json::Value::as_object)
+            .ok_or("代理列表为空或无效")?;
+        Ok(proxies.keys().cloned().collect())
+    }
+    pub(super) async fn verify_listeners(
+        &self,
+        expected: &serde_yaml_ng::Value,
+    ) -> Result<(), String> {
+        let response = self.get("/configs").await?;
+        let actual: serde_json::Value =
+            serde_json::from_slice(&response).map_err(|_| "内核监听配置回读无效")?;
+        for key in [
+            "mixed-port",
+            "port",
+            "socks-port",
+            "redir-port",
+            "tproxy-port",
+        ] {
+            let expected = expected
+                .get(key)
+                .and_then(serde_yaml_ng::Value::as_u64)
+                .unwrap_or(0);
+            let actual = actual
+                .get(key)
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0);
+            if expected != actual {
+                return Err(format!(
+                    "{key} 未按候选配置加载（期望 {expected}，实际 {actual}）"
+                ));
+            }
+        }
+        for key in [
+            "ipv6",
+            "allow-lan",
+            "tcp-concurrent",
+            "find-process-mode",
+            "log-level",
+        ] {
+            if let Some(expected) = expected.get(key) {
+                let expected = serde_json::to_value(expected).map_err(|_| "无法编码回读设置")?;
+                if actual.get(key) != Some(&expected) {
+                    return Err(format!("{key} 未按候选配置加载"));
+                }
+            }
+        }
+        Ok(())
+    }
+    pub(super) async fn flush_fake_ip(&self) -> Result<(), String> {
+        self.request(Method::POST, "/cache/fakeip/flush", Duration::from_secs(5))
+            .await
+            .map(|_| ())
+    }
+    pub(super) async fn providers(
+        &self,
+        kind: super::ProviderKind,
+    ) -> Result<Vec<super::resources::Provider>, String> {
+        let bytes = self
+            .request(Method::GET, kind.path(), Duration::from_secs(5))
+            .await?;
+        super::resources::parse(&bytes, kind)
+    }
+    pub(super) async fn update_provider(
+        &self,
+        kind: super::ProviderKind,
+        name: &str,
+    ) -> Result<(), String> {
+        let path = format!("{}/{}", kind.path(), super::resources::escaped_name(name));
+        self.request(Method::PUT, &path, Duration::from_secs(120))
+            .await
+            .map(|_| ())
+    }
+    pub(super) async fn update_geo(&self) -> Result<(), String> {
+        self.request(Method::POST, "/configs/geo", Duration::from_secs(75))
+            .await
+            .map(|_| ())
+    }
+    pub(super) fn new(endpoint: Endpoint, secret: String) -> Self {
+        Self { endpoint, secret }
+    }
+
+    pub(super) async fn version(&self) -> Result<String, String> {
+        let response = self.get("/version").await?;
+        let response: Version =
+            serde_json::from_slice(&response).map_err(|_| "内核版本响应格式无效".to_owned())?;
+        if response.version.trim().is_empty() || response.version.len() > 128 {
+            return Err("内核版本响应无效".into());
+        }
+        Ok(response.version)
+    }
+
+    async fn get(&self, path: &str) -> Result<Vec<u8>, String> {
+        self.request(Method::GET, path, Duration::from_secs(1))
+            .await
+    }
+    async fn request(
+        &self,
+        method: Method,
+        path: &str,
+        timeout: Duration,
+    ) -> Result<Vec<u8>, String> {
+        self.request_body(method, path, timeout, Vec::new()).await
+    }
+
+    async fn request_body(
+        &self,
+        method: Method,
+        path: &str,
+        timeout: Duration,
+        payload: Vec<u8>,
+    ) -> Result<Vec<u8>, String> {
+        tokio::time::timeout(timeout, async {
+            self.exchange(self.connect().await?, method, path, payload)
+                .await
+        })
+        .await
+        .map_err(|_| "内核本地 API 请求超时；服务端操作可能仍在执行，请勿重复提交".to_owned())?
+    }
+
+    async fn exchange<S>(
+        &self,
+        stream: S,
+        method: Method,
+        path: &str,
+        payload: Vec<u8>,
+    ) -> Result<Vec<u8>, String>
+    where
+        S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    {
+        let (mut sender, connection) = http1::handshake(TokioIo::new(stream))
+            .await
+            .map_err(|_| "内核本地 HTTP 握手失败".to_owned())?;
+        // Drive the connection in the same future. Timeout/cancellation drops both
+        // halves; no detached connection task can survive its generation.
+        let request = async {
+            let request = Request::builder()
+                .method(method)
+                .uri(path)
+                .header("Host", "localhost")
+                .header("Authorization", format!("Bearer {}", self.secret))
+                .header("Content-Type", "application/json")
+                .body(Full::new(Bytes::from(payload)))
+                .map_err(|_| "无法构造内核请求".to_owned())?;
+            let response = sender
+                .send_request(request)
+                .await
+                .map_err(|_| "内核本地 API 传输失败".to_owned())?;
+            if !response.status().is_success() {
+                return Err(format!(
+                    "内核本地 API 返回 HTTP {}",
+                    response.status().as_u16()
+                ));
+            }
+            let mut body = response.into_body();
+            let mut bytes = Vec::new();
+            while let Some(frame) = body.frame().await {
+                let frame = frame.map_err(|_| "内核响应读取失败".to_owned())?;
+                if let Ok(data) = frame.into_data() {
+                    if bytes.len().saturating_add(data.len()) > RESPONSE_LIMIT {
+                        return Err("内核响应超过大小限制".into());
+                    }
+                    bytes.extend_from_slice(&data);
+                }
+            }
+            Ok(bytes)
+        };
+        tokio::pin!(request);
+        tokio::pin!(connection);
+        tokio::select! {
+            biased;
+            result = &mut request => result,
+            result = &mut connection => {
+                result.map_err(|_| "内核本地连接中断".to_owned())?;
+                request.await
+            }
+        }
+    }
+}
+
+pub(super) fn random_token() -> Result<String, io::Error> {
+    let mut bytes = [0; 24];
+    getrandom::fill(&mut bytes).map_err(io::Error::other)?;
+    Ok(bytes.iter().map(|value| format!("{value:02x}")).collect())
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::{Client, Endpoint};
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+    async fn respond(
+        status: u16,
+        body: &[u8],
+        framing: &str,
+    ) -> (tempfile::TempDir, Client, tokio::task::JoinHandle<()>) {
+        let root = tempfile::Builder::new()
+            .prefix("suki-api-")
+            .tempdir_in("/tmp")
+            .unwrap();
+        let path = root.path().join("api.sock");
+        let listener = tokio::net::UnixListener::bind(&path).unwrap();
+        let response = format!("HTTP/1.1 {status} Test\r\n{framing}\r\n\r\n").into_bytes();
+        let body = body.to_vec();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut bytes = vec![0; 4096];
+            let read = stream.read(&mut bytes).await.unwrap();
+            let request = String::from_utf8_lossy(&bytes[..read]);
+            assert!(request.starts_with("GET /version HTTP/1.1"));
+            assert!(
+                request
+                    .to_lowercase()
+                    .contains("authorization: bearer test-secret")
+            );
+            stream.write_all(&response).await.unwrap();
+            stream.write_all(&body).await.unwrap();
+        });
+        (
+            root,
+            Client::new(Endpoint::Unix(path), "test-secret".into()),
+            server,
+        )
+    }
+
+    #[tokio::test]
+    async fn version_uses_private_http_transport_and_supports_chunked_bodies() {
+        let body = r#"{"version":"v1.test"}"#;
+        let chunked = format!("{:x}\r\n{body}\r\n0\r\n\r\n", body.len());
+        let (_root, client, server) =
+            respond(200, chunked.as_bytes(), "Transfer-Encoding: chunked").await;
+        assert_eq!(client.version().await.unwrap(), "v1.test");
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn bad_status_and_invalid_bodies_do_not_expose_response_secrets() {
+        for (status, body) in [
+            (403, "secret-response"),
+            (200, "secret-response"),
+            (200, "{\"version\":\"\"}"),
+        ] {
+            let (_root, client, server) = respond(
+                status,
+                body.as_bytes(),
+                &format!("Content-Length: {}", body.len()),
+            )
+            .await;
+            let error = client.version().await.unwrap_err();
+            assert!(!error.contains("secret-response"));
+            assert!(!error.contains("test-secret"));
+            server.await.unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn oversized_response_is_rejected() {
+        let body = vec![b'x'; super::RESPONSE_LIMIT + 1];
+        let (_root, client, server) =
+            respond(200, &body, &format!("Content-Length: {}", body.len())).await;
+        assert!(client.version().await.unwrap_err().contains("大小限制"));
+        server.await.unwrap();
+    }
+}
