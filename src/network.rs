@@ -11,24 +11,34 @@ pub(crate) enum Transport {
     },
     System,
 }
+type ClientCache = Vec<(Transport, bool, bool, Client)>;
 #[derive(Clone, Default)]
 pub(crate) struct Http {
-    clients: Arc<Mutex<Vec<(Transport, bool, Client)>>>,
+    clients: Arc<Mutex<ClientCache>>,
 }
 impl Http {
     pub(crate) fn client(&self, transport: &Transport, https_only: bool) -> Result<Client, String> {
+        self.client_with_tls(transport, https_only, false)
+    }
+    pub(crate) fn client_with_tls(
+        &self,
+        transport: &Transport,
+        https_only: bool,
+        accept_invalid_certs: bool,
+    ) -> Result<Client, String> {
         let mut clients = self.clients.lock().map_err(|_| "HTTP 客户端状态不可用")?;
         // System proxy configuration may change outside this application. Resolve it for each task.
         if !matches!(transport, Transport::System)
-            && let Some((_, _, client)) = clients
-                .iter()
-                .find(|(route, secure, _)| route == transport && *secure == https_only)
+            && let Some((_, _, _, client)) = clients.iter().find(|(route, secure, invalid, _)| {
+                route == transport && *secure == https_only && *invalid == accept_invalid_certs
+            })
         {
             return Ok(client.clone());
         }
         let mut builder = Client::builder()
             .connect_timeout(Duration::from_secs(15))
             .https_only(https_only)
+            .tls_danger_accept_invalid_certs(accept_invalid_certs)
             .redirect(Policy::custom(move |attempt| {
                 if attempt.previous().len() >= 5 {
                     attempt.error("重定向次数超过上限")
@@ -63,7 +73,12 @@ impl Http {
             if clients.len() >= 8 {
                 clients.remove(0);
             }
-            clients.push((transport.clone(), https_only, client.clone()));
+            clients.push((
+                transport.clone(),
+                https_only,
+                accept_invalid_certs,
+                client.clone(),
+            ));
         }
         Ok(client)
     }
@@ -81,5 +96,22 @@ pub(crate) fn error(error: reqwest::Error) -> String {
         "HTTP 响应读取失败".into()
     } else {
         "HTTP 请求失败".into()
+    }
+}
+
+#[cfg(test)]
+mod client_policy_tests {
+    use super::*;
+    #[test]
+    fn explicit_insecure_subscription_client_never_changes_default_tls_policy() {
+        let http = Http::default();
+        http.client_with_tls(&Transport::Direct, false, true)
+            .unwrap();
+        http.client(&Transport::Direct, false).unwrap();
+        http.client(&Transport::Direct, false).unwrap();
+        let clients = http.clients.lock().unwrap();
+        assert_eq!(clients.len(), 2);
+        assert!(clients[0].2);
+        assert!(!clients[1].2);
     }
 }

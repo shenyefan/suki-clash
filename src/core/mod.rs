@@ -11,6 +11,7 @@ mod connections;
 mod download;
 mod install;
 mod proxy_control;
+mod system_proxy;
 pub(crate) use install::recover_pending;
 mod interfaces;
 pub(crate) use interfaces::Interface;
@@ -30,7 +31,8 @@ pub(crate) use profiles::ProfileCommand;
 mod service;
 
 pub(crate) use bridge::{
-    attach_window, controller, execute, init, init_unavailable, quit, request, submit,
+    attach_window, controller, execute, init, init_unavailable, ip_auto_refresh, quit, refresh_ip,
+    request, reset_program, submit,
 };
 pub(crate) use service::{Command, Service, ServiceError};
 
@@ -105,6 +107,7 @@ pub(crate) struct Snapshot {
     phase: Phase,
     pid: Option<u32>,
     version: Option<String>,
+    core_installed: Option<bool>,
     error: Option<String>,
     notice: Option<String>,
     profile: Option<crate::configuration::ProfileIdentity>,
@@ -118,12 +121,20 @@ pub(crate) struct Snapshot {
     resources: Resources,
     rules: std::sync::Arc<crate::traffic::rules::Snapshot>,
     script_log: Option<(u64, String)>,
+    runtime_yaml: Option<String>,
     interfaces: Vec<Interface>,
     proxy_names: Vec<String>,
     monitor_epoch: u64,
     chain: crate::proxies::chain_config::Config,
+    system_proxy: crate::system_proxy::Observation,
 }
 impl Snapshot {
+    pub(crate) fn runtime_yaml(&self) -> Option<&str> {
+        self.runtime_yaml.as_deref()
+    }
+    pub(crate) fn system_proxy(&self) -> &crate::system_proxy::Observation {
+        &self.system_proxy
+    }
     pub(crate) fn config_epoch(&self) -> u64 {
         self.monitor_epoch
     }
@@ -206,6 +217,12 @@ impl Snapshot {
             && self.request_id >= previous.request_id
     }
     pub(crate) fn label(&self) -> &'static str {
+        if self.core_installed == Some(false)
+            && self.pid.is_none()
+            && matches!(self.phase, Phase::Stopped | Phase::Failed)
+        {
+            return "不存在内核";
+        }
         match self.phase {
             Phase::Stopped => "已停止",
             Phase::Preparing => "准备运行资源",

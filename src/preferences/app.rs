@@ -2,25 +2,9 @@
 use crate::storage::{AppPaths, Values, atomic_write};
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::{Map, Value};
-use std::{
-    collections::BTreeMap,
-    io::Read as _,
-    path::PathBuf,
-    sync::{Arc, LazyLock, Mutex, Weak},
-};
-static WRITERS: LazyLock<Mutex<BTreeMap<PathBuf, Weak<Mutex<()>>>>> =
-    LazyLock::new(|| Mutex::new(BTreeMap::new()));
-fn writer(paths: &AppPaths) -> Result<Arc<Mutex<()>>, String> {
-    let mut writers = WRITERS.lock().map_err(|_| "程序设置写入端不可用")?;
-    writers.retain(|_, value| value.strong_count() > 0);
-    let entry = writers.entry(path(paths)).or_default();
-    if let Some(writer) = entry.upgrade() {
-        return Ok(writer);
-    }
-    let writer = Arc::new(Mutex::new(()));
-    *entry = Arc::downgrade(&writer);
-    Ok(writer)
-}
+use std::{io::Read as _, path::PathBuf};
+// Production writes run on the lifecycle actor; startup initialization completes
+// before that actor is installed. Keep one owner instead of a second lock registry.
 const LIMIT: u64 = 8 * 1024 * 1024;
 pub(crate) fn path(paths: &AppPaths) -> PathBuf {
     paths.settings().join("settings.json")
@@ -71,8 +55,6 @@ pub(crate) fn write<T: Serialize>(
     value: &T,
 ) -> Result<(), String> {
     let value = serde_json::to_value(value).map_err(|_| "无法编码程序设置")?;
-    let writer = writer(paths)?;
-    let _writer = writer.lock().map_err(|_| "程序设置写入端不可用")?;
     let mut root = document(paths, LIMIT)?;
     root.insert(section.into(), value);
     atomic_write(
@@ -121,8 +103,6 @@ pub(crate) fn capture(paths: &AppPaths, sections: &[&str]) -> Result<Sections, S
     ))
 }
 pub(crate) fn restore(paths: &AppPaths, snapshot: &Sections) -> Result<(), String> {
-    let writer = writer(paths)?;
-    let _writer = writer.lock().map_err(|_| "程序设置写入端不可用")?;
     let mut root = document(paths, LIMIT)?;
     for (section, value) in &snapshot.0 {
         match value {
@@ -145,34 +125,25 @@ pub(crate) fn restore(paths: &AppPaths, snapshot: &Sections) -> Result<(), Strin
 mod tests {
     use super::*;
     #[test]
-    fn concurrent_section_updates_and_scoped_recovery_preserve_other_settings() {
+    fn section_updates_and_scoped_recovery_preserve_other_settings() {
         let root = tempfile::tempdir().unwrap();
         let paths = AppPaths::isolated(root.path());
         paths.create().unwrap();
-        let mut workers = vec![];
         for (section, key) in [
             ("general", "ThemeIndex"),
-            ("core", "StartCore"),
+            ("core", "EnableExternalController"),
             ("dns", "DnsOverrideEnabled"),
             ("sniffer", "SnifferOverrideEnabled"),
         ] {
-            let paths = paths.clone();
-            workers.push(std::thread::spawn(move || {
-                for _ in 0..10 {
-                    write_values(
-                        &paths,
-                        section,
-                        &Values::from([(
-                            key.into(),
-                            if key == "ThemeIndex" { "dark" } else { "true" }.into(),
-                        )]),
-                    )
-                    .unwrap();
-                }
-            }));
-        }
-        for worker in workers {
-            worker.join().unwrap();
+            write_values(
+                &paths,
+                section,
+                &Values::from([(
+                    key.into(),
+                    if key == "ThemeIndex" { "dark" } else { "true" }.into(),
+                )]),
+            )
+            .unwrap();
         }
         let before = capture(&paths, &["runtime", "core"]).unwrap();
         write_values(
@@ -190,7 +161,7 @@ mod tests {
         restore(&paths, &before).unwrap();
         let root = document(&paths, LIMIT).unwrap();
         assert_eq!(root["general"]["theme_index"], "light");
-        assert_eq!(root["core"]["start_core"], true);
+        assert_eq!(root["core"]["enable_external_controller"], true);
         assert_eq!(root["dns"]["dns_override_enabled"], true);
         assert_eq!(root["sniffer"]["sniffer_override_enabled"], true);
         assert!(!root.contains_key("runtime"));

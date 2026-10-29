@@ -98,12 +98,31 @@ impl TableDelegate for LogTable {
             ColumnSort::Ascending
         })
     }
-    fn render_last_empty_col(
+    fn perform_sort(
         &mut self,
+        column: usize,
+        sort: ColumnSort,
         _: &mut Window,
-        _: &mut Context<TableState<Self>>,
-    ) -> impl IntoElement {
-        div()
+        cx: &mut Context<TableState<Self>>,
+    ) {
+        self.sort = match sort {
+            ColumnSort::Default => None,
+            ColumnSort::Ascending => Some((column, false)),
+            ColumnSort::Descending => Some((column, true)),
+        };
+        self.sort_entries();
+        let selected = self.selected_index();
+        let table = cx.entity();
+        cx.defer(move |cx| {
+            table.update(cx, |table, cx| {
+                if let Some(ix) = selected {
+                    table.set_selected_row(ix, cx);
+                } else {
+                    table.clear_selection(cx);
+                }
+                cx.notify();
+            })
+        });
     }
     fn render_tr(
         &mut self,
@@ -114,6 +133,29 @@ impl TableDelegate for LogTable {
         div()
             .id(("log-row", self.entries.get(ix).map_or(0, |entry| entry.id)))
             .aria_label(self.entries.get(ix).map(LogEntry::text).unwrap_or_default())
+    }
+    fn context_menu(
+        &mut self,
+        ix: usize,
+        menu: PopupMenu,
+        _: &mut Window,
+        _: &mut Context<TableState<Self>>,
+    ) -> PopupMenu {
+        let Some(entry) = self.entries.get(ix) else {
+            return menu;
+        };
+        let message = entry.message.clone();
+        let text = entry.text();
+        menu.item(
+            crate::ui::actions::menu("复制内容").on_click(move |_, _, cx| {
+                cx.write_to_clipboard(ClipboardItem::new_string(message.clone()))
+            }),
+        )
+        .item(
+            crate::ui::actions::menu("复制完整日志").on_click(move |_, _, cx| {
+                cx.write_to_clipboard(ClipboardItem::new_string(text.clone()))
+            }),
+        )
     }
     fn render_td(
         &mut self,
@@ -147,61 +189,19 @@ impl TableDelegate for LogTable {
             .truncate()
             .child(highlighted(value, self.matcher.as_ref(), cx))
     }
-    fn perform_sort(
-        &mut self,
-        column: usize,
-        sort: ColumnSort,
-        _: &mut Window,
-        cx: &mut Context<TableState<Self>>,
-    ) {
-        self.sort = match sort {
-            ColumnSort::Default => None,
-            ColumnSort::Ascending => Some((column, false)),
-            ColumnSort::Descending => Some((column, true)),
-        };
-        self.sort_entries();
-        let selected = self.selected_index();
-        let table = cx.entity();
-        cx.defer(move |cx| {
-            table.update(cx, |table, cx| {
-                if let Some(ix) = selected {
-                    table.set_selected_row(ix, cx);
-                } else {
-                    table.clear_selection(cx);
-                }
-                cx.notify();
-            })
-        });
-    }
-    fn context_menu(
-        &mut self,
-        ix: usize,
-        menu: PopupMenu,
-        _: &mut Window,
-        _: &mut Context<TableState<Self>>,
-    ) -> PopupMenu {
-        let Some(entry) = self.entries.get(ix) else {
-            return menu;
-        };
-        let message = entry.message.clone();
-        let text = entry.text();
-        menu.item(
-            crate::ui::actions::menu("复制内容").on_click(move |_, _, cx| {
-                cx.write_to_clipboard(ClipboardItem::new_string(message.clone()))
-            }),
-        )
-        .item(
-            crate::ui::actions::menu("复制完整日志").on_click(move |_, _, cx| {
-                cx.write_to_clipboard(ClipboardItem::new_string(text.clone()))
-            }),
-        )
-    }
     fn render_empty(
         &mut self,
         _: &mut Window,
         cx: &mut Context<TableState<Self>>,
     ) -> impl IntoElement {
         ui::empty(IconName::ScrollText, "暂无日志", "调整级别或搜索条件", cx)
+    }
+    fn render_last_empty_col(
+        &mut self,
+        _: &mut Window,
+        _: &mut Context<TableState<Self>>,
+    ) -> impl IntoElement {
+        div()
     }
 }
 

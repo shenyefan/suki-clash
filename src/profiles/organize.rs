@@ -1,7 +1,7 @@
 use super::{ProfilesPage, model::Document, store};
 use crate::{
     ui,
-    ui::theme::{control, layout, space, text},
+    ui::theme::{control, layout, space, stroke, text},
 };
 use gpui_kit::{
     component::{ActiveTheme, Sizable, WindowExt, button::Button, h_flex, v_flex},
@@ -18,10 +18,17 @@ pub(super) struct DocumentDrag {
 impl Render for DocumentDrag {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         div()
-            .p(space::MD)
+            .px(space::MD)
+            .py(space::SM)
+            .max_w(layout::SEARCH_WIDTH)
             .rounded(cx.theme().radius)
             .bg(cx.theme().popover)
-            .child(self.name.clone())
+            .text_color(cx.theme().popover_foreground)
+            .border(stroke::HAIRLINE)
+            .border_color(cx.theme().border)
+            .text_size(text::BODY)
+            .font_weight(text::EMPHASIS)
+            .child(div().truncate().child(self.name.clone()))
     }
 }
 impl ProfilesPage {

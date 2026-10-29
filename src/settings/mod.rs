@@ -8,6 +8,7 @@ mod fields;
 mod preferences;
 mod resources;
 mod runtime;
+mod sysproxy;
 use crate::preferences::schema;
 mod view;
 use crate::integration as store;
@@ -19,7 +20,7 @@ use gpui_kit::{
         IndexPath, Sizable, Theme, ThemeMode, WindowExt,
         button::{Button, ButtonVariants},
         h_flex,
-        input::{EditorState, Input, InputEvent, InputState},
+        input::{EditorState, Input, InputEvent, InputState, MaskPattern},
         select::SelectState,
     },
     *,
@@ -74,6 +75,7 @@ pub(crate) struct SettingsPage {
     runtime_tab: usize,
     dirty: bool,
     saving: bool,
+    pending_action: Option<Task<()>>,
     core_syncing: bool,
     core_pending: Option<(u64, BTreeMap<String, String>, AnyWindowHandle)>,
     core_versions: Vec<String>,
@@ -102,6 +104,13 @@ impl SettingsPage {
             cx.observe(&session, move |this, session, cx| {
                 let observed_core = session.read(cx).core().clone();
                 let observed_busy = session.read(cx).core_busy();
+                if this.kind == SettingsKind::SysProxy
+                    && !observed_busy
+                    && let Some(enabled) = observed_core.system_proxy().enabled()
+                    && let Some(field) = this.fields.get_mut("IsSystemProxyEnabled")
+                {
+                    field.control = FieldControl::Toggle(enabled);
+                }
                 let refresh_resources = this.kind == SettingsKind::Resources
                     && !observed_busy
                     && this.resource_generation != Some(observed_core.generation());
@@ -197,8 +206,9 @@ impl SettingsPage {
             let control = match spec.kind {
                 FieldKind::Toggle => FieldControl::Toggle(value == "true"),
                 FieldKind::Text | FieldKind::Secret | FieldKind::Number => {
+                    let numeric = spec.kind == FieldKind::Number && !spec.key.ends_with("Port");
                     let state = cx.new(|cx| {
-                        InputState::new(window, cx)
+                        let state = InputState::new(window, cx)
                             .default_value(value.to_owned())
                             .placeholder(
                                 if kind == SettingsKind::Resources && spec.kind == FieldKind::Text {
@@ -207,7 +217,12 @@ impl SettingsPage {
                                     ""
                                 },
                             )
-                            .masked(spec.kind == FieldKind::Secret)
+                            .masked(spec.kind == FieldKind::Secret);
+                        if numeric {
+                            state.mask_pattern(MaskPattern::number(None))
+                        } else {
+                            state
+                        }
                     });
                     let key = spec.key;
                     subscriptions.push(cx.subscribe_in(
@@ -350,6 +365,7 @@ impl SettingsPage {
             runtime_tab: 0,
             dirty: false,
             saving: false,
+            pending_action: None,
             core_syncing: false,
             core_pending: None,
             core_versions: Vec::new(),
@@ -393,24 +409,6 @@ impl SettingsPage {
                 && let FieldControl::Text(state) = &field.control
             {
                 values.insert((*key).into(), state.read(cx).value().to_string());
-            }
-        }
-        if self.kind == SettingsKind::SysProxy {
-            if values
-                .get("UseDefaultBypass")
-                .is_some_and(|value| value == "true")
-            {
-                values.insert("BypassList".into(), schema::default_bypass().into());
-            }
-            let host = values.get("SystemProxyHost").cloned().unwrap_or_default();
-            let mixed = store::read("core", cx)
-                .get("MixedPort")
-                .cloned()
-                .unwrap_or_else(|| "7897".into());
-            if let Some(script) = values.get_mut("PacScript") {
-                *script = script
-                    .replace("%proxy_host%", &host)
-                    .replace("%mixed-port%", &mixed);
             }
         }
         values
@@ -526,37 +524,6 @@ impl SettingsPage {
             .collect();
         self.restore_core_fields(&touched, window, cx);
     }
-    fn reset(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let entity = cx.entity();
-        window.open_alert_dialog(cx, move |dialog, window, cx| {
-            ui::modal_alert(dialog, window, cx)
-                .title("恢复本页默认设置？")
-                .description("恢复当前页面的默认设置。")
-                .footer(ui::dialog_footer("恢复默认"))
-                .on_ok({
-                    let entity = entity.clone();
-                    move |_, window, cx| {
-                        entity.update(cx, |this, cx| {
-                            let defaults = crate::preferences::choices::decode(
-                                crate::preferences::defaults(this.kind),
-                            );
-                            this.core_syncing = true;
-                            this.dns_document = serde_yaml_ng::Value::Null;
-                            this.assign_values(&defaults, window, cx);
-                            if matches!(this.kind, SettingsKind::Dns | SettingsKind::Sniffer)
-                                && let Ok(yaml) = this.dns_to_yaml(cx)
-                            {
-                                this.dns_source
-                                    .update(cx, |state, cx| state.set_value(yaml, window, cx));
-                            }
-                            this.core_syncing = false;
-                            this.commit_core(this.values(cx), window, cx);
-                        });
-                        true
-                    }
-                })
-        });
-    }
     fn toggle(
         &mut self,
         key: &'static str,
@@ -598,6 +565,9 @@ impl SettingsPage {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.local_action(action, window, cx) {
+            return;
+        }
         if self.kind == SettingsKind::Core && matches!(action, "复制地址" | "复制密钥") {
             let values = crate::integration::read("core", cx);
             if let Some(value) = values.get(key) {
@@ -667,7 +637,7 @@ impl SettingsPage {
             action,
             "创建备份"
                 | "恢复最新备份"
-                | "重置应用"
+                | "重置程序"
                 | "退出应用"
                 | "复制版本号"
                 | "复制环境变量"
@@ -723,33 +693,22 @@ impl SettingsPage {
                     );
                 }
             }
-            "重置应用" => {
-                let values = self.command_values(cx);
+            "重置程序" => {
+                let owner = cx.weak_entity();
                 window.open_alert_dialog(cx, move |dialog, window, cx| {
-                    let values = values.clone();
+                    let owner = owner.clone();
                     ui::modal_alert(dialog, window, cx)
-                        .title("重置应用？")
-                        .description("应用设置与配置将由重置服务处理，请先创建备份。")
-                        .footer(ui::dialog_footer("重置"))
+                        .title("重置程序？")
+                        .description("删除全部设置、订阅、覆写、增强、节点选择和运行配置，随后退出程序。下次启动生成默认配置。保留内核、资源数据库、日志和备份。确认后等待 5 秒，期间可撤销。")
+                        .footer(ui::dialog_footer("重置程序"))
                         .on_ok(move |_, window, cx| {
-                            crate::integration::request_with(
-                                "重置应用",
-                                values.clone(),
-                                window,
-                                cx,
-                            );
+                            let _ = owner.update(cx, |this, cx| this.defer_destructive("重置程序", window, cx));
                             true
                         })
                 });
             }
             "UWP 应用代理" | "选择应用" => Self::uwp_dialog(window, cx),
             "添加 WebUI" => self.add_panel(window, cx),
-            "恢复默认 WebUI" => {
-                self.panels = schema::default_panels();
-                self.next_panel_id = 4;
-                self.commit_panels(window, cx);
-                cx.notify();
-            }
             _ => ui::request_command(action, window, cx),
         }
     }
@@ -921,6 +880,95 @@ mod tests {
                 assert!(!page.read(cx).values(cx)["GeoIpUrl"].is_empty());
             })
             .unwrap();
+        // Enable the interval in the fixture without submitting a core command.
+        handle
+            .update(cx, |_, window, cx| {
+                page.update(cx, |page, cx| {
+                    page.fields.get_mut("GeoAutoUpdate").unwrap().control =
+                        super::FieldControl::Toggle(true);
+                    cx.notify();
+                });
+                window.render_frame(cx);
+                let state = match &page.read(cx).fields["GeoUpdateIntervalValue"].control {
+                    super::FieldControl::Text(state) => state.clone(),
+                    _ => unreachable!(),
+                };
+                let scope = ("input", state.entity_id());
+                assert!(
+                    window
+                        .within(scope)
+                        .try_find(("number-increment", state.entity_id()))
+                        .is_none()
+                );
+                assert!(
+                    window
+                        .within(scope)
+                        .try_find(("number-decrement", state.entity_id()))
+                        .is_none()
+                );
+                window.click(scope, cx);
+                window.press("cmd-a", cx);
+                window.input("25", cx);
+                assert_eq!(state.read(cx).value(), "25");
+            })
+            .unwrap();
+        cx.run_until_parked();
+        handle
+            .update(cx, |_, window, cx| {
+                assert!(page.read(cx).dirty);
+                assert!(page.read(cx).error.is_none());
+                assert_eq!(page.read(cx).values(cx)["GeoUpdateIntervalValue"], "25");
+                // Changing a draft does not submit until the existing blur handler runs.
+                assert!(!page.read(cx).saving);
+                page.update(cx, |page, cx| {
+                    page.saving = true;
+                    cx.notify();
+                });
+                window.render_frame(cx);
+                let state = match &page.read(cx).fields["GeoUpdateIntervalValue"].control {
+                    super::FieldControl::Text(state) => state.clone(),
+                    _ => unreachable!(),
+                };
+                window.click(("input", state.entity_id()), cx);
+                window.input("9", cx);
+                assert_eq!(state.read(cx).value(), "25");
+            })
+            .unwrap();
+        let (core_window, core_page) = cx.update(|cx| {
+            gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
+                let session = cx.new(Session::new);
+                cx.new(|cx| {
+                    let mut page = SettingsPage::new(SettingsKind::Core, session, window, cx);
+                    page.runtime_tab = 1;
+                    page
+                })
+            })
+            .unwrap()
+        });
+        core_window
+            .update(cx, |_, window, cx| {
+                window.render_frame(cx);
+                let state = match &core_page.read(cx).fields["MixedPort"].control {
+                    super::FieldControl::Text(state) => state,
+                    _ => unreachable!(),
+                };
+                assert!(
+                    window
+                        .within(("input", state.entity_id()))
+                        .try_find(("number-increment", state.entity_id()))
+                        .is_none()
+                );
+                let input_bounds = window.find(("input", state.entity_id())).bounds();
+                let input = window.within(("input", state.entity_id()));
+                let button = input.find(gpui_kit::SharedString::from("action-MixedPort-随机端口"));
+                let bounds = button.bounds();
+                assert!(bounds.size.width > gpui_kit::px(0.));
+                assert!(bounds.left() >= input_bounds.left());
+                assert!(bounds.right() <= input_bounds.right());
+                assert!(bounds.top() >= input_bounds.top());
+                assert!(bounds.bottom() <= input_bounds.bottom());
+            })
+            .unwrap();
         crate::integration::finish_test_services(cx);
     }
 }
@@ -1073,6 +1121,8 @@ mod yaml_layout_tests {
                             .path()
                             .contains(&gpui_kit::ElementId::from("runtime-tabs"))
                     }));
+                    assert!(window.find("dns-edit-mode").visible());
+                    assert!(window.try_find("runtime-reset").is_none());
                     window.click("dns-edit-mode", cx);
                 })
                 .unwrap();
@@ -1097,6 +1147,8 @@ mod yaml_layout_tests {
                     let viewport = window.find("settings-yaml-viewport").bounds();
                     assert!(viewport.size.height > px(500.), "{viewport:?}");
                     assert!(viewport.size.width > px(900.));
+                    assert!(window.find("dns-edit-mode").visible());
+                    assert!(window.try_find("runtime-reset").is_none());
                     window.click("dns-edit-mode", cx);
                 })
                 .unwrap();

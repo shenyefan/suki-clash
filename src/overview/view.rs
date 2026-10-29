@@ -4,7 +4,7 @@ use crate::ui::theme::{self, layout, opacity, space, stroke, text};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     component::{
-        ActiveTheme, Sizable,
+        ActiveTheme, Disableable, Sizable,
         chart::LineChart,
         h_flex,
         scroll::ScrollableElement,
@@ -430,6 +430,11 @@ impl Render for Overview {
             .and_then(|mode| runtime.proxies.current_node(mode))
             .unwrap_or("—")
             .to_owned();
+        let quick_test = runtime.mode.and_then(|mode| {
+            runtime
+                .proxies
+                .current_test(mode, runtime.generation, runtime.epoch)
+        });
         ui::workspace()
             .child(ui::workspace_header("仪表盘", "", cx))
             .child(
@@ -445,12 +450,135 @@ impl Render for Overview {
                                     .gap(space::SECTION)
                                     .pb(space::SM)
                                     .child(Self::context("配置", profile, cx))
-                                    .child(Self::context("策略节点", node, cx))
-                                    .child(Self::context(
-                                        "外部 IP",
-                                        runtime.external_ip.clone().unwrap_or_else(|| "—".into()),
-                                        cx,
-                                    ))
+                                    .child(
+                                        h_flex()
+                                            .flex_1()
+                                            .min_w(space::NONE)
+                                            .gap(space::SM)
+                                            .child(Self::context("策略节点", node, cx))
+                                            .child({
+                                                use gpui_kit::component::button::{
+                                                    Button, ButtonVariants,
+                                                };
+                                                Button::new("current-node-test")
+                                                    .ghost()
+                                                    .small()
+                                                    .icon(gpui_kit::assets::IconName::Gauge)
+                                                    .accessibility_label("测试当前节点延迟")
+                                                    .tooltip("测试当前节点延迟")
+                                                    .disabled(quick_test.is_none())
+                                                    .on_click(move |_, window, cx| {
+                                                        if let Some(test) = quick_test.clone() {
+                                                            crate::core::test_delay(
+                                                                test, window, cx,
+                                                            );
+                                                        }
+                                                    })
+                                            }),
+                                    )
+                                    .child(
+                                        v_flex()
+                                            .flex_1()
+                                            .min_w(space::NONE)
+                                            .gap(space::SM)
+                                            .child(
+                                                h_flex()
+                                                    .gap(space::XS)
+                                                    .child(
+                                                        gpui_kit::component::switch::Switch::new(
+                                                            "ip-auto-refresh",
+                                                        )
+                                                        .small()
+                                                        .checked(self.ip_auto_refresh)
+                                                        .accessibility_label("自动刷新出口 IP")
+                                                        .on_change(cx.listener(
+                                                            |this, enabled, _, cx| {
+                                                                this.ip_auto_refresh = *enabled;
+                                                                crate::core::ip_auto_refresh(
+                                                                    *enabled, cx,
+                                                                );
+                                                                cx.notify();
+                                                            },
+                                                        )),
+                                                    )
+                                                    .child(
+                                                        ui::muted("外部 IP", cx)
+                                                            .text_size(text::CAPTION),
+                                                    )
+                                                    .child(div().flex_1())
+                                                    .child(
+                                                        ui::icon_button(
+                                                            "ip-visibility",
+                                                            if self.show_ip {
+                                                                gpui_kit::assets::IconName::EyeOff
+                                                            } else {
+                                                                gpui_kit::assets::IconName::Eye
+                                                            },
+                                                            if self.show_ip {
+                                                                "隐藏 IP"
+                                                            } else {
+                                                                "显示 IP"
+                                                            },
+                                                        )
+                                                        .on_click(cx.listener(|this, _, _, cx| {
+                                                            this.show_ip = !this.show_ip;
+                                                            cx.notify();
+                                                        })),
+                                                    )
+                                                    .child(
+                                                        ui::icon_button(
+                                                            "ip-refresh",
+                                                            gpui_kit::assets::IconName::RefreshCw,
+                                                            "刷新出口 IP",
+                                                        )
+                                                        .loading(runtime.ip_loading)
+                                                        .disabled(!state.is_running())
+                                                        .on_click(|_, window, cx| {
+                                                            crate::core::refresh_ip(window, cx)
+                                                        }),
+                                                    ),
+                                            )
+                                            .child(if self.show_ip {
+                                                runtime
+                                                    .external_ip
+                                                    .clone()
+                                                    .unwrap_or_else(|| "—".into())
+                                            } else {
+                                                "••••••••".into()
+                                            })
+                                            .when_some(runtime.ip_info.as_ref(), |view, info| {
+                                                view.child(ui::muted(
+                                                    format!("{} {}", info.flag(), info.country),
+                                                    cx,
+                                                ))
+                                                .child(ui::muted(info.location(), cx))
+                                                .child(ui::muted(
+                                                    format!(
+                                                        "{} {}",
+                                                        info.asn
+                                                            .map(|asn| format!("AS{asn}"))
+                                                            .unwrap_or_default(),
+                                                        info.asn_organization
+                                                    ),
+                                                    cx,
+                                                ))
+                                                .child(ui::muted(info.organization.clone(), cx))
+                                                .when_some(
+                                                    info.latitude_microdegrees
+                                                        .zip(info.longitude_microdegrees),
+                                                    |view, (latitude, longitude)| {
+                                                        view.child(ui::muted(
+                                                            format!(
+                                                                "{:.2}, {:.2}",
+                                                                longitude as f64 / 1_000_000.,
+                                                                latitude as f64 / 1_000_000.
+                                                            ),
+                                                            cx,
+                                                        ))
+                                                    },
+                                                )
+                                            }),
+                                    )
                                     .child(
                                         v_flex()
                                             .flex_1()

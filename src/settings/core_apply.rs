@@ -3,6 +3,42 @@ use super::{FieldControl, SettingsPage};
 use crate::{storage::Values, ui};
 use gpui_kit::*;
 impl SettingsPage {
+    pub(super) fn restore_default_text(
+        &mut self,
+        key: &'static str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let before = self.values(cx)[key].clone();
+        let default = self.fields[key].spec.default.to_owned();
+        if before == default {
+            return;
+        }
+        if let FieldControl::Multiline(state) = &self.fields[key].control {
+            state.update(cx, |state, cx| state.set_value(default.clone(), window, cx));
+        }
+        self.commit_core_field(key, window, cx);
+        let owner = cx.weak_entity();
+        ui::notifications::undo(window, "已恢复默认内容", cx, move |window, cx| {
+            owner
+                .update(cx, |this, cx| {
+                    if this.saving || this.session.read(cx).core_busy() {
+                        ui::show_error("正在应用配置，请稍后撤销".into(), window, cx);
+                        return false;
+                    }
+                    if this.values(cx).get(key) != Some(&default) {
+                        ui::show_error("内容已更改，无法撤销此次恢复".into(), window, cx);
+                        return false;
+                    }
+                    if let FieldControl::Multiline(state) = &this.fields[key].control {
+                        state.update(cx, |state, cx| state.set_value(before.clone(), window, cx));
+                    }
+                    this.commit_core_field(key, window, cx);
+                    true
+                })
+                .unwrap_or(true)
+        });
+    }
     pub(super) fn commit_core_field(
         &mut self,
         key: &'static str,
@@ -84,7 +120,13 @@ impl SettingsPage {
         let committed = crate::integration::read(self.kind.id(), cx);
         let patch: Values = patch
             .into_iter()
-            .filter(|(k, v)| k == "WebUiConfigured" || committed.get(k) != Some(v))
+            .filter(|(k, v)| {
+                if self.kind == super::SettingsKind::SysProxy && k == "IsSystemProxyEnabled" {
+                    self.session.read(cx).system_proxy() != Some(v == "true")
+                } else {
+                    k == "WebUiConfigured" || committed.get(k) != Some(v)
+                }
+            })
             .collect();
         if patch.is_empty()
             || self

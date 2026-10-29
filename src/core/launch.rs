@@ -82,10 +82,22 @@ impl Launch {
         Self::from_source(paths, configuration::Source::load(paths).await?).await
     }
 
-    pub(super) async fn prepare_startup(paths: &AppPaths) -> Result<Self, String> {
-        Self::prepare(paths).await
+    pub(super) async fn preview(paths: &AppPaths) -> Result<Self, String> {
+        Self::compose_source(
+            paths,
+            configuration::Source::load(paths).await?,
+            true,
+            Composition {
+                executable: Some(
+                    paths
+                        .directory(DirectoryKind::Core)
+                        .join(crate::bootstrap::core_name()),
+                ),
+                ..Default::default()
+            },
+        )
+        .await
     }
-
     pub(super) async fn from_source(
         paths: &AppPaths,
         source: configuration::Source,
@@ -228,6 +240,9 @@ impl Launch {
             .map_err(|_| "无法提交私有运行配置")?;
         self.source = candidate.source.clone();
         self.composed = candidate.composed.clone();
+        self.client = self.client.clone().with_proxy_config(
+            &serde_yaml_ng::from_str(&self.composed).map_err(|_| "已应用配置无效")?,
+        );
         Ok(())
     }
     pub(super) async fn for_install(
@@ -445,8 +460,8 @@ impl Launch {
             work_dir,
             config,
             source,
+            client: Client::new(endpoint, secret).with_proxy_config(&mapped),
             composed,
-            client: Client::new(endpoint, secret),
             _directory: directory,
             #[cfg(windows)]
             pipe_sddl: current_user_pipe_sddl().map_err(|_| "无法限制内核命名管道的访问权限")?,

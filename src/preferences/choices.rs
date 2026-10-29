@@ -2,18 +2,13 @@
 use crate::storage::Values;
 fn options(key: &str) -> &'static [(&'static str, &'static str)] {
     match key {
+        "ProxyGroupToolsPosition" => &[("左侧", "left"), ("右侧", "right")],
         "SystemProxyModeIndex" => &[("手动", "manual"), ("PAC", "pac")],
         "StackIndex" => &[
             ("System", "system"),
             ("gVisor", "gvisor"),
             ("Mixed", "mixed"),
             ("Mips", "mips"),
-        ],
-        "TunDnsMode" => &[
-            ("自动", "auto"),
-            ("禁用", "disabled"),
-            ("原生", "native"),
-            ("劫持", "hijack"),
         ],
         "StartPage" => &[
             ("仪表盘", "dashboard"),

@@ -687,20 +687,29 @@ mod interaction_tests {
         cx.run_until_parked();
         cx.update_window(handle, |_, window, cx| {
             window.render_frame(cx);
-            let name = window.find("document-name").bounds();
-            let url = window.find("document-url").bounds();
-            let agent = window.find("document-agent").bounds();
-            let timeout = window.find("document-timeout").bounds();
-            let interval = window.find("document-interval").bounds();
+            let name = window.find("field-名称").bounds();
+            let url = window.find("field-订阅地址").bounds();
+            let agent = window.find("field-User-Agent").bounds();
+            let timeout = window.find("field-超时（秒）").bounds();
+            let interval = window.find("field-更新间隔（分钟）").bounds();
             assert_eq!(interval.top(), timeout.top());
             assert_eq!(agent.size.width, url.size.width);
             assert!(window.try_find("editor-auto-update").is_none());
-            let token = window.find("document-token").bounds();
+            let token = window.find("field-访问令牌").bounds();
             assert_eq!(name.left(), url.left());
             assert_eq!(name.right(), url.right());
             assert_eq!(agent.left(), url.left());
             assert_eq!(timeout.right(), url.right());
             assert_eq!(token.right(), url.right());
+            let age = window.find("field-Age 私钥").bounds();
+            let system = window.find("with-proxy").bounds();
+            let kernel = window.find("self-proxy").bounds();
+            let insecure = window.find("invalid-certs").bounds();
+            assert!(system.top() >= age.bottom());
+            assert!(kernel.top() >= system.bottom());
+            assert!(insecure.top() >= kernel.bottom());
+            assert_eq!(system.right(), kernel.right());
+            assert_eq!(kernel.right(), insecure.right());
             window.close_dialog(cx);
         })
         .unwrap();
@@ -768,7 +777,6 @@ mod interaction_tests {
                 "document-name",
                 "document-url",
                 "document-agent",
-                "document-timeout",
                 "document-token",
                 "document-age",
             ] {

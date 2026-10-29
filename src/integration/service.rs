@@ -37,6 +37,7 @@ pub(crate) enum Command {
     Restore(Namespace),
     OpenDirectory(DirectoryKind),
     OpenDocument(PathBuf),
+    Diagnostics,
 }
 impl Command {
     pub(crate) fn label(&self) -> &'static str {
@@ -48,6 +49,7 @@ impl Command {
             Self::Restore(_) => "读取备份草稿",
             Self::OpenDirectory(_) => "打开应用目录",
             Self::OpenDocument(_) => "打开配置文件",
+            Self::Diagnostics => "导出诊断信息",
         }
     }
 }
@@ -429,6 +431,9 @@ fn execute(
         }
         Command::Backup(namespace) => repository.backup(&namespace).map(Outcome::Backup),
         Command::Restore(namespace) => repository.restore(&namespace).map(Outcome::Restored),
+        Command::Diagnostics => crate::diagnostics::export(repository)
+            .map(Outcome::Document)
+            .map_err(|error| std::io::Error::other(error).into()),
         Command::OpenDirectory(kind) => Ok(Outcome::Directory(repository.paths().directory(kind))),
     }
 }

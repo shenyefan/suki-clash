@@ -26,11 +26,10 @@ impl DownloadToast {
             notification: None,
         });
         let content = view.clone();
-        let notification = super::notifications::push(
+        let notification = super::notifications::progress(
             window,
             Notification::new()
                 .id1::<Self>(("download", view.entity_id()))
-                .autohide(false)
                 .content(move |_, _, _| content.clone().into_any_element()),
             cx,
         );

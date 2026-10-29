@@ -21,7 +21,7 @@ impl CredentialStore {
         store.service = store.service.replace(".profiles.", ".overrides.");
         store
     }
-    pub(crate) fn read(&self, id: u64) -> Result<(String, String), String> {
+    pub(crate) async fn read(&self, id: u64) -> Result<(String, String), String> {
         #[cfg(all(target_os = "macos", not(test)))]
         {
             match security_framework::passwords::get_generic_password(
@@ -33,15 +33,23 @@ impl CredentialStore {
                 Err(_) => Err("无法读取订阅钥匙串凭据".into()),
             }
         }
-        #[cfg(any(not(target_os = "macos"), test))]
+        #[cfg(all(windows, not(test)))]
+        {
+            windows::read(&self.service, id)
+        }
+        #[cfg(all(target_os = "linux", not(test)))]
+        {
+            linux::read(&self.service, id).await
+        }
+        #[cfg(test)]
         {
             let _ = (&self.service, id);
             Ok((String::new(), String::new()))
         }
     }
-    pub(crate) fn write(&self, id: u64, token: &str, age: &str) -> Result<(), String> {
+    pub(crate) async fn write(&self, id: u64, token: &str, age: &str) -> Result<(), String> {
         if token.is_empty() && age.is_empty() {
-            return self.delete(id);
+            return self.delete(id).await;
         }
         #[cfg(all(target_os = "macos", not(test)))]
         {
@@ -53,7 +61,15 @@ impl CredentialStore {
             )
             .map_err(|_| "无法保存订阅钥匙串凭据".into())
         }
-        #[cfg(any(not(target_os = "macos"), test))]
+        #[cfg(all(windows, not(test)))]
+        {
+            windows::write(&self.service, id, token, age)
+        }
+        #[cfg(all(target_os = "linux", not(test)))]
+        {
+            linux::write(&self.service, id, token, age).await
+        }
+        #[cfg(test)]
         {
             let _ = (&self.service, id);
             if token.is_empty() && age.is_empty() {
@@ -63,13 +79,13 @@ impl CredentialStore {
             }
         }
     }
-    pub(crate) fn restore(
+    pub(crate) async fn restore(
         &self,
         previous: std::collections::BTreeMap<u64, (String, String)>,
     ) -> Result<(), String> {
         let mut failures = 0;
         for (id, (token, age)) in previous {
-            if self.write(id, &token, &age).is_err() {
+            if self.write(id, &token, &age).await.is_err() {
                 failures += 1;
             }
         }
@@ -79,7 +95,7 @@ impl CredentialStore {
             Err(format!("{failures} 项订阅凭据恢复失败"))
         }
     }
-    pub(crate) fn delete(&self, id: u64) -> Result<(), String> {
+    pub(crate) async fn delete(&self, id: u64) -> Result<(), String> {
         #[cfg(all(target_os = "macos", not(test)))]
         {
             match security_framework::passwords::delete_generic_password(
@@ -91,10 +107,25 @@ impl CredentialStore {
                 Err(_) => Err("无法删除订阅钥匙串凭据".into()),
             }
         }
-        #[cfg(any(not(target_os = "macos"), test))]
+        #[cfg(all(windows, not(test)))]
+        {
+            windows::delete(&self.service, id)
+        }
+        #[cfg(all(target_os = "linux", not(test)))]
+        {
+            linux::delete(&self.service, id).await
+        }
+        #[cfg(test)]
         {
             let _ = (&self.service, id);
             Ok(())
         }
     }
 }
+
+#[cfg(all(target_os = "linux", not(test)))]
+#[path = "credentials_linux.rs"]
+mod linux;
+#[cfg(all(windows, not(test)))]
+#[path = "credentials_windows.rs"]
+mod windows;

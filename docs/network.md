@@ -10,4 +10,10 @@ HTTP 使用 reqwest 0.13，WebSocket 使用 tokio-tungstenite 0.30，网卡信�
 
 自动化覆盖分块大小限制、重定向鉴权隔离、错误脱敏、取消清理、ZIP 路径与重复文件、真实 WS 消息、Ping/Pong、重连与代次变化。CV 的 ws hooks、connections_stream、delay manager 和 icon cache 作为行为核对来源。没有旧格式转换、迁移或 curl 备用实现。
 
-Windows/Linux 原生构建、系统证书和系统代理、PAC、真实窗口视觉与大数据性能验收尚未完成。测试不修改本机系统代理、路由或服务。验证结果见 [../Backend.md](../BACKEND.md)。
+Windows/Linux 原生构建、系统证书和系统代理、PAC、真实窗口视觉与大数据性能验收尚未完成。测试不修改本机系统代理、路由或服务。验证范围见 [CV 差距清单](cv-gap-checklist.md)及[系统代理验证记录](system-proxy.md#验证)。
+
+## Windows 私有通道
+
+命名管道连接遵循 Tokio 的 `ClientOptions::open`：仅对 Win32 `ERROR_PIPE_BUSY`（231）短暂等待重试，受现有请求时限及两秒连接上限约束；其他错误立即返回，并保留系统错误信息和错误码。HTTP 与 WebSocket 共用此入口，不增加备用通信通道。
+
+原日志只输出 `ErrorKind`，无法据此确认原错误一定是 231。增加管道忙恢复路径并保留原始错误，便于区分权限、管道不存在及其他系统原因。

@@ -4,7 +4,6 @@ use gpui_kit::{assets::IconName, component::v_flex, *};
 
 impl SettingsPage {
     pub(super) fn preferences_content(&self, query: &str, cx: &mut Context<Self>) -> Div {
-        let values = self.values(cx);
         let groups: Vec<_> = self
             .sections
             .iter()
@@ -49,17 +48,6 @@ impl SettingsPage {
                     title
                 };
             body = body.child(ui::preferences_group(title, rows, cx));
-        }
-        if self.kind == SettingsKind::SysProxy
-            && self.runtime_tab == 1
-            && values
-                .get("SystemProxyModeIndex")
-                .is_some_and(|mode| mode == "PAC")
-        {
-            body = body.child(ui::muted(
-                "PAC 模式由脚本控制分流，不使用系统绕过列表。",
-                cx,
-            ));
         }
         body
     }

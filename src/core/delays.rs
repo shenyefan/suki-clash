@@ -17,6 +17,7 @@ pub(super) struct State {
     pub(super) epoch: u64,
     pub(super) results: Measurements,
     pub(super) testing: BTreeSet<Key>,
+    pub(super) batches: BTreeSet<Key>,
     pub(super) error: Option<(u64, String)>,
     pub(super) completed: std::collections::VecDeque<(u64, usize, usize)>,
 }
@@ -24,8 +25,15 @@ pub(super) struct Request {
     pub(super) id: u64,
     pub(super) test: Test,
 }
+struct Measurement {
+    group: String,
+    node: String,
+    key: String,
+    provider: Option<String>,
+    url: String,
+}
 pub(super) struct Plan {
-    pub(super) requests: Vec<(String, String, Option<String>, String)>,
+    requests: Vec<Measurement>,
     timeout: u64,
     concurrency: usize,
 }
@@ -74,22 +82,40 @@ pub(super) async fn prepare(
         if proxies.entries[&group].hidden {
             continue;
         }
-        let url = proxies.test_url(&group, default).to_owned();
+        let url = test
+            .urls
+            .get(&group)
+            .map(String::as_str)
+            .filter(|url| !url.trim().is_empty())
+            .unwrap_or_else(|| proxies.test_url(&group, default))
+            .to_owned();
         if !crate::profiles::model::valid_remote_url(&url) {
             return Err("代理组测速地址无效".into());
         }
-        for name in proxies.entries[&group].all.as_deref().unwrap_or_default() {
-            if test.node.as_ref().is_some_and(|node| node != name)
-                || !proxies.testable(&group, name)
+        for member in proxies.members.get(&group).into_iter().flatten() {
+            let Some(proxy) = proxies.member_proxy(member) else {
+                continue;
+            };
+            let identity = format!(
+                "{}:{}",
+                member.record_id.as_deref().unwrap_or(&member.name),
+                member.occurrence
+            );
+            if test
+                .node
+                .as_ref()
+                .is_some_and(|node| node != &member.name && node != &identity)
+                || !proxies.testable(&group, &member.name)
             {
                 continue;
             }
-            requests.push((
-                group.clone(),
-                name.clone(),
-                proxies.entries[name].provider.clone(),
-                url.clone(),
-            ));
+            requests.push(Measurement {
+                group: group.clone(),
+                node: member.name.clone(),
+                key: proxies.measurement_key(&group, member),
+                provider: proxy.provider.clone(),
+                url: url.clone(),
+            });
             if requests.len() > 20000 {
                 return Err("单次测速节点超过上限".into());
             }
@@ -104,18 +130,43 @@ pub(super) async fn prepare(
         concurrency,
     })
 }
-pub(super) async fn measure(target: Target, plan: Plan, limit: Arc<Semaphore>) -> Measurements {
+struct Batch {
+    scope: (u64, u64),
+    request_id: u64,
+    keys: Vec<Key>,
+    results: Measurements,
+}
+struct Progress {
+    scope: (u64, u64),
+    request_id: u64,
+    key: Key,
+    result: Result<u32, String>,
+}
+async fn measure(
+    target: Target,
+    plan: Plan,
+    limit: Arc<Semaphore>,
+    request_id: u64,
+    progress: async_channel::Sender<Progress>,
+) -> Measurements {
     let expected = plan
         .requests
         .iter()
-        .map(|(group, node, _, _)| (group.clone(), node.clone()))
+        .map(|request| (request.group.clone(), request.key.clone()))
         .collect::<Vec<_>>();
     let mut pending = plan.requests.into_iter();
     let mut tasks = JoinSet::new();
     let mut results = BTreeMap::new();
     loop {
         while tasks.len() < plan.concurrency {
-            let Some((group, node, provider, url)) = pending.next() else {
+            let Some(Measurement {
+                group,
+                node,
+                key,
+                provider,
+                url,
+            }) = pending.next()
+            else {
                 break;
             };
             let client = target.client.clone();
@@ -130,13 +181,25 @@ pub(super) async fn measure(target: Target, plan: Plan, limit: Arc<Semaphore>) -
                     }
                     Err(_) => Err("测速已取消".into()),
                 };
-                ((group, node), result)
+                ((group, key), result)
             });
         }
         if tasks.is_empty() {
             break;
         }
         if let Some(Ok((key, result))) = tasks.join_next().await {
+            if progress
+                .send(Progress {
+                    scope: (target.generation, target.epoch),
+                    request_id,
+                    key: key.clone(),
+                    result: result.clone(),
+                })
+                .await
+                .is_err()
+            {
+                return results;
+            }
             results.insert(key, result);
         }
     }
@@ -155,12 +218,19 @@ pub(super) async fn run(
     mut shutdown: watch::Receiver<bool>,
 ) {
     let limit = Arc::new(Semaphore::new(10));
-    let mut tasks: JoinSet<((u64, u64), Vec<Key>, Measurements)> = JoinSet::new();
+    let mut tasks: JoinSet<Batch> = JoinSet::new();
+    let (progress, results) = async_channel::bounded::<Progress>(64);
+    let mut reserved = BTreeMap::<Key, u64>::new();
     let mut state = State::default();
     let mut sequence = 0u64;
     let mut measured_at = BTreeMap::<Key, std::time::Instant>::new();
     let mut expiry = tokio::time::interval(std::time::Duration::from_secs(30));
     expiry.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut automatic = tokio::time::interval(std::time::Duration::from_secs(5));
+    automatic.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut last_auto: Option<std::time::Instant> = None;
+    let mut automatic_request = None;
+    let mut urls = BTreeMap::new();
     loop {
         if *shutdown.borrow() {
             break;
@@ -173,7 +243,11 @@ pub(super) async fn run(
         if (state.generation, state.epoch) != scope {
             tasks.abort_all();
             while tasks.join_next().await.is_some() {}
+            last_auto = None;
+            automatic_request = None;
+            urls.clear();
             measured_at.clear();
+            reserved.clear();
             state = State {
                 generation: scope.0,
                 epoch: scope.1,
@@ -187,11 +261,35 @@ pub(super) async fn run(
                 measured_at.retain(|key,time| {let keep=time.elapsed()<std::time::Duration::from_secs(1800);if !keep{state.results.remove(key);}keep});
                 updates.send_replace(state.clone());
             },
+            _=automatic.tick()=> {
+                let Some(current) = &target else { continue; };
+                let settings = crate::storage::Repository::open(paths.clone()).and_then(|repository| crate::preferences::values(&repository, crate::preferences::SettingsKind::General));
+                let settings = match settings { Ok(settings) => settings, Err(error) => { state.error=Some((u64::MAX,error.to_string())); updates.send_replace(state.clone()); continue; } };
+                if settings.get("EnableAutoDelay").is_none_or(|value| value != "true") { last_auto = None; continue; }
+                let interval = settings.get("AutoDelayInterval").and_then(|value| value.parse::<u64>().ok()).unwrap_or(5).max(1);
+                if last_auto.is_some_and(|last| last.elapsed() < std::time::Duration::from_secs(interval * 60)) { continue; }
+                last_auto = Some(std::time::Instant::now());
+                let observed = tokio::select! { biased; _=shutdown.changed()=>break, changed=targets.changed()=>{if changed.is_err(){break;}continue;}, result=async {
+                    let config = current.client.json("/configs").await?;
+                    let mode = match config.get("mode").and_then(serde_json::Value::as_str) { Some("global") => crate::session::ProxyMode::Global, Some("direct") => crate::session::ProxyMode::Direct, _ => crate::session::ProxyMode::Rule };
+                    let proxies = current.client.proxies(&current.order).await?;
+                    Ok::<_, String>(proxies.current_test(mode, current.generation, current.epoch))
+                }=>result };
+                match observed { Ok(Some(test)) => automatic_request = Some(Request { id: u64::MAX, test }), Ok(None) => {}, Err(error) => { state.error=Some((u64::MAX,error)); updates.send_replace(state.clone()); } }
+            },
             changed=targets.changed()=>{if changed.is_err(){break;}},
+            update=results.recv()=> {
+                let Ok(update)=update else {break;};
+                if update.scope!=(state.generation,state.epoch) || reserved.get(&update.key)!=Some(&update.request_id) {continue;}
+                state.testing.remove(&update.key);
+                measured_at.insert(update.key.clone(),std::time::Instant::now());
+                state.results.insert(update.key,update.result);
+                updates.send_replace(state.clone());
+            },
             result=tasks.join_next(),if !tasks.is_empty()=> {
-                if let Some(Ok((scope,keys,results)))=result {
+                if let Some(Ok(Batch{scope,request_id,keys,results}))=result {
                     if scope!=(state.generation,state.epoch){continue;}
-                    for key in keys {state.testing.remove(&key);}
+                    for key in keys {if reserved.get(&key)==Some(&request_id){reserved.remove(&key);state.testing.remove(&key);state.batches.remove(&key);}}
                     let failures=results.values().filter(|result|!matches!(result,Ok(delay) if *delay>0)).count();
                     sequence=sequence.saturating_add(1);
                     state.completed.push_back((sequence,results.len(),failures));
@@ -200,21 +298,23 @@ pub(super) async fn run(
                     for key in results.keys(){measured_at.insert(key.clone(),std::time::Instant::now());}
                     state.results.extend(results);updates.send_replace(state.clone());
                 } else {
-                    tasks.abort_all();state.testing.clear();state.error=Some((0,"测速任务异常结束".into()));updates.send_replace(state.clone());
+                    tasks.abort_all();reserved.clear();state.testing.clear();state.batches.clear();state.error=Some((0,"测速任务异常结束".into()));updates.send_replace(state.clone());
                 }
             },
-            request=requests.recv(),if tasks.len()<32=>{
-                let Ok(request)=request else{break;};
+            request=async { if let Some(request) = automatic_request.take() { Ok(request) } else { requests.recv().await } },if tasks.len()<32=>{
+                let Ok(mut request)=request else{break;};
+                if request.id != u64::MAX { urls.extend(request.test.urls.clone()); }
+                request.test.urls = urls.clone();
                 let result=if let Some(target)=&target {
                     tokio::select! {biased;_=shutdown.changed()=>break,changed=targets.changed()=>{if changed.is_err(){break;}continue;},result=prepare(&paths,target,&request.test)=>result}
                 }else{Err("内核尚未就绪".into())};
                 match result {
                     Ok(mut plan)=>{
-                        plan.requests.retain(|(group,node,_,_)|!state.testing.contains(&(group.clone(),node.clone())));
+                        plan.requests.retain(|request|!reserved.contains_key(&(request.group.clone(),request.key.clone())));
                         if plan.requests.is_empty(){continue;}
-                        let keys=plan.requests.iter().map(|(group,node,_,_)|(group.clone(),node.clone())).collect::<Vec<_>>();
-                        state.testing.extend(keys.iter().cloned());state.error=None;updates.send_replace(state.clone());
-                        if let Some(target)=target {let limit=limit.clone();tasks.spawn(async move {(scope,keys,measure(target,plan,limit).await)});}
+                        let keys=plan.requests.iter().map(|request|(request.group.clone(),request.key.clone())).collect::<Vec<_>>();
+                        state.testing.extend(keys.iter().cloned());state.batches.extend(keys.iter().cloned());reserved.extend(keys.iter().cloned().map(|key|(key,request.id)));state.error=None;updates.send_replace(state.clone());
+                        if let Some(target)=target {let limit=limit.clone();let progress=progress.clone();tasks.spawn(async move {Batch{scope,request_id:request.id,keys,results:measure(target,plan,limit,request.id,progress).await}});}
                     },
                     Err(error)=>{state.error=Some((request.id,error));updates.send_replace(state.clone());}
                 }
@@ -223,4 +323,120 @@ pub(super) async fn run(
     }
     tasks.abort_all();
     while tasks.join_next().await.is_some() {}
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    #[tokio::test]
+    async fn fast_result_is_published_while_slow_node_is_still_pending() {
+        let root = tempfile::Builder::new()
+            .prefix("suki-delay-")
+            .tempdir_in("/tmp")
+            .unwrap();
+        let paths = AppPaths::isolated(root.path());
+        crate::storage::Repository::open(paths.clone()).unwrap();
+        let endpoint = root.path().join("api.sock");
+        let listener = tokio::net::UnixListener::bind(&endpoint).unwrap();
+        let release = Arc::new(tokio::sync::Notify::new());
+        let gate = release.clone();
+        let server = tokio::spawn(async move {
+            let mut connections = JoinSet::new();
+            loop {
+                tokio::select! {
+                    accepted=listener.accept()=> {
+                        let (mut stream,_)=accepted.unwrap();let gate=gate.clone();
+                        connections.spawn(async move {
+                            let mut bytes=[0;8192];let n=stream.read(&mut bytes).await.unwrap();
+                            let request=String::from_utf8_lossy(&bytes[..n]);
+                            let body=if request.starts_with("GET /proxies ") {r#"{"proxies":{"g":{"name":"g","type":"Selector","all":["fast","slow"],"now":"fast"},"fast":{"name":"fast","type":"Socks5"},"slow":{"name":"slow","type":"Socks5"}}}"#}
+                            else if request.starts_with("GET /providers/proxies ") {r#"{"providers":{}}"#}
+                            else if request.starts_with("GET /proxies/slow/") {gate.notified().await;r#"{"delay":451}"#}
+                            else {r#"{"delay":37}"#};
+                            stream.write_all(format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).as_bytes()).await.unwrap();
+                        });
+                    },
+                    _=connections.join_next(),if !connections.is_empty()=>{}
+                }
+            }
+        });
+        let target = Target {
+            client: super::super::client::Client::new(
+                super::super::client::Endpoint::Unix(endpoint),
+                "test".into(),
+            ),
+            http: Default::default(),
+            generation: 7,
+            epoch: 9,
+            order: vec!["g".into()],
+            proxy_port: 0,
+            proxy_auth: None,
+            dns_mode: None,
+            proxy_error: None,
+        };
+        let (_targets, changes) = watch::channel(Some(target));
+        let (sender, requests) = async_channel::bounded(2);
+        let (updates, mut events) = watch::channel(State::default());
+        let (shutdown, cancellation) = watch::channel(false);
+        let worker = tokio::spawn(run(paths, changes, requests, updates, cancellation));
+        sender
+            .send(Request {
+                id: 1,
+                test: Test {
+                    urls: Default::default(),
+                    group: Some("g".into()),
+                    node: None,
+                    generation: 7,
+                    epoch: 9,
+                },
+            })
+            .await
+            .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            loop {
+                events.changed().await.unwrap();
+                assert!(
+                    events.borrow().error.is_none(),
+                    "{:?}",
+                    events.borrow().error
+                );
+                if events
+                    .borrow()
+                    .results
+                    .contains_key(&("g".into(), "fast".into()))
+                {
+                    break;
+                }
+            }
+        })
+        .await
+        .unwrap();
+        let partial = events.borrow().clone();
+        assert_eq!(partial.results[&("g".into(), "fast".into())], Ok(37));
+        assert!(!partial.testing.contains(&("g".into(), "fast".into())));
+        assert!(partial.testing.contains(&("g".into(), "slow".into())));
+        assert_eq!(partial.batches.len(), 2);
+        assert!(partial.completed.is_empty());
+        release.notify_one();
+        tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            loop {
+                events.changed().await.unwrap();
+                if !events.borrow().completed.is_empty() {
+                    break;
+                }
+            }
+        })
+        .await
+        .unwrap();
+        assert!(events.borrow().batches.is_empty());
+        assert_eq!(
+            events.borrow().results[&("g".into(), "slow".into())],
+            Ok(451)
+        );
+        shutdown.send_replace(true);
+        worker.await.unwrap();
+        server.abort();
+        let _ = server.await;
+    }
 }

@@ -187,16 +187,16 @@ impl Actor {
             removed.push(Deleted {
                 document: document.clone(),
                 position,
-                credentials: vault.read(document.id)?,
+                credentials: vault.read(document.id).await?,
             });
         }
         let mut previous = std::collections::BTreeMap::new();
         for id in secrets.keys() {
-            previous.insert(*id, vault.read(*id)?);
+            previous.insert(*id, vault.read(*id).await?);
         }
         for (id, (token, age)) in secrets {
-            if let Err(error) = vault.write(id, &token, &age) {
-                let recovery = vault.restore(previous);
+            if let Err(error) = vault.write(id, &token, &age).await {
+                let recovery = vault.restore(previous).await;
                 return Err(match recovery {
                     Ok(()) => error,
                     Err(other) => format!("{error}；{other}"),
@@ -204,7 +204,7 @@ impl Actor {
             }
         }
         if let Err(error) = self.commit_overrides(&old, &desired).await {
-            return Err(match vault.restore(previous) {
+            return Err(match vault.restore(previous).await {
                 Ok(()) => error,
                 Err(other) => format!("{error}；{other}"),
             });
@@ -230,7 +230,7 @@ impl Actor {
             .iter()
             .filter(|doc| !desired.iter().any(|new| new.id == doc.id))
         {
-            if let Err(error) = vault.delete(document.id) {
+            if let Err(error) = vault.delete(document.id).await {
                 errors.push(error);
             }
         }

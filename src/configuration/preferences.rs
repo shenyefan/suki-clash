@@ -99,10 +99,6 @@ impl Preferences {
     pub(crate) fn from_values(values: &Values, previous: Option<&Self>) -> Result<Self, String> {
         let mut native = previous.map(|p| p.native.clone()).unwrap_or_default();
         let mut app = values.clone();
-        app.insert(
-            "StartCore".into(),
-            boolean(values, "StartCore", true)?.to_string(),
-        );
         let get =
             |key: &str, default: &str| values.get(key).cloned().unwrap_or_else(|| default.into());
         for (field, key, default) in PORTS {

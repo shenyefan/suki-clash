@@ -38,6 +38,7 @@ pub(crate) struct ProfilesPage {
     core_revision: u64,
     saving: bool,
     rejected: bool,
+    override_drop: Option<(u64, bool)>,
     import_task: Option<Task<()>>,
     url: Entity<InputState>,
     columns: u16,
@@ -148,6 +149,7 @@ impl ProfilesPage {
             core_revision: 0,
             saving: false,
             rejected: false,
+            override_drop: None,
             import_task: None,
             url,
             import_token,
@@ -288,6 +290,9 @@ impl ProfilesPage {
         .into();
         document.url = url;
         document.content.clear();
+        document.self_proxy = crate::integration::read("settings", cx)
+            .get("ProfileUseProxy")
+            .is_some_and(|value| value == "true");
         if let Some(timeout) = crate::integration::read("settings", cx).get("SubscriptionTimeout") {
             document.timeout = timeout.clone();
         }

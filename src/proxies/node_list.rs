@@ -18,6 +18,13 @@ use gpui_kit::{
 };
 
 #[derive(Clone)]
+struct GroupDrag(String);
+impl Render for GroupDrag {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div().child(self.0.clone())
+    }
+}
+#[derive(Clone)]
 struct GroupInfo {
     id: String,
     name: String,
@@ -44,8 +51,11 @@ impl ProxiesPage {
             .groups
             .iter()
             .filter_map(|group| {
-                let nodes = group.visible_nodes(
-                    &query,
+                if !self.group_filter.is_empty() && !self.group_filter.contains(&group.id()) {
+                    return None;
+                }
+                let nodes = group.visible_filtered(
+                    &self.search,
                     self.only_available,
                     self.group_sorts
                         .get(&group.id())
@@ -144,6 +154,7 @@ impl ProxiesPage {
         let rows = std::rc::Rc::new(rows);
         div()
             .size_full()
+            .min_w(space::NONE)
             .py(list::INSET_Y)
             .child(ui::virtual_rows::rows(
                 cx.entity(),
@@ -226,6 +237,7 @@ impl ProxiesPage {
         let runtime = self.session.read(cx).runtime();
         let generation = runtime.generation;
         let epoch = runtime.epoch;
+        let urls = self.test_urls(cx);
         let toggle_id = group.id.clone();
         let test_group = group.name.clone();
         let locate_group = group.id.clone();
@@ -237,11 +249,47 @@ impl ProxiesPage {
             .unwrap_or(self.sort);
         let testing = runtime
             .proxies
-            .testing
+            .batches
             .iter()
             .any(|(name, _)| name == &group.name);
         let reset_group = group.name.clone();
+        let url_group = group.name.clone();
+        let tools_on_left = crate::integration::read("settings", cx)
+            .get("ProxyGroupToolsPosition")
+            .is_some_and(|position| position == "左侧");
+        let drag_target = group.id.clone();
         let header = h_flex()
+            .id(SharedString::from(format!("group-drag-{}", group.id)))
+            .on_drag(GroupDrag(group.id.clone()), |drag, _, _, cx| {
+                cx.new(|_| drag.clone())
+            })
+            .on_drop(cx.listener(move |this, drag: &GroupDrag, window, cx| {
+                if let (Some(from), Some(to)) = (
+                    this.groups.iter().position(|group| group.id() == drag.0),
+                    this.groups
+                        .iter()
+                        .position(|group| group.id() == drag_target),
+                ) {
+                    let group = this.groups.remove(from);
+                    this.groups.insert(to, group);
+                    this.refresh_list(window, cx);
+                    cx.notify();
+                }
+            }))
+            .map(|row| {
+                if tools_on_left {
+                    row.flex_row_reverse()
+                } else {
+                    row
+                }
+            })
+            .when(self.url_editing.contains(&group.name), |row| {
+                if let Some(input) = self.group_urls.get(&group.name) {
+                    row.child(gpui_kit::component::input::Input::new(input).w_full())
+                } else {
+                    row
+                }
+            })
             .gap(space::SM)
             .child(
                 Button::new(SharedString::from(format!("proxy-group-{}", group.id)))
@@ -269,19 +317,17 @@ impl ProxiesPage {
                             )
                             .child(self.group_icon(&group, cx))
                             .child(
-                                v_flex()
+                                h_flex()
                                     .flex_1()
                                     .min_w(space::NONE)
+                                    .gap(space::SM)
                                     .child(
-                                        h_flex()
-                                            .gap(space::SM)
-                                            .child(
-                                                div()
-                                                    .font_weight(text::EMPHASIS)
-                                                    .child(group.name.clone()),
-                                            )
-                                            .child(ui::muted(group.kind.label(), cx)),
+                                        div()
+                                            .truncate()
+                                            .font_weight(text::EMPHASIS)
+                                            .child(group.name.clone()),
                                     )
+                                    .child(ui::muted(group.kind.label(), cx))
                                     .child(
                                         ui::muted(
                                             format!(
@@ -334,6 +380,7 @@ impl ProxiesPage {
                 .on_click(move |_, window, cx| {
                     crate::core::test_delay(
                         super::runtime::Test {
+                            urls: urls.clone(),
                             group: Some(test_group.clone()),
                             node: None,
                             generation,
@@ -363,6 +410,19 @@ impl ProxiesPage {
                             super::model::SortOrder::Name => super::model::SortOrder::Default,
                         },
                     );
+                    cx.notify();
+                })),
+            )
+            .child(
+                ui::icon_button(
+                    SharedString::from(format!("group-url-{}", group.id)),
+                    IconName::Link,
+                    "编辑测速地址",
+                )
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    if !this.url_editing.remove(&url_group) {
+                        this.url_editing.insert(url_group.clone());
+                    }
                     cx.notify();
                 })),
             )
@@ -398,8 +458,11 @@ impl ProxiesPage {
         }
         let mut row = 0;
         for group in &self.groups {
-            let nodes = group.visible_nodes(
-                &query,
+            if !self.group_filter.is_empty() && !self.group_filter.contains(&group.id()) {
+                continue;
+            }
+            let nodes = group.visible_filtered(
+                &self.search,
                 self.only_available,
                 self.group_sorts
                     .get(&group.id())
@@ -465,9 +528,10 @@ impl ProxiesPage {
         let runtime = self.session.read(cx).runtime();
         let generation = runtime.generation;
         let epoch = runtime.epoch;
+        let urls = self.test_urls(cx);
         let select_group = group.name.clone();
         let select_node = node.name();
-        let test_node = node.name();
+        let test_node = node.id();
         Button::new(SharedString::from(format!(
             "node-card-{}-{}",
             group.id,
@@ -546,25 +610,30 @@ impl ProxiesPage {
                                 group.id,
                                 node.id()
                             )))
-                            .icon(gpui_kit::assets::IconName::Gauge)
                             .ghost()
                             .small()
                             .disabled(!node.testable())
                             .loading(node.testing())
-                            .label(node.delay().map(|delay| format!("{delay}")).unwrap_or_else(
-                                || {
-                                    if !node.testable() {
-                                        "-"
-                                    } else if node.failure().is_some() {
-                                        "失败"
-                                    } else if node.tested() {
-                                        "超时"
-                                    } else {
-                                        "-"
-                                    }
-                                    .into()
+                            .when_else(
+                                node.delay().is_none()
+                                    && (!node.testable()
+                                        || !node.tested() && node.failure().is_none()),
+                                |button| button.icon(IconName::Gauge),
+                                |button| {
+                                    button.label(
+                                        node.delay().map(|delay| delay.to_string()).unwrap_or_else(
+                                            || {
+                                                if node.failure().is_some() {
+                                                    "失败"
+                                                } else {
+                                                    "超时"
+                                                }
+                                                .into()
+                                            },
+                                        ),
+                                    )
                                 },
-                            ))
+                            )
                             .text_color(if node.testing() {
                                 cx.theme().muted_foreground
                             } else if let Some(delay) = node.delay() {
@@ -586,6 +655,7 @@ impl ProxiesPage {
                                 cx.stop_propagation();
                                 crate::core::test_delay(
                                     super::runtime::Test {
+                                        urls: urls.clone(),
                                         group: Some(group.name.clone()),
                                         node: Some(test_node.clone()),
                                         generation,

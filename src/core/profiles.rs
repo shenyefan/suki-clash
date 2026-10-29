@@ -156,16 +156,16 @@ impl Actor {
                 document: document.clone(),
                 position,
                 enhancement,
-                credentials: vault.read(document.id)?,
+                credentials: vault.read(document.id).await?,
             });
         }
         let mut previous_secrets = BTreeMap::new();
         for id in secrets.keys() {
-            previous_secrets.insert(*id, vault.read(*id)?);
+            previous_secrets.insert(*id, vault.read(*id).await?);
         }
         for (id, (token, age)) in &secrets {
-            if let Err(error) = vault.write(*id, token, age) {
-                return Err(match vault.restore(previous_secrets) {
+            if let Err(error) = vault.write(*id, token, age).await {
+                return Err(match vault.restore(previous_secrets).await {
                     Ok(()) => error,
                     Err(recovery) => format!("{error}；{recovery}"),
                 });
@@ -173,7 +173,7 @@ impl Actor {
         }
         let result = self.commit_profiles(&old, &documents, selection).await;
         if let Err(error) = result {
-            return Err(match vault.restore(previous_secrets) {
+            return Err(match vault.restore(previous_secrets).await {
                 Ok(()) => error,
                 Err(recovery) => format!("{error}；{recovery}"),
             });
@@ -198,7 +198,7 @@ impl Actor {
                 .iter()
                 .filter(|doc| !documents.iter().any(|value| value.id == doc.id))
             {
-                if let Err(error) = vault.delete(document.id) {
+                if let Err(error) = vault.delete(document.id).await {
                     errors.push(error);
                 }
             }
@@ -239,9 +239,11 @@ impl Actor {
         let result = async {
             for entry in &entries {
                 let id = entry.document.id;
-                previous.insert(id, vault.read(id)?);
+                previous.insert(id, vault.read(id).await?);
                 if !entry.credentials.0.is_empty() || !entry.credentials.1.is_empty() {
-                    vault.write(id, &entry.credentials.0, &entry.credentials.1)?;
+                    vault
+                        .write(id, &entry.credentials.0, &entry.credentials.1)
+                        .await?;
                 }
                 if !entry.enhancement.is_empty() {
                     let namespace =
@@ -261,7 +263,7 @@ impl Actor {
             if let Err(error) = recovery.restore() {
                 errors.push(error);
             }
-            if let Err(error) = vault.restore(previous) {
+            if let Err(error) = vault.restore(previous).await {
                 errors.push(error);
             }
             if let Err(error) = self.refresh_profiles() {
@@ -359,7 +361,8 @@ impl Actor {
             } else {
                 crate::profiles::CredentialStore::overrides(&self.paths)
             })
-            .read(document.id)?;
+            .read(document.id)
+            .await?;
             document.token = token;
             document.age_key = age;
         }
@@ -374,9 +377,6 @@ impl Actor {
             .map(String::as_str)
             .unwrap_or("SukiClash/0.1");
         use super::download::SubscriptionTransport;
-        let force_proxy = settings
-            .get("ProfileUseProxy")
-            .is_some_and(|value| value == "true");
         let local = self
             .running
             .as_ref()
@@ -399,16 +399,13 @@ impl Actor {
                         .map(str::to_owned),
                 })
             });
-        let mut strategies = Vec::new();
-        if force_proxy {
-            strategies.push(local.ok_or("订阅下载代理需要已就绪的内核 HTTP 或混合端口")?);
+        let strategies = [if document.self_proxy {
+            local.ok_or("订阅下载代理需要已就绪的内核 HTTP 或混合端口")?
+        } else if document.with_proxy {
+            SubscriptionTransport::System
         } else {
-            strategies.push(SubscriptionTransport::Direct);
-            if let Some(local) = local {
-                strategies.push(local);
-            }
-            strategies.push(SubscriptionTransport::System);
-        }
+            SubscriptionTransport::Direct
+        }];
         let mut failures = Vec::new();
         for (index, strategy) in strategies.iter().enumerate() {
             if matches!(strategy, SubscriptionTransport::Proxy { .. })

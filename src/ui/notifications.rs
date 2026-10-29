@@ -38,6 +38,17 @@ pub(crate) fn push(
     note: impl Into<Notification>,
     cx: &mut App,
 ) -> Option<Entity<Notification>> {
+    deliver(window, note.into().autohide(true), cx)
+}
+/// Only active progress notifications bypass the standard expiry.
+pub(super) fn progress(
+    window: &mut Window,
+    note: Notification,
+    cx: &mut App,
+) -> Option<Entity<Notification>> {
+    deliver(window, note.autohide(false), cx)
+}
+fn deliver(window: &mut Window, note: Notification, cx: &mut App) -> Option<Entity<Notification>> {
     let list = list(window, cx)?;
     let before = list.read(cx).notifications();
     list.update(cx, |list, cx| list.push(note, window, cx));
@@ -45,6 +56,36 @@ pub(crate) fn push(
         .notifications()
         .into_iter()
         .find(|note| !before.contains(note))
+}
+/// Undo remains available during the standard notification lifetime.
+pub(crate) fn undo(
+    window: &mut Window,
+    message: impl Into<SharedString>,
+    cx: &mut App,
+    action: impl FnMut(&mut Window, &mut App) -> bool + 'static,
+) -> Option<Entity<Notification>> {
+    use gpui_kit::component::{Sizable, button::Button};
+    let action = std::rc::Rc::new(std::cell::RefCell::new(Some(action)));
+    push(
+        window,
+        Notification::new()
+            .message(message)
+            .action(move |_, _, cx| {
+                let action = action.clone();
+                let note = cx.weak_entity();
+                Button::new("undo-action")
+                    .small()
+                    .label("撤销")
+                    .on_click(move |_, window, cx| {
+                        let mut pending = action.borrow_mut();
+                        if pending.as_mut().is_some_and(|action| action(window, cx)) {
+                            *pending = None;
+                            let _ = note.update(cx, |note, cx| note.dismiss(window, cx));
+                        }
+                    })
+            }),
+        cx,
+    )
 }
 #[cfg(test)]
 pub(crate) fn current(window: &Window, cx: &App) -> Vec<Entity<Notification>> {
@@ -69,6 +110,90 @@ mod tests {
         fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
             div()
         }
+    }
+    #[gpui_kit::test]
+    fn ordinary_and_undo_toasts_expire_but_progress_remains(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            init(cx);
+            cx.set_reduce_motion(true);
+        });
+        let (handle, _) = cx.update(|cx| {
+            gpui_kit::open_window(WindowOptions::default(), cx, |_, cx| cx.new(|_| Host)).unwrap()
+        });
+        handle
+            .update(cx, |_, window, cx| {
+                push(window, Notification::info("普通消息"), cx);
+                // Action() normally disables expiry; the application boundary overrides it.
+                super::undo(window, "带撤销的消息", cx, |_, _| true);
+                super::progress(window, Notification::info("进度"), cx);
+                assert_eq!(super::current(window, cx).len(), 3);
+                window.render_frame(cx);
+            })
+            .unwrap();
+        cx.run_until_parked();
+        cx.background_executor
+            .advance_clock(std::time::Duration::from_secs(7));
+        cx.run_until_parked();
+        handle
+            .update(cx, |_, window, cx| {
+                window.render_frame(cx);
+            })
+            .unwrap();
+        cx.background_executor
+            .advance_clock(std::time::Duration::from_secs(1));
+        cx.run_until_parked();
+        handle
+            .update(cx, |_, window, cx| {
+                assert_eq!(super::current(window, cx).len(), 1);
+            })
+            .unwrap();
+    }
+    #[gpui_kit::test]
+    fn undo_action_remains_available_until_it_succeeds(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            init(cx);
+            cx.set_reduce_motion(true);
+        });
+        let (handle, _) = cx.update(|cx| {
+            gpui_kit::open_window(WindowOptions::default(), cx, |_, cx| cx.new(|_| Host)).unwrap()
+        });
+        let attempts = Rc::new(Cell::new(0));
+        let calls = attempts.clone();
+        handle
+            .update(cx, |_, window, cx| {
+                super::undo(window, "已恢复默认内容", cx, move |_, _| {
+                    calls.set(calls.get() + 1);
+                    calls.get() > 1
+                });
+            })
+            .unwrap();
+        cx.run_until_parked();
+        handle
+            .update(cx, |_, window, cx| {
+                window.render_frame(cx);
+                window.click("undo-action", cx);
+            })
+            .unwrap();
+        cx.run_until_parked();
+        handle
+            .update(cx, |_, window, cx| {
+                assert_eq!(super::current(window, cx).len(), 1);
+                window.render_frame(cx);
+                window.click("undo-action", cx);
+            })
+            .unwrap();
+        cx.run_until_parked();
+        assert_eq!(attempts.get(), 2);
+        cx.background_executor
+            .advance_clock(std::time::Duration::from_secs(1));
+        cx.run_until_parked();
+        handle
+            .update(cx, |_, window, cx| {
+                assert!(super::current(window, cx).is_empty());
+            })
+            .unwrap();
     }
     #[gpui_kit::test]
     fn top_center_toast_remains_clickable_above_an_open_dialog(cx: &mut TestAppContext) {
@@ -100,7 +225,7 @@ mod tests {
             });
             push(
                 window,
-                Notification::new().autohide(false).content(move |_, _, _| {
+                Notification::new().content(move |_, _, _| {
                     let count = count.clone();
                     Button::new("toast-layer-action")
                         .outline()

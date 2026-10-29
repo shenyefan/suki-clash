@@ -91,26 +91,23 @@ pub(crate) fn attach_window(window: &Window, cx: &mut App) {
     let report = controller(cx).update(cx, |this, _| {
         let first = this.notification_window.is_none();
         this.notification_window = Some(handle);
-        first
-            .then(|| {
-                this.snapshot
-                    .error
-                    .clone()
-                    .map(|message| (true, message))
-                    .or_else(|| this.snapshot.notice.clone().map(|message| (false, message)))
-            })
-            .flatten()
+        first.then(|| (this.snapshot.error.clone(), this.snapshot.notice.clone()))
     });
     cx.defer(|cx| {
         controller(cx).update(cx, |this, cx| this.sync_progress(cx));
     });
-    if let Some((error, message)) = report {
+    if let Some((error, notice)) = report {
         cx.defer(move |cx| {
             let _ = handle.update(cx, |_, window, cx| {
-                if error {
-                    crate::ui::show_error(message, window, cx);
-                } else {
-                    crate::ui::notifications::push(window, message, cx);
+                if let Some(error) = error {
+                    crate::ui::show_error(error, window, cx);
+                }
+                if let Some(notice) = notice {
+                    crate::ui::notifications::push(
+                        window,
+                        gpui_kit::component::notification::Notification::warning(notice),
+                        cx,
+                    );
                 }
             });
         });
@@ -320,7 +317,12 @@ fn install(service: Option<Service>, snapshot: Snapshot, cx: &mut App) {
                                     if level == "ERROR" {
                                         crate::ui::show_error(message, window, cx);
                                     } else {
-                                        crate::ui::notifications::push(window, message, cx);
+                                        let note = if level == "WARNING" {
+                                            gpui_kit::component::notification::Notification::warning(message)
+                                        } else {
+                                            gpui_kit::component::notification::Notification::info(message)
+                                        };
+                                        crate::ui::notifications::push(window, note, cx);
                                     }
                                 });
                             }
@@ -402,6 +404,29 @@ pub(crate) fn submit(command: Command, window: &mut Window, cx: &mut App) -> Res
     })
 }
 
+pub(crate) fn ip_auto_refresh(enabled: bool, cx: &mut App) {
+    controller(cx).update(cx, |this, _| {
+        if let Some(service) = &this.service {
+            service.ip_auto_refresh(enabled);
+        }
+    });
+}
+pub(crate) fn refresh_ip(window: &mut Window, cx: &mut App) {
+    let available = controller(cx).update(cx, |this, _| {
+        if this.snapshot.phase != Phase::Ready {
+            return false;
+        }
+        if let Some(service) = &this.service {
+            service.refresh_ip();
+            true
+        } else {
+            false
+        }
+    });
+    if !available {
+        crate::ui::show_error("内核未就绪，无法刷新出口 IP".into(), window, cx);
+    }
+}
 pub(crate) fn execute(
     command: Command,
     window: &mut Window,
@@ -419,6 +444,16 @@ pub(crate) fn execute(
 /// Explicit quit waits before calling GPUI quit (whose fallback cleanup budget
 /// is only 200 ms). Window-close and all application quit commands use this path.
 pub(crate) fn quit(cx: &mut App) {
+    finish(None, cx);
+}
+pub(crate) fn reset_program(window: &mut Window, cx: &mut App) {
+    let Some(paths) = crate::integration::paths(cx) else {
+        crate::ui::show_error("无法确定应用配置目录".into(), window, cx);
+        return;
+    };
+    finish(Some(paths), cx);
+}
+fn finish(reset: Option<AppPaths>, cx: &mut App) {
     let storage_worker = crate::integration::shutdown(cx);
     let owner = controller(cx);
     owner.update(cx, |this, cx| {
@@ -442,7 +477,11 @@ pub(crate) fn quit(cx: &mut App) {
                             "存储清理线程异常退出；内核清理结果：{core_result:?}"
                         ))
                     } else {
-                        core_result
+                        core_result?;
+                        if let Some(paths) = reset {
+                            paths.reset_configuration()?;
+                        }
+                        Ok(())
                     }
                 })
                 .await;
@@ -481,5 +520,57 @@ impl Controller {
         self.snapshot.settings.insert(key.into(), values);
         self.snapshot.revision = self.snapshot.revision.saturating_add(1);
         cx.notify();
+    }
+}
+
+#[cfg(test)]
+mod startup_notice_tests {
+    use gpui_kit::{
+        AppContext, Context, IntoElement, Render, TestAppContext, Window, WindowOptions, div,
+    };
+    struct Host;
+    impl Render for Host {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+        }
+    }
+    #[gpui_kit::test]
+    fn first_window_reports_missing_core_and_geodata_once_each(cx: &mut TestAppContext) {
+        let root = tempfile::tempdir().unwrap();
+        let service = crate::integration::Service::start(
+            crate::storage::Repository::open(crate::storage::AppPaths::isolated(root.path()))
+                .unwrap(),
+        )
+        .unwrap();
+        cx.update(|cx| {
+            crate::integration::init(service, cx);
+            gpui_kit::init(cx);
+            cx.set_reduce_motion(true);
+            super::controller(cx).update(cx, |owner, _| {
+                owner.snapshot.error = Some("未安装 Mihomo，请前往「内核」下载内核。".into());
+                owner.snapshot.notice =
+                    Some("缺少 geoip.dat；启动时自动下载，失败请检查网络。".into());
+            });
+        });
+        let (window, _) = cx.update(|cx| {
+            gpui_kit::open_window(WindowOptions::default(), cx, |_, cx| cx.new(|_| Host)).unwrap()
+        });
+        window
+            .update(cx, |_, window, cx| super::attach_window(window, cx))
+            .unwrap();
+        cx.run_until_parked();
+        window
+            .update(cx, |_, window, cx| {
+                assert_eq!(crate::ui::notifications::current(window, cx).len(), 2);
+                super::attach_window(window, cx);
+            })
+            .unwrap();
+        cx.run_until_parked();
+        window
+            .update(cx, |_, window, cx| {
+                assert_eq!(crate::ui::notifications::current(window, cx).len(), 2)
+            })
+            .unwrap();
+        crate::integration::finish_test_services(cx);
     }
 }

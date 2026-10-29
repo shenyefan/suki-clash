@@ -18,11 +18,16 @@ pub(crate) enum Action {
     Close(Target),
     CloseAll { generation: u64, epoch: u64 },
 }
+#[derive(Clone)]
 struct Tracked {
     row: Record,
     upload: u64,
     download: u64,
     at: Instant,
+}
+#[derive(Clone)]
+pub(super) struct Closed {
+    entries: Vec<((u64, String), Tracked)>,
 }
 #[derive(Default)]
 pub(super) struct Tracker {
@@ -147,9 +152,30 @@ impl Tracker {
         self.live = false;
         changed
     }
-    pub(super) fn clear_closed(&mut self) {
-        self.entries.retain(|_, entry| entry.row.active);
-        self.closed.clear();
+    pub(super) fn clear_closed(&mut self) -> Closed {
+        let entries = self
+            .closed
+            .drain(..)
+            .filter_map(|key| self.entries.remove(&key).map(|entry| (key, entry)))
+            .collect();
+        Closed { entries }
+    }
+    pub(super) fn restore_closed(&mut self, removed: Closed) {
+        for (key, entry) in removed.entries {
+            if !self.entries.contains_key(&key) {
+                self.closed.push_back(key.clone());
+                self.entries.insert(key, entry);
+            }
+        }
+        let entries = &self.entries;
+        self.closed
+            .make_contiguous()
+            .sort_by_key(|key| entries[key].row.id);
+        while self.closed.len() > 1000 {
+            if let Some(key) = self.closed.pop_front() {
+                self.entries.remove(&key);
+            }
+        }
     }
 }
 fn amount(value: f64) -> String {
@@ -185,18 +211,20 @@ fn record(
 ) -> Record {
     let metadata = &connection.metadata;
     let host = if metadata.host.is_empty() {
-        metadata.destination_ip.clone()
+        if metadata.destination_ip.is_empty() {
+            metadata.remote_destination.clone()
+        } else {
+            metadata.destination_ip.clone()
+        }
     } else {
         metadata.host.clone()
     };
     let process = if metadata.process.is_empty() {
-        metadata
-            .process_path
-            .rsplit(['/', '\\'])
-            .next()
-            .filter(|value| !value.is_empty())
-            .unwrap_or("未知进程")
-            .to_owned()
+        if metadata.process_path.is_empty() {
+            "未知进程".to_owned()
+        } else {
+            metadata.process_path.clone()
+        }
     } else {
         metadata.process.clone()
     };
@@ -216,7 +244,14 @@ fn record(
         .collect::<Vec<_>>()
         .join(" → ");
     let source = address(&metadata.source_ip, &metadata.source_port);
-    let destination = address(&metadata.destination_ip, &metadata.destination_port);
+    let destination = address(
+        if metadata.destination_ip.is_empty() {
+            &metadata.remote_destination
+        } else {
+            &metadata.destination_ip
+        },
+        &metadata.destination_port,
+    );
     let protocol = format!("{} / {}", metadata.network.to_uppercase(), metadata.kind);
     let rule = if connection.rule_payload.is_empty() {
         connection.rule.clone()
@@ -255,7 +290,21 @@ fn record(
         .iter()
         .zip(&cells)
         .map(|(label, value)| format!("{label}\t{value}"))
-        .chain(std::iter::once(format!("连接 ID\t{}", connection.id)))
+        .chain([
+            format!("进程路径\t{}", metadata.process_path),
+            format!("远端目标\t{}", metadata.remote_destination),
+            format!("目标端口\t{}", metadata.destination_port),
+            format!(
+                "完整开始时间\t{}",
+                chrono::DateTime::parse_from_rfc3339(&connection.start)
+                    .map(|time| time
+                        .with_timezone(&chrono::Local)
+                        .format("%Y-%m-%d %H:%M:%S %:z")
+                        .to_string())
+                    .unwrap_or_else(|_| connection.start.clone())
+            ),
+            format!("连接 ID\t{}", connection.id),
+        ])
         .collect::<Vec<_>>()
         .join("\n");
     Record {
@@ -318,6 +367,34 @@ mod tests {
         }
     }
     #[test]
+    fn connection_detail_formats_full_time_path_remote_target_and_ipv6() {
+        let connection = Connection {
+            id: "connection-id".into(),
+            start: "2026-10-29T10:21:32+08:00".into(),
+            metadata: Metadata {
+                remote_destination: "remote.example.test".into(),
+                destination_port: "443".into(),
+                source_ip: "::1".into(),
+                source_port: "50123".into(),
+                process_path: "/Applications/Example.app/Contents/MacOS/example".into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let row = record(&connection, 1, 2, 3, 1024., 2048.);
+        assert_eq!(row.cells[0], "remote.example.test");
+        assert_eq!(row.cells[9], "[::1]:50123");
+        assert_eq!(row.cells[10], "remote.example.test:443");
+        assert_eq!(
+            row.cells[7],
+            "/Applications/Example.app/Contents/MacOS/example"
+        );
+        assert!(row.details.contains("2026-10-29"));
+        assert!(row.details.contains("完整开始时间\t"));
+        assert!(row.details.contains("连接 ID\tconnection-id"));
+        assert!(!row.details.contains("2026-10-29T"));
+    }
+    #[test]
     fn stream_updates_keep_identity_compute_rates_and_preserve_history_across_disconnects() {
         let mut tracker = Tracker::default();
         let at = Instant::now();
@@ -344,8 +421,14 @@ mod tests {
         assert!(tracker.update(&frame("uuid", 2, at + Duration::from_secs(4), 10)));
         assert_eq!(tracker.rows().len(), 2);
         assert_ne!(tracker.rows()[1].id, id);
-        tracker.clear_closed();
+        let removed = tracker.clear_closed();
         assert_eq!(tracker.rows().len(), 1);
+        tracker.update(&frame("new-live", 2, at + Duration::from_secs(5), 20));
+        tracker.restore_closed(removed);
+        let rows = tracker.rows();
+        assert_eq!(rows.len(), 3);
+        assert!(rows.iter().any(|row| row.id == id && !row.active));
+        assert!(rows.iter().any(|row| row.active));
     }
     #[test]
     fn closed_connection_history_is_bounded() {

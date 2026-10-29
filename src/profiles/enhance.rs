@@ -62,6 +62,7 @@ pub(super) struct EnhancementEditor {
     raw: bool,
     part: usize,
     saving: bool,
+    saved: bool,
     expected: crate::storage::Values,
     lists: BTreeMap<&'static str, gpui_kit::component::VirtualListScrollHandle>,
     source: Value,
@@ -101,6 +102,7 @@ impl EnhancementEditor {
             raw: false,
             part: 1,
             saving: false,
+            saved: false,
             expected: saved,
             lists: ["prepend", "original", "append", "delete"]
                 .into_iter()
@@ -217,6 +219,7 @@ impl EnhancementEditor {
                 let close = owner.upgrade().is_some_and(|owner| {
                     owner.update(cx, |editor, cx| {
                         editor.saving = false;
+                        editor.saved = result.is_ok();
                         cx.notify();
                         result.is_ok() && editor.revision(cx) == revision
                     })
@@ -419,7 +422,10 @@ impl EnhancementEditor {
                     } else {
                         "删除"
                     })
-                    .on_click(cx.listener(move |this, _, _, cx| {
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        let changed_part = if part == "original" { "delete" } else { part };
+                        let property = this.property;
+                        let before = this.items(changed_part);
                         if part == "original" {
                             let mut items = this.items("delete");
                             if excluded {
@@ -435,6 +441,128 @@ impl EnhancementEditor {
                             items.remove(index);
                             this.set_items(part, items);
                         }
+                        let after = this.items(changed_part);
+                        let profile_id = this.profile_id;
+                        let owner = cx.weak_entity();
+                        ui::notifications::undo(
+                            window,
+                            "已更新增强条目",
+                            cx,
+                            move |window, cx| {
+                                if owner.upgrade().is_none_or(|editor| editor.read(cx).saved) {
+                                    let expected =
+                                        storage::read(&format!("profile-enhance-{profile_id}"), cx);
+                                    let mut root: Value = match expected
+                                        .get(PROPERTIES[property])
+                                        .map(|s| serde_yaml_ng::from_str(s))
+                                        .transpose()
+                                    {
+                                        Ok(Some(value)) => value,
+                                        _ => {
+                                            ui::show_error(
+                                                "增强配置无法读取，无法撤销".into(),
+                                                window,
+                                                cx,
+                                            );
+                                            return false;
+                                        }
+                                    };
+                                    if root
+                                        .get(changed_part)
+                                        .and_then(Value::as_sequence)
+                                        .cloned()
+                                        .unwrap_or_default()
+                                        != after
+                                    {
+                                        ui::show_error(
+                                            "条目已更改，无法撤销此次操作".into(),
+                                            window,
+                                            cx,
+                                        );
+                                        return false;
+                                    }
+                                    let Some(mapping) = root.as_mapping_mut() else {
+                                        return false;
+                                    };
+                                    mapping.insert(
+                                        changed_part.into(),
+                                        Value::Sequence(before.clone()),
+                                    );
+                                    let mut values = expected.clone();
+                                    values.insert(
+                                        PROPERTIES[property].into(),
+                                        serde_yaml_ng::to_string(&root).unwrap_or_default(),
+                                    );
+                                    return match crate::core::execute(
+                                        crate::core::Command::Profiles(
+                                            crate::core::ProfileCommand::Enhance {
+                                                id: profile_id,
+                                                expected,
+                                                values,
+                                            },
+                                        ),
+                                        window,
+                                        cx,
+                                        |_, _, _| {},
+                                    ) {
+                                        Ok(()) => true,
+                                        Err(error) => {
+                                            ui::show_error(error, window, cx);
+                                            false
+                                        }
+                                    };
+                                }
+                                owner
+                                    .update(cx, |this, cx| {
+                                        if this.raw
+                                            && let Err(error) = this.read_code(cx)
+                                        {
+                                            ui::show_error(error, window, cx);
+                                            return false;
+                                        }
+                                        if this.saving
+                                            || this.drafts[property]
+                                                .get(changed_part)
+                                                .and_then(Value::as_sequence)
+                                                .cloned()
+                                                .unwrap_or_default()
+                                                != after
+                                        {
+                                            ui::show_error(
+                                                "条目已更改，无法撤销此次操作".into(),
+                                                window,
+                                                cx,
+                                            );
+                                            return false;
+                                        }
+                                        if !this.drafts[property].is_mapping() {
+                                            this.drafts[property] = Value::Mapping(Mapping::new());
+                                        }
+                                        this.drafts[property].as_mapping_mut().unwrap().insert(
+                                            changed_part.into(),
+                                            Value::Sequence(before.clone()),
+                                        );
+                                        if this.raw {
+                                            let mapping: Mapping = PROPERTIES
+                                                .iter()
+                                                .enumerate()
+                                                .map(|(index, key)| {
+                                                    ((*key).into(), this.drafts[index].clone())
+                                                })
+                                                .collect();
+                                            let text =
+                                                serde_yaml_ng::to_string(&Value::Mapping(mapping))
+                                                    .unwrap_or_default();
+                                            this.code.update(cx, |state, cx| {
+                                                state.set_value(text, window, cx)
+                                            });
+                                        }
+                                        cx.notify();
+                                        true
+                                    })
+                                    .unwrap_or(true)
+                            },
+                        );
                         cx.notify();
                     })),
             );
@@ -456,7 +584,27 @@ impl EnhancementFooter {
 }
 impl Render for EnhancementFooter {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        ui::dialog_footer_pending("保存", self.editor.read(cx).saving)
+        let editor = self.editor.clone();
+        let state = editor.read(cx);
+        let saving = state.saving;
+        let raw = state.raw;
+        let mode_owner = editor.clone();
+        h_flex()
+            .w_full()
+            .justify_end()
+            .gap(space::SM)
+            .child(
+                Button::new("enhance-mode")
+                    .icon(IconName::FileCode)
+                    .outline()
+                    .with_size(control::STANDARD)
+                    .disabled(saving)
+                    .label(if raw { "表单编辑" } else { "YAML 编辑" })
+                    .on_click(move |_, window, cx| {
+                        mode_owner.update(cx, |this, cx| this.mode(!this.raw, window, cx))
+                    }),
+            )
+            .child(ui::dialog_footer_pending("保存", saving))
     }
 }
 impl Render for EnhancementEditor {
@@ -532,13 +680,13 @@ impl Render for EnhancementEditor {
         ui::form()
             .size_full()
             .min_h(space::NONE)
-            .child(
-                h_flex()
-                    .w_full()
-                    .flex_shrink_0()
-                    .gap(space::SM)
-                    .when(!self.raw, |row| {
-                        row.child(
+            .when(!self.raw, |view| {
+                view.child(
+                    h_flex()
+                        .w_full()
+                        .flex_shrink_0()
+                        .gap(space::SM)
+                        .child(
                             TabBar::new("enhance-property")
                                 .segmented()
                                 .with_size(control::STANDARD)
@@ -556,37 +704,26 @@ impl Render for EnhancementEditor {
                                     cx.notify();
                                 })),
                         )
-                    })
-                    .child(div().flex_1())
-                    .child(
-                        Button::new("enhance-mode")
-                            .icon(gpui_kit::assets::IconName::FileCode)
-                            .outline()
-                            .with_size(control::STANDARD)
-                            .disabled(self.saving)
-                            .label(if self.raw {
-                                "表单编辑"
-                            } else {
-                                "YAML 编辑"
-                            })
-                            .on_click(
-                                cx.listener(|this, _, window, cx| this.mode(!this.raw, window, cx)),
-                            ),
-                    )
-                    .when(!self.raw && editable, |row| {
-                        row.child(
-                            Button::new(SharedString::from(format!("add-{part}")))
+                        .child(div().flex_1())
+                        .child(
+                            Button::new("enhancement-add")
                                 .outline()
                                 .with_size(control::STANDARD)
                                 .icon(IconName::Plus)
                                 .label("添加")
                                 .disabled(self.saving)
                                 .on_click(cx.listener(move |this, _, window, cx| {
-                                    this.edit_item(part, None, window, cx)
+                                    let part = if LIST_PARTS[this.part] == "append" {
+                                        "append"
+                                    } else {
+                                        "prepend"
+                                    };
+                                    this.part = if part == "append" { 3 } else { 1 };
+                                    this.edit_item(part, None, window, cx);
                                 })),
-                        )
-                    }),
-            )
+                        ),
+                )
+            })
             .when(!self.raw, |view| {
                 view.child(
                     h_flex()
@@ -1002,11 +1139,18 @@ mod ui_tests {
             let mode = window.find("enhance-mode").bounds();
             let search = window.find("enhancement-search").bounds();
             let footer = window.find("dialog-commit").bounds();
+            let cancel = window.find("dialog-cancel").bounds();
+            assert!(mode.right() <= cancel.left());
+            assert!((mode.center().y - cancel.center().y).abs() < px(1.));
             let parts=window.within("enhance-part").find(0usize).bounds();
             assert!(parts.left()>=search.right());
             assert!((parts.center().y-search.center().y).abs()<px(1.));
             assert!(window.within("enhance-property").find(0usize).visible());
 
+            let add = window.find("enhancement-add").bounds();
+            let tabs = window.within("enhance-property").find(0usize).bounds();
+            assert!(add.left() > tabs.right());
+            assert!((add.center().y - tabs.center().y).abs() < px(1.));
             let viewport = window.find("enhancement-viewport").bounds();
             assert!(viewport.top() >= search.bottom());
             assert!(viewport.bottom() <= footer.top());
@@ -1049,13 +1193,13 @@ mod ui_tests {
                 cx.notify();
             });
             window.render_frame(cx);
-            assert!(window.find("add-prepend").visible());
-            let add=window.find("add-prepend").bounds();let yaml=window.find("enhance-mode").bounds();
-            assert!(add.left()>=yaml.right());assert!((add.center().y-yaml.center().y).abs()<px(1.));
-            window.click("add-prepend", cx);
+            assert!(window.find("enhancement-add").visible());
+            let add=window.find("enhancement-add").bounds();let property_tab=window.within("enhance-property").find(0usize).bounds();
+            assert!(add.left()>=property_tab.right());assert!((add.center().y-property_tab.center().y).abs()<px(1.));
+            window.click("enhancement-add", cx);
             assert!(window.find("enhancement-entry-form").bounds().size.height < px(400.));
             if property==1 {
-                let server=window.find_by_label("服务器").bounds();let port=window.find_by_label("端口").bounds();
+                let server=window.find("field-服务器").bounds();let port=window.find("field-端口").bounds();
                 assert_eq!(server.top(),port.top());assert!(server.right()<=port.left());
             }
 

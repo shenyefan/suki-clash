@@ -251,8 +251,12 @@ mod tests {
         let recovery = Recovery::begin(&paths).unwrap();
         fs::write(&binary, b"new core").unwrap();
         fs::write(&native, b"new native").unwrap();
-        crate::preferences::app::write(&paths, "core", &serde_json::json!({"start_core":false}))
-            .unwrap();
+        crate::preferences::app::write(
+            &paths,
+            "core",
+            &serde_json::json!({"core_release_index":"smart"}),
+        )
+        .unwrap();
         drop(recovery);
         recover_pending(&paths).unwrap();
         assert_eq!(fs::read(&binary).unwrap(), b"old core");

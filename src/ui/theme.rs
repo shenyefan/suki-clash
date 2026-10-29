@@ -42,7 +42,7 @@ pub(crate) mod layout {
     pub(crate) const ICON_FEATURE: Rems = rems(1.5);
     pub(crate) const PROGRESS_HEIGHT: Rems = rems(0.25);
     pub(crate) const FOOTER_HEIGHT: Rems = rems(1.5);
-    pub(crate) const CONNECTION_DETAILS_COLUMNS: u16 = 4;
+    pub(crate) const CONNECTION_DETAILS_COLUMNS: u16 = 2;
     pub(crate) const CONNECTION_DETAILS_HEIGHT: Rems = rems(15.);
     pub(crate) const TABLE_ACTIONS_WIDTH: Rems = rems(5.);
     pub(crate) const CONTROL_HEIGHT: Rems = rems(2.);
@@ -52,6 +52,7 @@ pub(crate) mod layout {
     pub(crate) const BRAND_LOGO_SIZE: Rems = rems(1.75);
     pub(crate) const BRAND_HEIGHT: Rems = rems(4.);
     pub(crate) const TEXTAREA_HEIGHT: Rems = rems(5.);
+    pub(crate) const SETTINGS_EDITOR_HEIGHT: Rems = rems(16.);
     pub(crate) const OVERVIEW_TOP_HEIGHT: Rems = rems(14.);
     pub(crate) const OVERVIEW_SUMMARY_HEIGHT: Rems = rems(10.5);
     pub(crate) const OVERVIEW_HISTORY_HEIGHT: Rems = rems(6.);
@@ -66,6 +67,7 @@ pub(crate) mod layout {
     pub(crate) const DIALOG_RESERVED_HEIGHT: Rems = rems(12.);
     pub(crate) const FORM_MAX_HEIGHT: Rems = rems(28.);
     pub(crate) const METRIC_WIDTH: Rems = rems(4.);
+    pub(crate) const DETAIL_LABEL_WIDTH: Rems = rems(5.);
     pub(crate) const FILTER_WIDTH: Rems = rems(10.);
     pub(crate) const SIDEBAR_WIDTH: Rems = rems(13.5);
     pub(crate) const LONG_FIELD_WIDTH: Rems = rems(14.);
@@ -145,6 +147,7 @@ pub(crate) mod stroke {
     use super::*;
     pub(crate) const NONE: Pixels = px(0.);
     pub(crate) const HAIRLINE: Pixels = px(1.);
+    pub(crate) const INSERTION: Pixels = px(2.);
 }
 
 pub(crate) mod opacity {

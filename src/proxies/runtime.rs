@@ -46,11 +46,30 @@ pub(crate) struct Delay {
     pub(crate) delay: u32,
 }
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct GroupScope {
+    pub(crate) providers: Vec<String>,
+    pub(crate) exclude_types: Vec<String>,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Member {
+    pub(crate) name: String,
+    pub(crate) occurrence: usize,
+    pub(crate) record_id: Option<String>,
+    pub(crate) reason: Option<&'static str>,
+}
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Proxies {
     pub(crate) entries: BTreeMap<String, Proxy>,
     pub(crate) order: Vec<String>,
+    pub(crate) records: BTreeMap<String, Proxy>,
+    pub(crate) members: BTreeMap<String, Vec<Member>>,
+    pub(crate) scopes: BTreeMap<String, GroupScope>,
+    pub(crate) provider_error: Option<String>,
+    provider_names: BTreeMap<String, Vec<String>>,
+    core_names: BTreeSet<String>,
     pub(crate) measurements: BTreeMap<(String, String), Result<u32, String>>,
     pub(crate) testing: BTreeSet<(String, String)>,
+    pub(crate) batches: BTreeSet<(String, String)>,
 }
 impl Proxies {
     pub(crate) fn parse(bytes: &[u8], order: &[String]) -> Result<Self, String> {
@@ -67,6 +86,13 @@ impl Proxies {
             order: vec![],
             measurements: BTreeMap::new(),
             testing: Default::default(),
+            batches: Default::default(),
+            records: Default::default(),
+            members: Default::default(),
+            scopes: Default::default(),
+            provider_error: None,
+            provider_names: Default::default(),
+            core_names: Default::default(),
         };
         for (name, proxy) in &result.entries {
             if name != &proxy.name
@@ -88,6 +114,13 @@ impl Proxies {
                 result.order.push(name.clone());
             }
         }
+        result.core_names = result.entries.keys().cloned().collect();
+        for (name, proxy) in &result.entries {
+            result
+                .records
+                .insert(format!("c:{}:{name}", name.len()), proxy.clone());
+        }
+        result.resolve_members();
         Ok(result)
     }
     pub(crate) fn include_providers(&mut self, bytes: &[u8]) -> Result<(), String> {
@@ -101,38 +134,142 @@ impl Proxies {
             providers: BTreeMap<String, Provider>,
         }
         let response: Response = serde_json::from_slice(bytes).map_err(|_| "代理集合响应无效")?;
-        let mut additions = BTreeMap::<String, Proxy>::new();
+        self.entries
+            .retain(|name, _| self.core_names.contains(name));
+        self.records.retain(|_, proxy| proxy.provider.is_none());
+        self.provider_names.clear();
         for (provider, data) in response.providers {
+            let mut occurrences = BTreeMap::<String, usize>::new();
             for mut proxy in data.proxies {
                 if proxy.name.is_empty() || proxy.name.len() > 1024 {
                     return Err("代理集合节点身份无效".into());
                 }
-                if self.entries.contains_key(&proxy.name) {
-                    continue;
-                }
-                if additions.contains_key(&proxy.name) {
-                    return Err("代理集合存在重名节点，无法确认来源".into());
-                }
+                let occurrence = occurrences.entry(proxy.name.clone()).or_default();
+                let id = format!(
+                    "p:{}:{}:{}:{}:{}",
+                    provider.len(),
+                    provider,
+                    proxy.name.len(),
+                    proxy.name,
+                    occurrence
+                );
+                *occurrence += 1;
                 proxy.provider = Some(provider.clone());
-                additions.insert(proxy.name.clone(), proxy);
-                if additions.len().saturating_add(self.entries.len()) > 20000 {
-                    return Err("内核代理列表超过上限".into());
+                self.provider_names
+                    .entry(proxy.name.clone())
+                    .or_default()
+                    .push(id.clone());
+                self.records.insert(id, proxy);
+                if self.records.len() > 20000 {
+                    return Err("代理列表超过上限".into());
                 }
             }
         }
-        self.entries.extend(additions);
+        for (name, ids) in &self.provider_names {
+            if !self.core_names.contains(name) && ids.len() == 1 {
+                self.entries
+                    .insert(name.clone(), self.records[&ids[0]].clone());
+            }
+        }
+        self.provider_error = None;
+        self.resolve_members();
         Ok(())
+    }
+    pub(crate) fn resolve_members(&mut self) {
+        self.members.clear();
+        for group in &self.order {
+            let mut counts = BTreeMap::<String, usize>::new();
+            let members = self
+                .entries
+                .get(group)
+                .and_then(|proxy| proxy.all.as_ref())
+                .into_iter()
+                .flatten()
+                .map(|name| {
+                    let occurrence = counts.entry(name.clone()).or_default();
+                    let nth = *occurrence;
+                    *occurrence += 1;
+                    let mut candidates = vec![];
+                    if let Some(scope) = self.scopes.get(group) {
+                        for provider in &scope.providers {
+                            for id in self.provider_names.get(name).into_iter().flatten() {
+                                let proxy = &self.records[id];
+                                if proxy.provider.as_ref() == Some(provider)
+                                    && !scope
+                                        .exclude_types
+                                        .iter()
+                                        .any(|kind| kind.eq_ignore_ascii_case(&proxy.kind))
+                                {
+                                    candidates.push(id.clone());
+                                }
+                            }
+                        }
+                    }
+                    let (record_id, reason) = if self.core_names.contains(name) {
+                        (Some(format!("c:{}:{name}", name.len())), None)
+                    } else if let Some(id) = candidates.get(nth).or_else(|| candidates.first()) {
+                        (Some(id.clone()), None)
+                    } else {
+                        match self
+                            .provider_names
+                            .get(name)
+                            .map(Vec::as_slice)
+                            .unwrap_or_default()
+                        {
+                            [id] => (Some(id.clone()), None),
+                            [] => (
+                                None,
+                                Some(if self.provider_error.is_some() {
+                                    "代理集合不可用"
+                                } else {
+                                    "节点尚未解析"
+                                }),
+                            ),
+                            _ => (None, Some("同名节点来源不明确")),
+                        }
+                    };
+                    Member {
+                        name: name.clone(),
+                        occurrence: nth,
+                        record_id,
+                        reason,
+                    }
+                })
+                .collect();
+            self.members.insert(group.clone(), members);
+        }
+    }
+    pub(crate) fn member_proxy(&self, member: &Member) -> Option<&Proxy> {
+        member
+            .record_id
+            .as_ref()
+            .and_then(|id| self.records.get(id))
+    }
+    pub(crate) fn measurement_key(&self, group: &str, member: &Member) -> String {
+        if self.members.get(group).is_some_and(|members| {
+            members
+                .iter()
+                .filter(|item| item.name == member.name)
+                .count()
+                > 1
+        }) {
+            member
+                .record_id
+                .clone()
+                .unwrap_or_else(|| format!("u:{}:{}", member.name, member.occurrence))
+        } else {
+            member.name.clone()
+        }
     }
     pub(crate) fn testable(&self, group: &str, node: &str) -> bool {
         !matches!(
             node,
             "DIRECT" | "REJECT" | "REJECT-DROP" | "PASS" | "COMPATIBLE"
-        ) && self.entries.contains_key(node)
-            && self
-                .entries
-                .get(group)
-                .and_then(|proxy| proxy.all.as_ref())
-                .is_some_and(|members| members.iter().any(|member| member == node))
+        ) && self.members.get(group).is_some_and(|members| {
+            members
+                .iter()
+                .any(|member| member.name == node && self.member_proxy(member).is_some())
+        })
     }
     pub(crate) fn test_url<'a>(&'a self, group: &str, default: &'a str) -> &'a str {
         self.entries
@@ -152,6 +289,32 @@ impl Proxies {
     }
     pub(crate) fn selected(&self, group: &str) -> Option<&str> {
         self.entries.get(group)?.now.as_deref()
+    }
+    pub(crate) fn current_test(
+        &self,
+        mode: ProxyMode,
+        generation: u64,
+        epoch: u64,
+    ) -> Option<Test> {
+        if mode == ProxyMode::Direct {
+            return None;
+        }
+        let group = if mode == ProxyMode::Global {
+            "GLOBAL"
+        } else {
+            self.order
+                .iter()
+                .find(|name| name.as_str() != "GLOBAL")?
+                .as_str()
+        };
+        let node = self.selected(group)?;
+        self.testable(group, node).then(|| Test {
+            urls: Default::default(),
+            group: Some(group.to_owned()),
+            node: Some(node.to_owned()),
+            generation,
+            epoch,
+        })
     }
     pub(crate) fn current_node(&self, mode: ProxyMode) -> Option<&str> {
         if mode == ProxyMode::Direct {
@@ -196,6 +359,7 @@ pub(crate) enum Action {
 }
 #[derive(Clone, Debug)]
 pub(crate) struct Test {
+    pub(crate) urls: BTreeMap<String, String>,
     pub(crate) group: Option<String>,
     pub(crate) node: Option<String>,
     pub(crate) generation: u64,
@@ -331,6 +495,78 @@ mod reference_tests {
         assert_ne!(
             proxies.measurements[&("a".into(), "n".into())],
             proxies.measurements[&("b".into(), "n".into())]
+        );
+    }
+}
+
+#[cfg(test)]
+mod source_identity_tests {
+    use super::*;
+    #[test]
+    fn duplicate_provider_members_follow_use_order_occurrence_and_rebind() {
+        let mut proxies = Proxies::parse(
+            br#"{"proxies":{"g":{"name":"g","type":"Selector","all":["n","n","missing"]}}}"#,
+            &[],
+        )
+        .unwrap();
+        assert!(
+            proxies.members["g"]
+                .iter()
+                .all(|member| member.record_id.is_none())
+        );
+        proxies.scopes.insert(
+            "g".into(),
+            GroupScope {
+                providers: vec!["b".into(), "a".into()],
+                exclude_types: vec![],
+            },
+        );
+        proxies.include_providers(br#"{"providers":{"a":{"proxies":[{"name":"n","type":"Trojan"}]},"b":{"proxies":[{"name":"n","type":"Socks5"}]}}}"#).unwrap();
+        let members = &proxies.members["g"];
+        assert_eq!(
+            proxies
+                .member_proxy(&members[0])
+                .unwrap()
+                .provider
+                .as_deref(),
+            Some("b")
+        );
+        assert_eq!(
+            proxies
+                .member_proxy(&members[1])
+                .unwrap()
+                .provider
+                .as_deref(),
+            Some("a")
+        );
+        assert_ne!(
+            proxies.measurement_key("g", &members[0]),
+            proxies.measurement_key("g", &members[1])
+        );
+        assert_eq!(members[2].reason, Some("节点尚未解析"));
+        proxies
+            .scopes
+            .get_mut("g")
+            .unwrap()
+            .exclude_types
+            .push("socks5".into());
+        proxies.resolve_members();
+        assert!(
+            proxies.members["g"].iter().take(2).all(|member| proxies
+                .member_proxy(member)
+                .unwrap()
+                .provider
+                .as_deref()
+                == Some("a"))
+        );
+        let mut core=Proxies::parse(br#"{"proxies":{"g":{"name":"g","type":"Selector","all":["n"]},"n":{"name":"n","type":"Http"}}}"#,&[]).unwrap();
+        core.include_providers(
+            br#"{"providers":{"p":{"proxies":[{"name":"n","type":"Trojan"}]}}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            core.member_proxy(&core.members["g"][0]).unwrap().kind,
+            "Http"
         );
     }
 }

@@ -16,6 +16,10 @@ use std::collections::{BTreeMap, BTreeSet};
 pub(crate) struct ProxiesPage {
     session: Entity<Session>,
     query: Entity<InputState>,
+    search: model::Filter,
+    group_filter: BTreeSet<String>,
+    group_urls: BTreeMap<String, Entity<InputState>>,
+    url_editing: BTreeSet<String>,
     groups: Vec<ProxyGroup>,
     observed: std::sync::Arc<crate::core::Runtime>,
     expanded: BTreeSet<String>,
@@ -33,6 +37,13 @@ pub(crate) struct ProxiesPage {
 }
 
 impl ProxiesPage {
+    fn test_urls(&self, cx: &App) -> BTreeMap<String, String> {
+        self.group_urls
+            .iter()
+            .map(|(group, state)| (group.clone(), state.read(cx).value().trim().to_owned()))
+            .collect()
+    }
+
     pub(crate) fn new(
         session: Entity<Session>,
         window: &mut Window,
@@ -61,7 +72,7 @@ impl ProxiesPage {
             })
             .collect();
         let subscriptions = vec![
-            cx.observe(&session, |this, session, cx| {
+            cx.observe_in(&session, window, |this, session, window, cx| {
                 let delay_timeout = crate::integration::read("settings", cx)
                     .get("DelayTestTimeout")
                     .and_then(|value| value.parse().ok())
@@ -73,11 +84,40 @@ impl ProxiesPage {
                         || this.delay_timeout != delay_timeout
                         || this.groups.is_empty()
                     {
-                        let groups =
+                        let mut groups =
                             ProxyGroup::observed(&runtime.proxies, runtime.mode, delay_timeout);
+                        for group in &mut groups {
+                            if runtime
+                                .proxies
+                                .batches
+                                .iter()
+                                .any(|(id, _)| *id == group.id())
+                                && let Some(previous) =
+                                    this.groups.iter().find(|old| old.id() == group.id())
+                            {
+                                group.keep_latency_order(previous);
+                            }
+                        }
+                        let old_order = this
+                            .groups
+                            .iter()
+                            .map(|group| group.id())
+                            .collect::<Vec<_>>();
+                        groups.sort_by_key(|group| {
+                            old_order
+                                .iter()
+                                .position(|id| id == &group.id())
+                                .unwrap_or(usize::MAX)
+                        });
                         let ids = groups.iter().map(ProxyGroup::id).collect::<BTreeSet<_>>();
                         this.expanded.retain(|id| ids.contains(id));
                         for group in &groups {
+                            this.group_urls.entry(group.id()).or_insert_with(|| {
+                                cx.new(|cx| {
+                                    InputState::new(window, cx)
+                                        .placeholder("测速地址，留空使用默认")
+                                })
+                            });
                             if !this.groups.iter().any(|old| old.id() == group.id()) {
                                 this.expanded.insert(group.id());
                                 if !this.query.read(cx).value().trim().is_empty() {
@@ -117,14 +157,33 @@ impl ProxiesPage {
                     // expansion state when the query is cleared.
                     this.list_scroll.set_offset(Point::default());
                     this.search_expanded = this.groups.iter().map(ProxyGroup::id).collect();
+                    this.search.compile(this.query.read(cx).value().as_ref());
+                }
+                if matches!(event, InputEvent::Blur)
+                    && let Some(error) = &this.search.text.error
+                {
+                    crate::ui::show_error(error.clone(), window, cx);
                 }
                 this.refresh_list(window, cx);
                 cx.notify();
             }),
         ];
+        let group_urls = groups
+            .iter()
+            .map(|group| {
+                (
+                    group.id(),
+                    cx.new(|cx| InputState::new(window, cx).placeholder("测速地址，留空使用默认")),
+                )
+            })
+            .collect();
         let mut page = Self {
             session,
             query,
+            search: Default::default(),
+            group_filter: BTreeSet::new(),
+            group_urls,
+            url_editing: Default::default(),
             groups,
             observed: runtime,
             expanded,

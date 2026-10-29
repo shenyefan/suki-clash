@@ -10,6 +10,8 @@ pub(crate) struct Overview {
     period: usize,
     breakdown: usize,
     proxy_only: bool,
+    show_ip: bool,
+    ip_auto_refresh: bool,
     ranking_scroll: gpui_kit::component::VirtualListScrollHandle,
     _subscription: Subscription,
 }
@@ -21,6 +23,8 @@ impl Overview {
             period: 0,
             breakdown: 0,
             proxy_only: false,
+            show_ip: false,
+            ip_auto_refresh: true,
             ranking_scroll: gpui_kit::component::VirtualListScrollHandle::new(),
             _subscription: subscription,
         }

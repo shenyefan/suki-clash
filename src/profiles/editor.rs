@@ -10,7 +10,7 @@ use gpui_kit::{
         ActiveTheme, Icon, IndexPath, Sizable,
         button::{Button, ButtonVariants},
         h_flex,
-        input::{Editor, EditorState, Input, InputState},
+        input::{Editor, EditorState, Input, InputState, MaskPattern},
         select::{Select, SelectState},
         switch::Switch,
         v_flex,
@@ -44,6 +44,9 @@ pub(super) struct DocumentEditor {
     interval: Entity<InputState>,
     timeout: Entity<InputState>,
     content: Entity<EditorState>,
+    with_proxy: bool,
+    self_proxy: bool,
+    accept_invalid_certs: bool,
 }
 impl DocumentEditor {
     pub(super) fn new(
@@ -139,10 +142,16 @@ impl DocumentEditor {
                         .masked(true)
                 })
             });
-        let interval =
-            cx.new(|cx| InputState::new(window, cx).default_value(document.interval.clone()));
-        let timeout =
-            cx.new(|cx| InputState::new(window, cx).default_value(document.timeout.clone()));
+        let interval = cx.new(|cx| {
+            InputState::new(window, cx)
+                .mask_pattern(MaskPattern::number(None))
+                .default_value(document.interval.clone())
+        });
+        let timeout = cx.new(|cx| {
+            InputState::new(window, cx)
+                .mask_pattern(MaskPattern::number(None))
+                .default_value(document.timeout.clone())
+        });
         let content = cx.new(|cx| {
             ui::editor::state(
                 if document.kind == DocumentKind::JavaScript {
@@ -157,6 +166,9 @@ impl DocumentEditor {
             )
         });
         Self {
+            with_proxy: document.with_proxy,
+            self_proxy: document.self_proxy,
+            accept_invalid_certs: document.accept_invalid_certs,
             owner,
             document,
             mode,
@@ -174,6 +186,9 @@ impl DocumentEditor {
     }
     pub(super) fn revision(&self, cx: &App) -> Vec<String> {
         vec![
+            self.with_proxy.to_string(),
+            self.self_proxy.to_string(),
+            self.accept_invalid_certs.to_string(),
             self.name.read(cx).value().to_string(),
             self.url.read(cx).value().to_string(),
             self.token.read(cx).value().to_string(),
@@ -198,6 +213,9 @@ impl DocumentEditor {
             return false;
         }
         let mut document = self.document.clone();
+        document.with_proxy = self.with_proxy;
+        document.self_proxy = self.self_proxy;
+        document.accept_invalid_certs = self.accept_invalid_certs;
         if self.mode == EditorMode::Content {
             document.content = self.content.read(cx).value().to_string();
         } else {
@@ -315,19 +333,6 @@ impl Render for DocumentEditor {
                                 })),
                         )
                         .child(
-                            Button::new("reset-document-template")
-                                .icon(gpui_kit::assets::IconName::RotateCcw)
-                                .ghost()
-                                .with_size(control::STANDARD)
-                                .label("重置模板")
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    this.content.update(cx, |state, cx| {
-                                        state.set_value(this.document.kind.template(), window, cx)
-                                    });
-                                    cx.notify();
-                                })),
-                        )
-                        .child(
                             Button::new("copy-editor-file")
                                 .icon(gpui_kit::assets::IconName::Copy)
                                 .ghost()
@@ -386,9 +391,8 @@ impl Render for DocumentEditor {
                             ui::field_label(
                                 "更新间隔（分钟）",
                                 Input::new(&self.interval)
-                                    .id("document-interval")
-                                    .with_size(control::STANDARD)
                                     .w_full()
+                                    .with_size(control::STANDARD)
                                     .aria_label("更新间隔（分钟）"),
                             )
                             .flex_1(),
@@ -397,9 +401,8 @@ impl Render for DocumentEditor {
                             ui::field_label(
                                 "超时（秒）",
                                 Input::new(&self.timeout)
-                                    .id("document-timeout")
-                                    .with_size(control::STANDARD)
                                     .w_full()
+                                    .with_size(control::STANDARD)
                                     .aria_label("下载超时（秒）"),
                             )
                             .flex_1(),
@@ -448,7 +451,31 @@ impl Render for DocumentEditor {
                     ),
                 );
         }
-        content = content.child(form);
+        if remote {
+            for (key, label, checked) in [
+                ("with-proxy", "使用系统代理", self.with_proxy),
+                ("self-proxy", "使用内核代理", self.self_proxy),
+                ("invalid-certs", "忽略证书错误", self.accept_invalid_certs),
+            ] {
+                form = form.child(
+                    ui::form_row().justify_between().child(label).child(
+                        Switch::new(key)
+                            .with_size(control::STANDARD)
+                            .checked(checked)
+                            .accessibility_label(label)
+                            .on_change(cx.listener(move |this, checked, _, cx| {
+                                match key {
+                                    "with-proxy" => this.with_proxy = *checked,
+                                    "self-proxy" => this.self_proxy = *checked,
+                                    _ => this.accept_invalid_certs = *checked,
+                                }
+                                cx.notify();
+                            })),
+                    ),
+                );
+            }
+        }
+        content = content.flex_none().child(form);
         content
     }
 }

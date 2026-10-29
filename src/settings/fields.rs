@@ -46,19 +46,24 @@ impl SettingsPage {
                         .with_size(control::STANDARD)
                         .when(spec.kind == FieldKind::Secret, |input| input.mask_toggle())
                         .disabled(disabled)
-                        .aria_label(spec.label),
+                        .aria_label(spec.label)
+                        .when(spec.actions.contains(&"随机端口"), |input| {
+                            input.suffix(
+                                ui::icon_button(
+                                    SharedString::from(format!("action-{key}-随机端口")),
+                                    IconName::Shuffle,
+                                    "随机端口",
+                                )
+                                .disabled(disabled)
+                                .on_click(cx.listener(
+                                    move |this, _, window, cx| {
+                                        this.field_action(key, "随机端口", window, cx);
+                                    },
+                                )),
+                            )
+                        }),
                 )
                 .into_any_element(),
-            FieldControl::Multiline(_)
-                if key == "BypassList"
-                    && policy
-                        .get("UseDefaultBypass")
-                        .is_some_and(|value| value == "true") =>
-            {
-                ui::muted(super::schema::default_bypass(), cx)
-                    .text_size(text::CAPTION)
-                    .into_any_element()
-            }
             FieldControl::Multiline(state) => Editor::new(state)
                 .w_full()
                 .h(layout::TEXTAREA_HEIGHT)
@@ -73,16 +78,8 @@ impl SettingsPage {
                 .into_any_element(),
             FieldControl::ReadOnly => {
                 let value = match spec.label {
-                    "运行状态" => {
-                        if self.session.read(cx).is_running() {
-                            "运行中"
-                        } else {
-                            "已停止"
-                        }
-                    }
+                    "运行状态" => self.session.read(cx).core().label(),
                     "当前版本" => "—",
-                    "实际代理状态" => "—",
-                    "服务器地址" | "PAC 地址" => "—",
                     "应用版本" => env!("CARGO_PKG_VERSION"),
                     _ => "",
                 };
@@ -93,6 +90,7 @@ impl SettingsPage {
         let actions = spec
             .actions
             .iter()
+            .filter(|action| **action != "随机端口")
             .map(|action| {
                 let action = *action;
                 let busy = self.saving || self.session.read(cx).core_busy();
@@ -140,52 +138,68 @@ impl SettingsPage {
             })
             .collect::<Vec<_>>();
         if spec.kind == FieldKind::Multiline {
-            let row = v_flex()
-                .w_full()
-                .min_w(space::NONE)
-                .gap(space::SM)
-                .py(space::MD)
-                .child(
-                    v_flex()
-                        .gap(space::XS)
-                        .child(h_flex().justify_between().child(spec.label).when_some(
-                            match &field.control {
-                                FieldControl::Multiline(state) => Some(state.clone()),
-                                _ => None,
-                            },
-                            |row, state| {
-                                let title = SharedString::from(spec.label);
-                                row.child(
-                                    ui::icon_button(
-                                        SharedString::from(format!("expand-{key}")),
-                                        IconName::Maximize,
-                                        "展开编辑",
-                                    )
-                                    .on_click(
-                                        move |_, w, cx| {
-                                            ui::editor::expand(
-                                                state.clone(),
-                                                title.clone(),
-                                                disabled,
-                                                w,
-                                                cx,
+            let row =
+                v_flex()
+                    .w_full()
+                    .min_w(space::NONE)
+                    .gap(space::SM)
+                    .py(space::MD)
+                    .child(
+                        v_flex()
+                            .gap(space::XS)
+                            .child(h_flex().justify_between().child(spec.label).when_some(
+                                match &field.control {
+                                    FieldControl::Multiline(state) => Some(state.clone()),
+                                    _ => None,
+                                },
+                                |row, state| {
+                                    let title = SharedString::from(spec.label);
+                                    row.child(
+                                        h_flex()
+                                            .gap(space::SM)
+                                            .child(
+                                                ui::icon_button(
+                                                    SharedString::from(format!("reset-{key}")),
+                                                    IconName::RotateCcw,
+                                                    "恢复默认",
+                                                )
+                                                .disabled(disabled)
+                                                .on_click(cx.listener(
+                                                    move |this, _, window, cx| {
+                                                        this.restore_default_text(key, window, cx);
+                                                    },
+                                                )),
                                             )
-                                        },
-                                    ),
-                                )
-                            },
-                        ))
-                        .child(ui::muted(spec.description, cx).text_size(text::CAPTION)),
-                )
-                .child(
-                    h_flex()
-                        .w_full()
-                        .min_w(space::NONE)
-                        .items_start()
-                        .gap(space::SM)
-                        .child(div().flex_1().min_w(space::NONE).child(control))
-                        .children(actions),
-                );
+                                            .child(
+                                                ui::icon_button(
+                                                    SharedString::from(format!("expand-{key}")),
+                                                    IconName::Maximize,
+                                                    "展开编辑",
+                                                )
+                                                .on_click(move |_, w, cx| {
+                                                    ui::editor::expand(
+                                                        state.clone(),
+                                                        title.clone(),
+                                                        disabled,
+                                                        w,
+                                                        cx,
+                                                    )
+                                                }),
+                                            ),
+                                    )
+                                },
+                            ))
+                            .child(ui::muted(spec.description, cx).text_size(text::CAPTION)),
+                    )
+                    .child(
+                        h_flex()
+                            .w_full()
+                            .min_w(space::NONE)
+                            .items_start()
+                            .gap(space::SM)
+                            .child(div().flex_1().min_w(space::NONE).child(control))
+                            .children(actions),
+                    );
             return row.px(space::LG).into_any_element();
         }
         let control = if matches!(

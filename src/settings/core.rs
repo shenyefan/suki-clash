@@ -134,7 +134,6 @@ impl SettingsPage {
                 );
             let mut rows = vec![
                 ui::preference_row("运行状态", "", status, cx).into_any_element(),
-                self.field_row("StartCore", cx),
                 ui::preference_row("当前版本", "", version, cx).into_any_element(),
                 ui::preference_row(
                     "发行通道",
@@ -228,8 +227,56 @@ impl SettingsPage {
                                         .disabled(busy || this.saving)
                                         .on_click(
                                             cx.listener(move |this, _, window, cx| {
+                                                let removed = this
+                                                    .panels
+                                                    .iter()
+                                                    .enumerate()
+                                                    .find(|(_, panel)| panel.0 == id)
+                                                    .map(|(index, panel)| (index, panel.clone()));
                                                 this.panels.retain(|panel| panel.0 != id);
                                                 this.commit_panels(window, cx);
+                                                if let Some((index, panel)) = removed {
+                                                    let owner = cx.weak_entity();
+                                                    ui::notifications::undo(
+                                                        window,
+                                                        "已删除面板",
+                                                        cx,
+                                                        move |window, cx| {
+                                                            owner
+                                                                .update(cx, |this, cx| {
+                                                                    if this.saving
+                                                                        || this
+                                                                            .session
+                                                                            .read(cx)
+                                                                            .core_busy()
+                                                                    {
+                                                                        ui::show_error(
+                                                                        "正在应用配置，请稍后撤销"
+                                                                            .into(),
+                                                                        window,
+                                                                        cx,
+                                                                    );
+                                                                        return false;
+                                                                    }
+                                                                    if !this.panels.iter().any(
+                                                                        |item| item.0 == panel.0,
+                                                                    ) {
+                                                                        this.panels.insert(
+                                                                            index.min(
+                                                                                this.panels.len(),
+                                                                            ),
+                                                                            panel.clone(),
+                                                                        );
+                                                                        this.commit_panels(
+                                                                            window, cx,
+                                                                        );
+                                                                    }
+                                                                    true
+                                                                })
+                                                                .unwrap_or(true)
+                                                        },
+                                                    );
+                                                }
                                                 cx.notify();
                                             }),
                                         ),
@@ -248,28 +295,11 @@ impl SettingsPage {
                         ui::preference_row(
                             "面板",
                             "使用外部控制器访问内核",
-                            h_flex()
-                                .gap(space::SM)
-                                .child(
-                                    ui::icon_button(
-                                        "add-runtime-panel",
-                                        IconName::Plus,
-                                        "添加面板",
-                                    )
+                            h_flex().gap(space::SM).child(
+                                ui::icon_button("add-runtime-panel", IconName::Plus, "添加面板")
                                     .disabled(busy || self.saving)
                                     .on_click(cx.listener(|this, _, w, cx| this.add_panel(w, cx))),
-                                )
-                                .child(
-                                    ui::icon_button(
-                                        "restore-runtime-panels",
-                                        IconName::RotateCcw,
-                                        "恢复默认面板",
-                                    )
-                                    .disabled(busy || self.saving)
-                                    .on_click(cx.listener(
-                                        |this, _, w, cx| this.action("恢复默认 WebUI", w, cx),
-                                    )),
-                                ),
+                            ),
                             cx,
                         )
                         .into_any_element(),
@@ -284,11 +314,7 @@ impl SettingsPage {
                 .filter(|field| {
                     !matches!(
                         field.key,
-                        "CoreAction0"
-                            | "CoreAction1"
-                            | "CoreSpecificVersion"
-                            | "CoreReleaseIndex"
-                            | "StartCore"
+                        "CoreAction0" | "CoreAction1" | "CoreSpecificVersion" | "CoreReleaseIndex"
                     ) && (query.is_empty()
                         || format!("{} {} {}", section.title, field.label, field.description)
                             .to_lowercase()

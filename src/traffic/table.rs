@@ -294,66 +294,6 @@ impl TableDelegate for RecordsTable {
         }
         row
     }
-    fn render_td(
-        &mut self,
-        row_index: usize,
-        column: usize,
-        _: &mut Window,
-        cx: &mut Context<TableState<Self>>,
-    ) -> impl IntoElement {
-        let row = &self.records[self.visible[row_index]];
-        if self.kind == TrafficKind::Rules && column == 0 {
-            return div()
-                .text_size(text::CAPTION)
-                .text_color(cx.theme().muted_foreground)
-                .child((self.visible[row_index] + 1).to_string())
-                .into_any_element();
-        }
-        let column = self.data_column(column);
-        let color = if !row.enabled {
-            cx.theme().muted_foreground
-        } else if self.kind == TrafficKind::Logs && column == 1 {
-            match row.cells[column].as_str() {
-                "ERROR" => cx.theme().danger,
-                "WARN" => cx.theme().warning,
-                _ => cx.theme().muted_foreground,
-            }
-        } else if column == 0 {
-            cx.theme().foreground
-        } else {
-            cx.theme().muted_foreground
-        };
-        div()
-            .text_size(text::BODY)
-            .text_color(color)
-            .truncate()
-            .child(row.cells.get(column).cloned().unwrap_or_default())
-            .into_any_element()
-    }
-    fn move_column(
-        &mut self,
-        from: usize,
-        to: usize,
-        _: &mut Window,
-        _: &mut Context<TableState<Self>>,
-    ) {
-        if self.kind == TrafficKind::Connections {
-            let visible = self.visible_columns();
-            let from = self
-                .column_order
-                .iter()
-                .position(|column| *column == visible[from])
-                .unwrap();
-            let to = self
-                .column_order
-                .iter()
-                .position(|column| *column == visible[to])
-                .unwrap();
-            let column = self.column_order.remove(from);
-            self.column_order.insert(to, column);
-        }
-    }
-
     fn context_menu(
         &mut self,
         row: usize,
@@ -422,6 +362,66 @@ impl TableDelegate for RecordsTable {
                 .disabled(!record.active || !self.live)
                 .on_click(move |_, window, cx| super::close_connection(target.clone(), window, cx)),
         )
+    }
+    fn render_td(
+        &mut self,
+        row_index: usize,
+        column: usize,
+        _: &mut Window,
+        cx: &mut Context<TableState<Self>>,
+    ) -> impl IntoElement {
+        let row = &self.records[self.visible[row_index]];
+        if self.kind == TrafficKind::Rules && column == 0 {
+            return div()
+                .text_size(text::CAPTION)
+                .text_color(cx.theme().muted_foreground)
+                .child((self.visible[row_index] + 1).to_string())
+                .into_any_element();
+        }
+        let column = self.data_column(column);
+        let color = if !row.enabled {
+            cx.theme().muted_foreground
+        } else if self.kind == TrafficKind::Logs && column == 1 {
+            match row.cells[column].as_str() {
+                "ERROR" => cx.theme().danger,
+                "WARN" => cx.theme().warning,
+                _ => cx.theme().muted_foreground,
+            }
+        } else if column == 0 {
+            cx.theme().foreground
+        } else {
+            cx.theme().muted_foreground
+        };
+        div()
+            .text_size(text::BODY)
+            .text_color(color)
+            .truncate()
+            .child(row.cells.get(column).cloned().unwrap_or_default())
+            .into_any_element()
+    }
+
+    fn move_column(
+        &mut self,
+        from: usize,
+        to: usize,
+        _: &mut Window,
+        _: &mut Context<TableState<Self>>,
+    ) {
+        if self.kind == TrafficKind::Connections {
+            let visible = self.visible_columns();
+            let from = self
+                .column_order
+                .iter()
+                .position(|column| *column == visible[from])
+                .unwrap();
+            let to = self
+                .column_order
+                .iter()
+                .position(|column| *column == visible[to])
+                .unwrap();
+            let column = self.column_order.remove(from);
+            self.column_order.insert(to, column);
+        }
     }
 
     fn render_empty(

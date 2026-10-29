@@ -245,12 +245,33 @@ impl Render for LogsPage {
                             .tooltip("清空日志")
                             .disabled(total == 0)
                             .on_click(cx.listener(|this, _, w, cx| {
+                                let source = this.source;
+                                let cleared = this.cleared[source];
+                                let removed = this
+                                    .buffer
+                                    .entries
+                                    .iter()
+                                    .filter(|entry| entry.source == source)
+                                    .cloned()
+                                    .collect::<Vec<_>>();
                                 this.cleared[this.source] = crate::integration::logs(cx)
                                     .since(0)
                                     .last()
                                     .map_or(0, |entry| entry.id);
                                 this.buffer.clear(this.source);
                                 this.refresh(w, cx);
+                                let owner = cx.weak_entity();
+                                ui::notifications::undo(w, "已清空日志", cx, move |w, cx| {
+                                    owner
+                                        .update(cx, |this, cx| {
+                                            this.cleared[source] =
+                                                this.cleared[source].min(cleared);
+                                            this.buffer.restore(removed.clone());
+                                            this.refresh(w, cx);
+                                            true
+                                        })
+                                        .unwrap_or(true)
+                                });
                             })),
                     ),
             )

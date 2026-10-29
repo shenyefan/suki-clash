@@ -253,7 +253,10 @@ pub(crate) fn sniffer_form(values: &Values, root: Value) -> Result<Value, String
     ] {
         document.insert(
             key.into(),
-            (values.get(field).is_some_and(|value| value == "true")).into(),
+            values
+                .get(field)
+                .is_some_and(|value| value == "true")
+                .into(),
         );
     }
     let mut sniff = document

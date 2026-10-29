@@ -24,6 +24,38 @@ pub(super) struct Target {
     pub(super) proxy_error: Option<String>,
 }
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct IpInfo {
+    pub(crate) ip: String,
+    pub(crate) country: String,
+    pub(crate) country_code: String,
+    pub(crate) region: String,
+    pub(crate) city: String,
+    pub(crate) organization: String,
+    pub(crate) asn_organization: String,
+    pub(crate) asn: Option<u32>,
+    pub(crate) latitude_microdegrees: Option<i32>,
+    pub(crate) longitude_microdegrees: Option<i32>,
+}
+impl IpInfo {
+    pub(crate) fn flag(&self) -> String {
+        let code = self.country_code.to_ascii_uppercase();
+        if code.len() != 2 || !code.bytes().all(|byte| byte.is_ascii_uppercase()) {
+            return String::new();
+        }
+        code.chars()
+            .filter_map(|letter| char::from_u32(127397 + letter as u32))
+            .collect()
+    }
+    pub(crate) fn location(&self) -> String {
+        [&self.city, &self.region]
+            .into_iter()
+            .filter(|part| !part.is_empty())
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(" · ")
+    }
+}
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Runtime {
     pub(crate) generation: u64,
     pub(crate) epoch: u64,
@@ -43,6 +75,8 @@ pub(crate) struct Runtime {
     pub(crate) statistics: Summary,
     pub(crate) latency: Option<u32>,
     pub(crate) external_ip: Option<String>,
+    pub(crate) ip_info: Option<IpInfo>,
+    pub(crate) ip_loading: bool,
     pub(crate) error: Option<String>,
     pub(crate) probe_error: Option<String>,
     pub(crate) storage_error: Option<String>,
@@ -58,6 +92,19 @@ fn send(
         let _ = updates.try_send(value);
     }
 }
+#[derive(Clone)]
+pub(super) struct ProbeControl {
+    pub(super) revision: u64,
+    pub(super) auto_refresh: bool,
+}
+impl Default for ProbeControl {
+    fn default() -> Self {
+        Self {
+            revision: 0,
+            auto_refresh: true,
+        }
+    }
+}
 pub(super) async fn run(
     paths: AppPaths,
     mut target: watch::Receiver<Option<Target>>,
@@ -65,6 +112,7 @@ pub(super) async fn run(
     observer: async_channel::Receiver<Arc<Runtime>>,
     mut shutdown: watch::Receiver<bool>,
     tests: Option<async_channel::Receiver<super::delays::Request>>,
+    mut refresh: Option<watch::Receiver<ProbeControl>>,
 ) {
     let (delay_updates, mut delay_events) = watch::channel(super::delays::State::default());
     let delay_task = tests.map(|requests| {
@@ -104,6 +152,7 @@ pub(super) async fn run(
     let mut last_save = Instant::now();
     let mut last_control: Option<Instant> = None;
     let mut last_probe: Option<Instant> = None;
+    let mut auto_refresh = true;
     let mut probe: Option<tokio::task::JoinHandle<Probe>> = None;
     let mut scope = None;
     let mut flush = tokio::time::interval(Duration::from_millis(200));
@@ -121,6 +170,10 @@ pub(super) async fn run(
             .as_ref()
             .map(|current| (current.generation, current.epoch));
         if scope != next_scope {
+            if let Some(task) = probe.take() {
+                task.abort();
+                let _ = task.await;
+            }
             icon_requests.send_replace(None);
             if scope.is_some() {
                 recorder.gap();
@@ -145,10 +198,11 @@ pub(super) async fn run(
         }
         tokio::select! {
                     _=shutdown.changed()=>break,
+                    _=async { match &mut refresh { Some(refresh) => { let _ = refresh.changed().await; }, None => std::future::pending::<()>().await } },if refresh.is_some()=> { if let Some(receiver) = &mut refresh { if receiver.has_changed().is_err() { refresh=None; } else { let request = receiver.borrow_and_update().clone(); auto_refresh=request.auto_refresh; last_probe=None; } } continue; },
                     changed=delay_events.changed(),if delay_task.is_some()=> {
                         if changed.is_err(){break;}
                         let state=delay_events.borrow_and_update().clone();
-                        if scope==Some((state.generation,state.epoch)) {runtime.proxies.measurements=state.results;runtime.proxies.testing=state.testing;runtime.delay_error=state.error;runtime.delay_logs=state.completed;dirty=true;}
+                        if scope==Some((state.generation,state.epoch)) {runtime.proxies.measurements=state.results;runtime.proxies.testing=state.testing;runtime.proxies.batches=state.batches;runtime.delay_error=state.error;runtime.delay_logs=state.completed;send(&runtime,&updates,&observer);dirty=false;}
                         continue;
                     },
                     changed=icon_events.changed()=> {
@@ -198,20 +252,21 @@ pub(super) async fn run(
                             match observed {
                                 Ok((mode,dns,mut proxies,port))=>{
                                     let delays=delay_events.borrow();
-                                    if scope==Some((delays.generation,delays.epoch)){proxies.measurements=delays.results.clone();proxies.testing=delays.testing.clone();}
+                                    if scope==Some((delays.generation,delays.epoch)){proxies.measurements=delays.results.clone();proxies.testing=delays.testing.clone();proxies.batches=delays.batches.clone();}
         let sources=proxies.entries.values().filter(|proxy|!proxy.hidden).map(|proxy|proxy.icon.trim().to_owned()).filter(|source|!source.is_empty() && source.len()<=3*1024*1024).take(128).collect();
                                     let request=Arc::new(super::icons::Request{target:current.clone(),sources});
                                     icon_requests.send_if_modified(|old|{if old.as_ref().is_some_and(|old|old.target.generation==request.target.generation && old.target.epoch==request.target.epoch && old.sources==request.sources){false}else{*old=Some(request);true}});
-                                    runtime.connected=true;runtime.mode=Some(mode);runtime.dns_mode=dns.or_else(||current.dns_mode.clone());runtime.proxies=proxies;runtime.proxy_port=port;runtime.error=None;},
+                                    runtime.connected=true;runtime.mode=Some(mode);runtime.dns_mode=dns.or_else(||current.dns_mode.clone());runtime.error=proxies.provider_error.clone();runtime.proxies=proxies;runtime.proxy_port=port;},
                                 Err(error)=>{runtime.connected=false;runtime.error=Some(error);}
                             }
                         }
                         if writable && last_save.elapsed()>=Duration::from_secs(30) {runtime.storage_error=recorder.save(&paths).err();last_save=Instant::now();}
-                        if let Some(task)=probe.as_ref() && task.is_finished() && let Some(task)=probe.take() && let Ok(result)=task.await && scope==Some((result.generation,result.epoch)) {
-                            runtime.latency=result.latency;runtime.external_ip=result.ip;runtime.probe_error=result.error;
+                        if let Some(task)=probe.as_ref() && task.is_finished() && let Some(task)=probe.take() {
+                            runtime.ip_loading=false;
+                            if let Ok(result)=task.await && scope==Some((result.generation,result.epoch)) { runtime.latency=result.latency;if let Some(info)=result.ip_info {runtime.external_ip=Some(info.ip.clone());runtime.ip_info=Some(info);}runtime.probe_error=result.error; }
                         }
-                        if !cfg!(test) && runtime.connected && runtime.proxy_port.is_some() && probe.is_none() && last_probe.is_none_or(|last|last.elapsed()>=Duration::from_secs(60)) {
-                            last_probe=Some(Instant::now());let mut observed=current;observed.proxy_port=runtime.proxy_port.unwrap_or(0);probe=Some(tokio::spawn(probe_exit(paths.clone(),observed,target.clone(),shutdown.clone())));
+                        if !cfg!(test) && runtime.connected && runtime.proxy_port.is_some() && probe.is_none() && last_probe.is_none_or(|last|auto_refresh && last.elapsed()>=Duration::from_secs(300)) {
+                            last_probe=Some(Instant::now());runtime.ip_loading=true;let mut observed=current;observed.proxy_port=runtime.proxy_port.unwrap_or(0);probe=Some(tokio::spawn(probe_exit(paths.clone(),observed,target.clone(),shutdown.clone())));
                         }
                     }
                 }
@@ -292,6 +347,7 @@ struct Probe {
     epoch: u64,
     latency: Option<u32>,
     ip: Option<String>,
+    ip_info: Option<IpInfo>,
     error: Option<String>,
 }
 async fn probe_exit(
@@ -321,6 +377,7 @@ async fn probe_services(
         epoch: target.epoch,
         latency: None,
         ip: None,
+        ip_info: None,
         error: None,
     };
     if *shutdown.borrow()
@@ -375,8 +432,8 @@ async fn probe_services(
             )
             .await
             {
-                Ok(Some((bytes, _))) => match parse_ip(&bytes) {
-                    Ok(ip) => return Ok(Some(ip)),
+                Ok(Some((bytes, _))) => match parse_ip_info(&bytes) {
+                    Ok(info) => return Ok(Some(info)),
                     Err(error) => errors.push(error),
                 },
                 Ok(None) => return Ok(None),
@@ -393,7 +450,10 @@ async fn probe_services(
         Err(error) => errors.push(("出口请求", error)),
     }
     match ip {
-        Ok(ip) => result.ip = ip,
+        Ok(ip) => {
+            result.ip = ip.as_ref().map(|info| info.ip.clone());
+            result.ip_info = ip;
+        }
         Err(error) => errors.push(("出口 IP 检测", error)),
     }
     if !errors.is_empty() {
@@ -410,6 +470,57 @@ fn parse_ip(bytes: &[u8]) -> Result<String, String> {
         .and_then(|value| value.parse::<std::net::IpAddr>().ok())
         .map(|ip| ip.to_string())
         .ok_or_else(|| "IP 服务未返回有效地址".into())
+}
+fn parse_ip_info(bytes: &[u8]) -> Result<IpInfo, String> {
+    let response: serde_json::Value =
+        serde_json::from_slice(bytes).map_err(|_| "IP 服务响应格式无效")?;
+    let ip = parse_ip(bytes)?;
+    let text = |key: &str| {
+        response
+            .get(key)
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_owned()
+    };
+    let connection = response.get("connection");
+    let nested = |key: &str| {
+        connection
+            .and_then(|value| value.get(key))
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_owned()
+    };
+    let coordinate = |key: &str, maximum: f64| {
+        response
+            .get(key)
+            .and_then(serde_json::Value::as_f64)
+            .filter(|value| value.is_finite() && value.abs() <= maximum)
+            .map(|value| (value * 1_000_000.).round() as i32)
+    };
+    Ok(IpInfo {
+        ip,
+        country: text("country"),
+        country_code: text("country_code"),
+        region: text("region"),
+        city: text("city"),
+        organization: if connection.is_some() {
+            nested("isp")
+        } else {
+            text("organization")
+        },
+        asn_organization: if connection.is_some() {
+            nested("org")
+        } else {
+            text("asn_organization")
+        },
+        asn: response
+            .get("asn")
+            .or_else(|| connection.and_then(|value| value.get("asn")))
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|value| value.try_into().ok()),
+        latitude_microdegrees: coordinate("latitude", 90.),
+        longitude_microdegrees: coordinate("longitude", 180.),
+    })
 }
 async fn probe_http(
     paths: &AppPaths,
@@ -468,7 +579,15 @@ mod tests {
         let (sender, events) = async_channel::bounded(1);
         let observer = events.clone();
         let (shutdown, cancellation) = watch::channel(false);
-        let task = tokio::spawn(run(paths, target, sender, observer, cancellation, None));
+        let task = tokio::spawn(run(
+            paths,
+            target,
+            sender,
+            observer,
+            cancellation,
+            None,
+            None,
+        ));
         let (stream, _) = tokio::time::timeout(Duration::from_secs(1), listener.accept())
             .await
             .unwrap()
@@ -582,7 +701,15 @@ mod tests {
         let (_shutdown, cancellation) = watch::channel(true);
         tokio::time::timeout(
             Duration::from_millis(500),
-            run(paths, target, updates, events.clone(), cancellation, None),
+            run(
+                paths,
+                target,
+                updates,
+                events.clone(),
+                cancellation,
+                None,
+                None,
+            ),
         )
         .await
         .unwrap();

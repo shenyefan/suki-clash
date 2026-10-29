@@ -46,6 +46,9 @@ pub(crate) fn load_values(
             doc.interval = get("interval");
             doc.timeout = get("timeout");
             doc.user_agent = get("agent");
+            doc.with_proxy = get("with-proxy") == "true";
+            doc.self_proxy = get("self-proxy") == "true";
+            doc.accept_invalid_certs = get("accept-invalid-certs") == "true";
             doc.updated_at = get("updated").parse().ok();
             doc.home = get("home");
             doc.usage = if get("usage-source") == "subscription-header" {
@@ -119,6 +122,9 @@ pub(crate) fn values(documents: &[Document], active: Option<u64>) -> BTreeMap<St
             ("interval", doc.interval.clone()),
             ("timeout", doc.timeout.clone()),
             ("agent", doc.user_agent.clone()),
+            ("with-proxy", doc.with_proxy.to_string()),
+            ("self-proxy", doc.self_proxy.to_string()),
+            ("accept-invalid-certs", doc.accept_invalid_certs.to_string()),
             (
                 "updated",
                 doc.updated_at

@@ -13,6 +13,7 @@ use tokio::{process::Child, sync::watch};
 
 #[derive(Clone)]
 pub(crate) enum Command {
+    ToggleSystemProxy,
     Profiles(super::ProfileCommand),
     Overrides(super::OverrideChange),
     ScriptLogs(u64),
@@ -36,6 +37,7 @@ pub(crate) enum Command {
     Chain(crate::proxies::chain_config::Change),
     Validate,
     FlushFakeIp,
+    RuntimeConfig,
     UpdateGeo,
     UpdateDatabase(crate::configuration::resources::Database),
     Resources,
@@ -83,6 +85,7 @@ pub(crate) struct Service {
     next_id: u64,
     worker: Option<JoinHandle<Result<(), String>>>,
     runtime_events: async_channel::Receiver<std::sync::Arc<super::Runtime>>,
+    probe_refresh: watch::Sender<super::monitor::ProbeControl>,
 }
 impl Service {
     #[cfg(test)]
@@ -100,6 +103,8 @@ impl Service {
         let worker_shutdown = shutdown.clone();
         let observer = events.clone();
         let (monitor_target, monitor_receiver) = watch::channel(None);
+        let (probe_refresh, probe_receiver) =
+            watch::channel(super::monitor::ProbeControl::default());
         let (runtime_updates, runtime_events) = async_channel::bounded(1);
         let runtime_observer = runtime_events.clone();
         let worker = std::thread::Builder::new()
@@ -118,6 +123,7 @@ impl Service {
                         runtime_observer,
                         cancellation.clone(),
                         Some(test_requests),
+                        Some(probe_receiver),
                     ));
                     let result = actor.run(receiver, cancellation).await;
                     if let Err(error) = &result {
@@ -146,6 +152,7 @@ impl Service {
             next_id: 0,
             worker: Some(worker),
             runtime_events,
+            probe_refresh,
         })
     }
 
@@ -161,6 +168,14 @@ impl Service {
             })
             .map_err(|_| "测速队列不可用")?;
         Ok(self.next_id)
+    }
+    pub(crate) fn refresh_ip(&self) {
+        self.probe_refresh
+            .send_modify(|control| control.revision = control.revision.wrapping_add(1));
+    }
+    pub(crate) fn ip_auto_refresh(&self, enabled: bool) {
+        self.probe_refresh
+            .send_modify(|control| control.auto_refresh = enabled);
     }
     pub(crate) fn runtime_events(&self) -> async_channel::Receiver<std::sync::Arc<super::Runtime>> {
         self.runtime_events.clone()
@@ -244,6 +259,7 @@ pub(super) struct Actor {
     pub(super) runtime_warning: Option<String>,
     pub(super) deleted_overrides: std::collections::BTreeMap<u64, super::overrides::Deleted>,
     pub(super) deleted_profiles: std::collections::BTreeMap<u64, super::profiles::DeletedProfile>,
+    pub(super) system_proxy: crate::system_proxy::Controller,
 }
 impl Actor {
     fn new(
@@ -279,6 +295,7 @@ impl Actor {
             deleted_overrides: Default::default(),
             monitor: watch::channel(None).0,
             runtime_warning: None,
+            system_proxy: Default::default(),
         }
     }
     pub(super) fn publish(&mut self, phase: Phase, error: Option<String>) {
@@ -295,6 +312,7 @@ impl Actor {
         self.snapshot.phase = phase;
         self.snapshot.error = error;
         self.snapshot.resources.refresh_files(&self.paths);
+        self.snapshot.core_installed = Some(crate::bootstrap::require_core(&self.paths).is_ok());
         let mut notices = Vec::new();
         if let Some(notice) = crate::bootstrap::geodata_notice(&self.paths) {
             notices.push(notice);
@@ -397,7 +415,12 @@ impl Actor {
                     result = self.startup() => result,
                 };
                 if let Err(error) = started {
-                    self.publish(Phase::Failed, Some(error));
+                    let phase = if self.running.is_some() && self.snapshot.phase == Phase::Ready {
+                        Phase::Ready
+                    } else {
+                        Phase::Failed
+                    };
+                    self.publish(phase, Some(error));
                 }
             }
             Err(error) => self.publish(Phase::Failed, Some(error)),
@@ -420,6 +443,7 @@ impl Actor {
                     self.runtime_warning=None;
                     let operation = async {
                         match request.command.clone() {
+                            Command::ToggleSystemProxy => self.toggle_system_proxy().await,
                             Command::Profiles(command) => self.profiles(command).await,
                             Command::Overrides(change)=>self.overrides(change).await,
                             Command::ScriptLogs(id)=>self.script_logs(id),
@@ -438,6 +462,10 @@ impl Actor {
                             Command::Chain(change)=>self.change_chain(change).await,
                             Command::Connections(action)=>self.connection_action(action).await,
                             Command::ProxyNames => match &self.running { Some(running) => match running.launch.client.proxy_names().await { Ok(names) => { self.snapshot.proxy_names = names; Ok(()) }, Err(error) => Err(error) }, None => Err("内核未运行，无法读取代理列表".into()) },
+                            Command::RuntimeConfig => {
+                                self.snapshot.runtime_yaml = Some(if let Some(running) = &self.running { running.launch.composed.clone() } else { Launch::preview(&self.paths).await?.composed });
+                                Ok(())
+                            },
                             Command::Validate => self.validate_current().await,
                             Command::FlushFakeIp => self.flush_fake_ip().await,
                             Command::UpdateGeo => self.update_geo().await,
@@ -455,6 +483,10 @@ impl Actor {
                         _ = shutdown.changed() => Err("应用退出，内核操作已取消".to_owned()),
                         result = operation => result,
                     };
+                    let result = match result {
+                        Ok(()) => self.sync_system_proxy().await,
+                        Err(error) => Err(error),
+                    };
                     self.snapshot.operation_active=false;
                     self.snapshot.progress=None;
                     if let Err(error) = result {
@@ -471,6 +503,10 @@ impl Actor {
                 },
                 _ = polling.tick() => self.observe_exit().await,
                 _ = health.tick() => {
+                    if let Err(error) = self.poll_system_proxy().await
+                        && self.snapshot.error.as_ref() != Some(&error) {
+                            self.publish(self.snapshot.phase, Some(error));
+                    }
                     if self.snapshot.phase == Phase::Ready && (self.snapshot.rules.generation, self.snapshot.rules.epoch) != (self.snapshot.generation, self.snapshot.monitor_epoch) {
                         let result=tokio::select! { biased; _=shutdown.changed()=>break, result=self.refresh_rules()=>result };
                         if let Err(error)=result { self.publish(self.snapshot.phase,Some(error)); }
@@ -627,7 +663,7 @@ impl Actor {
                 Err(format!(
                     "内核拒绝候选配置（退出状态 {status}）；保留原运行配置{}",
                     if downloading {
-                        "。缺少 Geo 数据文件，自动下载可能失败；请检查网络及外部资源下载地址后重试"
+                        "；Geo 数据下载可能失败，请检查网络"
                     } else {
                         ""
                     }
@@ -636,7 +672,7 @@ impl Actor {
             result => {
                 let failure = if result.is_err() {
                     if downloading {
-                        "内核配置校验超时；Geo 数据文件可能尚未下载完成，请检查网络及外部资源下载地址后重试"
+                        "内核配置校验超时；请检查 Geo 数据下载网络"
                     } else {
                         "内核配置校验超时"
                     }
@@ -1179,6 +1215,21 @@ impl Actor {
             crate::storage::Repository::open(self.paths.clone()).map_err(|_| "无法读取设置存储")?;
         let namespace = crate::storage::Namespace::parse(kind.id()).map_err(|_| "设置名称无效")?;
         let previous = preferences::values(&repository, kind).map_err(|error| error.to_string())?;
+        if kind == SettingsKind::SysProxy {
+            return self.save_system_proxy(&repository, &previous, patch).await;
+        }
+        let enable_key = match kind {
+            SettingsKind::Dns => "DnsOverrideEnabled",
+            SettingsKind::Sniffer => "SnifferOverrideEnabled",
+            SettingsKind::SysProxy => "IsSystemProxyEnabled",
+            SettingsKind::Tun => "IsTunEnabled",
+            _ => "",
+        };
+        if patch.get(enable_key).is_some_and(|value| value == "true")
+            && previous.get(enable_key).is_none_or(|value| value != "true")
+        {
+            crate::bootstrap::require_core(&self.paths)?;
+        }
         let mut desired = previous.clone();
         let native_patch = patch.clone();
         desired.extend(preferences::choices::encode(patch));
@@ -1200,7 +1251,6 @@ impl Actor {
             desired = preferences::native::project(kind, &root, enabled)?;
         }
 
-        preferences::validate(kind, &desired)?;
         if matches!(kind, SettingsKind::Dns | SettingsKind::Sniffer) {
             crate::configuration::flow::validate_settings(kind, &desired)?;
             let candidate = if let Some(running) = &self.running {
@@ -1236,6 +1286,7 @@ impl Actor {
                 });
             }
         } else {
+            preferences::validate(kind, &desired)?;
             repository
                 .save(&namespace, &desired)
                 .map_err(|error| error.to_string())?;
@@ -1253,13 +1304,6 @@ impl Actor {
         self.snapshot
             .settings
             .insert(kind.id().into(), desired.clone());
-        if kind == SettingsKind::SysProxy
-            && desired
-                .get("IsSystemProxyEnabled")
-                .is_some_and(|value| value == "true")
-        {
-            return Err("设置已保存；系统代理尚未接入".into());
-        }
         Ok(())
     }
     async fn patch(&mut self, patch: crate::storage::Values) -> Result<(), String> {
@@ -1272,9 +1316,8 @@ impl Actor {
         self.configure(super::Preferences::from_values(&values, Some(&previous))?)
             .await
     }
-    async fn configure(&mut self, draft: super::Preferences) -> Result<(), String> {
+    async fn configure(&mut self, desired: super::Preferences) -> Result<(), String> {
         let previous = super::Preferences::load(&self.paths)?;
-        let desired = super::Preferences::from_values(&draft.values(), Some(&previous))?;
         let restart = ["external-controller", "external-controller-cors", "secret"]
             .iter()
             .any(|key| previous.native().get(*key) != desired.native().get(*key));
@@ -1444,38 +1487,15 @@ impl Actor {
         crate::preferences::initialize(&repository).map_err(|error| error.to_string())?;
         self.snapshot.preferences = Some(super::Preferences::load(&self.paths)?);
         self.publish(Phase::Starting, None);
-        let launch = Launch::prepare_startup(&self.paths).await?;
+        let launch = Launch::prepare(&self.paths).await?;
         let launch = self.validate(launch).await?;
         self.replace(launch, true).await
     }
 
     /// Startup is strict: never change requested ports or substitute a profile.
     async fn startup(&mut self) -> Result<(), String> {
-        let preferences = super::Preferences::load(&self.paths)?;
-        if preferences
-            .values()
-            .get("StartCore")
-            .is_some_and(|value| value == "false")
-        {
-            self.publish(Phase::Stopped, None);
-            return Ok(());
-        }
         self.start().await?;
-        let repository =
-            crate::storage::Repository::open(self.paths.clone()).map_err(|_| "无法读取启动设置")?;
-        let proxy =
-            crate::preferences::values(&repository, crate::preferences::SettingsKind::SysProxy)
-                .map_err(|_| "无法读取系统代理设置")?;
-        if proxy
-            .get("IsSystemProxyEnabled")
-            .is_some_and(|value| value == "true")
-        {
-            self.publish(
-                Phase::Ready,
-                Some("内核已启动；系统代理尚未接入，无法应用已保存设置".into()),
-            );
-        }
-        Ok(())
+        self.sync_system_proxy().await
     }
 
     async fn start_prepared(&mut self, launch: Launch) -> Result<(), String> {
@@ -1597,6 +1617,7 @@ impl Actor {
     }
 
     async fn stop_owned(&mut self) -> Result<Option<Launch>, String> {
+        self.snapshot.system_proxy = self.system_proxy.clear().await?;
         if self.running.is_some() {
             self.publish(Phase::Stopping, None);
             let running = self.running.as_mut().ok_or("内核进程不存在")?;
@@ -1627,7 +1648,15 @@ impl Actor {
                     let _ = await_output(output).await;
                 }
                 self.running = None;
-                self.publish(Phase::Failed, Some(format!("内核意外退出（{status}）")));
+                let cleanup = self.system_proxy.clear().await;
+                let error = match cleanup {
+                    Ok(observed) => {
+                        self.snapshot.system_proxy = observed;
+                        format!("内核意外退出（{status}）")
+                    }
+                    Err(error) => format!("内核意外退出（{status}）；系统代理清理失败：{error}"),
+                };
+                self.publish(Phase::Failed, Some(error));
             }
             Ok(None) => {}
             Err(error) => self.publish(

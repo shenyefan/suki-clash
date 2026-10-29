@@ -22,6 +22,7 @@ pub(super) struct Client {
     endpoint: Endpoint,
     // Deliberately no Debug implementation: authentication never enters diagnostics.
     secret: String,
+    scopes: std::collections::BTreeMap<String, crate::proxies::runtime::GroupScope>,
 }
 
 #[derive(Deserialize)]
@@ -41,10 +42,23 @@ impl Client {
                 .map(|stream| Box::new(stream) as Box<dyn Ipc>)
                 .map_err(|error| format!("连接内核本地通道失败：{}", error.kind())),
             #[cfg(windows)]
-            Endpoint::Pipe(path) => tokio::net::windows::named_pipe::ClientOptions::new()
-                .open(path)
-                .map(|stream| Box::new(stream) as Box<dyn Ipc>)
-                .map_err(|error| format!("连接内核命名管道失败：{}", error.kind())),
+            Endpoint::Pipe(path) => {
+                use windows_sys::Win32::Foundation::ERROR_PIPE_BUSY;
+                let connect = async {
+                    loop {
+                        match tokio::net::windows::named_pipe::ClientOptions::new().open(path) {
+                            Ok(stream) => return Ok(Box::new(stream) as Box<dyn Ipc>),
+                            Err(error) if error.raw_os_error() == Some(ERROR_PIPE_BUSY as i32) => {
+                                tokio::time::sleep(Duration::from_millis(50)).await;
+                            }
+                            Err(error) => return Err(format!("连接内核命名管道失败：{error}")),
+                        }
+                    }
+                };
+                tokio::time::timeout(Duration::from_secs(2), connect)
+                    .await
+                    .map_err(|_| "内核命名管道繁忙，连接超时".to_owned())?
+            }
         }
     }
     pub(super) async fn websocket(&self, path: &str) -> Result<Socket, String> {
@@ -101,10 +115,67 @@ impl Client {
         order: &[String],
     ) -> Result<crate::proxies::runtime::Proxies, String> {
         let (proxies, providers) =
-            tokio::try_join!(self.get("/proxies"), self.get("/providers/proxies"))?;
-        let mut proxies = crate::proxies::runtime::Proxies::parse(&proxies, order)?;
-        proxies.include_providers(&providers)?;
+            tokio::join!(self.get("/proxies"), self.get("/providers/proxies"));
+        let mut proxies = crate::proxies::runtime::Proxies::parse(&proxies?, order)?;
+        proxies.scopes = self.scopes.clone();
+        match providers {
+            Ok(bytes) => {
+                if let Err(error) = proxies.include_providers(&bytes) {
+                    proxies.provider_error = Some(error);
+                }
+            }
+            Err(error) => proxies.provider_error = Some(error),
+        }
+        proxies.resolve_members();
         Ok(proxies)
+    }
+    pub(super) fn with_proxy_config(mut self, config: &serde_yaml_ng::Value) -> Self {
+        let all_providers = config
+            .get("proxy-providers")
+            .and_then(serde_yaml_ng::Value::as_mapping)
+            .into_iter()
+            .flat_map(|providers| providers.keys())
+            .filter_map(|value| value.as_str().map(str::to_owned))
+            .collect::<std::collections::BTreeSet<_>>();
+        self.scopes = config
+            .get("proxy-groups")
+            .and_then(serde_yaml_ng::Value::as_sequence)
+            .into_iter()
+            .flatten()
+            .filter_map(|group| {
+                let name = group.get("name")?.as_str()?.to_owned();
+                let providers = if ["include-all", "include-all-providers"].iter().any(|key| {
+                    group.get(*key).and_then(serde_yaml_ng::Value::as_bool) == Some(true)
+                }) {
+                    all_providers.iter().cloned().collect()
+                } else {
+                    group
+                        .get("use")
+                        .and_then(serde_yaml_ng::Value::as_sequence)
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|value| value.as_str().map(str::to_owned))
+                        .collect()
+                };
+                let exclude_types = group
+                    .get("exclude-type")
+                    .and_then(serde_yaml_ng::Value::as_str)
+                    .unwrap_or_default()
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|kind| !kind.is_empty())
+                    .map(str::to_owned)
+                    .collect();
+                Some((
+                    name,
+                    crate::proxies::runtime::GroupScope {
+                        providers,
+                        exclude_types,
+                    },
+                ))
+            })
+            .collect();
+        self
     }
     pub(super) async fn select_proxy(&self, group: &str, node: Option<&str>) -> Result<(), String> {
         let path = format!("/proxies/{}", super::resources::escaped_name(group));
@@ -264,7 +335,11 @@ impl Client {
             .map(|_| ())
     }
     pub(super) fn new(endpoint: Endpoint, secret: String) -> Self {
-        Self { endpoint, secret }
+        Self {
+            endpoint,
+            secret,
+            scopes: Default::default(),
+        }
     }
 
     pub(super) async fn version(&self) -> Result<String, String> {
@@ -447,5 +522,31 @@ mod tests {
             respond(200, &body, &format!("Content-Length: {}", body.len())).await;
         assert!(client.version().await.unwrap_err().contains("大小限制"));
         server.await.unwrap();
+    }
+}
+
+#[cfg(all(test, windows))]
+mod pipe_tests {
+    use super::*;
+    use tokio::net::windows::named_pipe::{ClientOptions, ServerOptions};
+    #[tokio::test]
+    async fn busy_pipe_connects_when_the_next_server_instance_is_available() {
+        let path = format!(r"\\.\pipe\suki-client-test-{}", random_token().unwrap());
+        let server = ServerOptions::new()
+            .first_pipe_instance(true)
+            .create(&path)
+            .unwrap();
+        let first = ClientOptions::new().open(&path).unwrap();
+        server.connect().await.unwrap();
+        let client = Client::new(Endpoint::Pipe(path.clone()), String::new());
+        let waiting = tokio::spawn(async move { client.connect().await });
+        tokio::time::sleep(Duration::from_millis(75)).await;
+        assert!(!waiting.is_finished());
+        drop(first);
+        drop(server);
+        let server = ServerOptions::new().create(&path).unwrap();
+        let connection = waiting.await.unwrap().unwrap();
+        server.connect().await.unwrap();
+        drop(connection);
     }
 }

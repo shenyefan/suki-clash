@@ -14,6 +14,72 @@ use gpui_kit::{
 };
 
 impl ProxiesPage {
+    fn search_options(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let options = [
+            ("case", "区分大小写", self.search.text.case_sensitive),
+            ("word", "全词匹配", self.search.text.whole_word),
+            ("regex", "正则表达式", self.search.text.regular_expression),
+        ];
+        let groups = self
+            .groups
+            .iter()
+            .map(|group| {
+                (
+                    group.id(),
+                    group.name(),
+                    self.group_filter.contains(&group.id()),
+                )
+            })
+            .collect::<Vec<_>>();
+        let owner = cx.entity();
+        Button::new("proxy-search-options")
+            .ghost()
+            .small()
+            .icon(IconName::SlidersHorizontal)
+            .accessibility_label("搜索选项与分组筛选")
+            .dropdown_menu(move |mut menu, _, _| {
+                for (key, label, checked) in options {
+                    let owner = owner.clone();
+                    menu = menu.item(crate::ui::actions::menu(label).checked(checked).on_click(
+                        move |_, window, cx| {
+                            owner.update(cx, |this, cx| {
+                                let setting = match key {
+                                    "case" => &mut this.search.text.case_sensitive,
+                                    "word" => &mut this.search.text.whole_word,
+                                    _ => &mut this.search.text.regular_expression,
+                                };
+                                *setting = !*setting;
+                                this.search.compile(this.query.read(cx).value().as_ref());
+                                if let Some(error) = &this.search.text.error {
+                                    ui::show_error(error.clone(), window, cx);
+                                }
+                                this.refresh_list(window, cx);
+                                cx.notify();
+                            });
+                        },
+                    ));
+                }
+                menu = menu.separator();
+                for (id, label, checked) in &groups {
+                    let owner = owner.clone();
+                    let id = id.clone();
+                    menu = menu.item(
+                        crate::ui::actions::menu(format!("分组：{label}"))
+                            .checked(*checked)
+                            .on_click(move |_, window, cx| {
+                                owner.update(cx, |this, cx| {
+                                    if !this.group_filter.remove(&id) {
+                                        this.group_filter.insert(id.clone());
+                                    }
+                                    this.refresh_list(window, cx);
+                                    cx.notify();
+                                });
+                            }),
+                    );
+                }
+                menu
+            })
+    }
     fn sort_button(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let owner = cx.entity();
         let sort = self.sort;
@@ -134,6 +200,7 @@ impl ProxiesPage {
         let runtime = self.session.read(cx).runtime();
         let generation = runtime.generation;
         let epoch = runtime.epoch;
+        let urls = self.test_urls(cx);
         ui::workspace_toolbar()
             .child(
                 Input::new(&self.query)
@@ -143,7 +210,8 @@ impl ProxiesPage {
                     .flex_1()
                     .min_w(space::NONE)
                     .prefix(Icon::new(IconName::Search).size(layout::ICON))
-                    .cleanable(true),
+                    .cleanable(true)
+                    .suffix(self.search_options(cx)),
             )
             .child(self.sort_button(cx))
             .child(self.display_button(cx))
@@ -165,6 +233,7 @@ impl ProxiesPage {
                     .on_click(move |_, window, cx| {
                         crate::core::test_delay(
                             super::runtime::Test {
+                                urls: urls.clone(),
                                 group: None,
                                 node: None,
                                 generation,
@@ -187,14 +256,19 @@ impl Render for ProxiesPage {
             .profile_name()
             .unwrap_or("未选择配置")
             .to_owned();
-        let query = self.query.read(cx).value().trim().to_lowercase();
         let group_count = self
             .groups
             .iter()
             .filter(|group| {
-                !group
-                    .visible_nodes(&query, self.only_available, self.sort, self.reverse)
-                    .is_empty()
+                (self.group_filter.is_empty() || self.group_filter.contains(&group.id()))
+                    && !group
+                        .visible_filtered(
+                            &self.search,
+                            self.only_available,
+                            self.sort,
+                            self.reverse,
+                        )
+                        .is_empty()
             })
             .count();
         let content = self.group_content(window, cx);

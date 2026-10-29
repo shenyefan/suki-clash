@@ -147,10 +147,7 @@ pub(crate) fn geodata_notice(paths: &AppPaths) -> Option<String> {
             !fs::metadata(root.join(name)).is_ok_and(|meta| meta.is_file() && meta.len() > 0)
         })
         .collect();
-    (!missing.is_empty()).then(|| format!(
-        "缺少 Geo 数据文件：{}。内核启动时会按配置需要自动下载；网络异常可能导致下载或启动失败，请检查网络后重试，或前往外部资源更新。",
-        missing.join("、")
-    ))
+    (!missing.is_empty()).then(|| format!("缺少 {}；将会在启动时自动下载。", missing.join("、")))
 }
 
 pub(crate) fn require_core(paths: &AppPaths) -> Result<(), String> {
@@ -158,7 +155,7 @@ pub(crate) fn require_core(paths: &AppPaths) -> Result<(), String> {
     if fs::metadata(path).is_ok_and(|meta| meta.is_file() && meta.len() > 0) {
         Ok(())
     } else {
-        Err("未安装 Mihomo 内核，请前往「内核」界面，选择发行通道并下载内核。".into())
+        Err("未安装 Mihomo，请前往「内核」下载内核。".into())
     }
 }
 

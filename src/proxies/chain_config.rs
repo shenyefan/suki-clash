@@ -83,16 +83,8 @@ impl Config {
         Ok(proxies.clone())
     }
     pub(crate) fn effective_nodes(&self) -> Result<Vec<String>, String> {
-        let custom = self.custom_nodes()?;
-        if custom.is_empty() {
-            Ok(self.nodes.clone())
-        } else {
-            Ok(custom
-                .iter()
-                .filter_map(|proxy| proxy.get("name").and_then(Value::as_str))
-                .map(str::to_owned)
-                .collect())
-        }
+        self.custom_nodes()?;
+        Ok(self.nodes.clone())
     }
     pub(crate) fn validate(&self) -> Result<(), String> {
         if self.group.len() > 1024 {
@@ -168,8 +160,11 @@ impl Config {
                     })
                 })
                 .ok_or("链式目标代理组不存在")?;
-            if group.get("type").and_then(Value::as_str) != Some("select") {
-                return Err("链式目标需为手动选择组".into());
+            if !matches!(
+                group.get("type").and_then(Value::as_str),
+                Some("select" | "url-test")
+            ) {
+                return Err("链式目标需为手动选择或延迟优选组".into());
             }
             let members = group
                 .get_mut("proxies")
@@ -187,7 +182,7 @@ impl Config {
 mod tests {
     use super::*;
     #[test]
-    fn ordered_links_preserve_sources_and_custom_nodes_use_yaml_order() {
+    fn ordered_links_preserve_sources_and_custom_definitions_follow_visual_order() {
         let source:Value=serde_yaml_ng::from_str("proxies:\n- {name: a, type: socks5, server: localhost, port: 1080}\n- {name: b, type: socks5, server: localhost, port: 1081}\n- {name: other, type: socks5, dialer-proxy: existing}\nproxy-groups:\n- {name: select, type: select, proxies: [a]}\n").unwrap();
         let mut output = source.as_mapping().unwrap().clone();
         let chain = Config {
@@ -202,7 +197,7 @@ mod tests {
         assert!(proxies[0].get("dialer-proxy").is_none());
         assert_eq!(proxies[2]["dialer-proxy"].as_str(), Some("existing"));
         assert!(source["proxies"][1].get("dialer-proxy").is_none());
-        let custom=Config{custom:"proxies:\n- {name: c, type: socks5}\n- {name: d, type: socks5}\n- {name: e, type: socks5}".into(),..chain};
+        let custom=Config{nodes:vec!["c".into(),"d".into(),"e".into()],custom:"proxies:\n- {name: c, type: socks5}\n- {name: d, type: socks5}\n- {name: e, type: socks5}".into(),..chain};
         assert_eq!(custom.effective_nodes().unwrap(), ["c", "d", "e"]);
         assert!(
             Config {
@@ -212,6 +207,20 @@ mod tests {
             .validate()
             .is_err()
         );
+    }
+    #[test]
+    fn custom_yaml_does_not_override_visual_reorder_or_removed_nodes() {
+        let chain=Config { enabled:true, group:"g".into(), nodes:vec!["b".into(),"a".into()], custom:"proxies: [{name: a, type: socks5}, {name: b, type: socks5}, {name: c, type: socks5}]".into() };
+        let mut root = serde_yaml_ng::from_str::<Mapping>(
+            "proxy-groups: [{name: g, type: url-test, proxies: [a,b,c]}]",
+        )
+        .unwrap();
+        chain.apply(&mut root).unwrap();
+        assert_eq!(chain.effective_nodes().unwrap(), ["b", "a"]);
+        let proxies = root["proxies"].as_sequence().unwrap();
+        assert_eq!(proxies[0]["dialer-proxy"].as_str(), Some("b"));
+        assert!(proxies[1].get("dialer-proxy").is_none());
+        assert!(proxies[2].get("dialer-proxy").is_none());
     }
     #[test]
     fn missing_defaults_and_invalid_json_do_not_overwrite_user_file() {

@@ -122,150 +122,75 @@ pub(crate) fn sections(kind: SettingsKind) -> Vec<SectionSpec> {
 }
 
 fn proxy_sections() -> Vec<SectionSpec> {
-    vec![
-        SectionSpec {
-            title: "系统代理",
-            fields: vec![
-                FieldSpec {
-                    key: "IsSystemProxyEnabled",
-                    label: "启用系统代理",
-                    description: "与标题栏开关保持同步",
-                    kind: FieldKind::Toggle,
-                    default: "false",
-                    options: &[],
-                    actions: &[],
-                },
-                FieldSpec {
-                    key: "SystemProxyHost",
-                    label: "代理主机",
-                    description: "IPv4、IPv6 或主机名",
-                    kind: FieldKind::Text,
-                    default: "127.0.0.1",
-                    options: &[],
-                    actions: &["获取本机地址"],
-                },
-                FieldSpec {
-                    key: "SystemProxyModeIndex",
-                    label: "代理模式",
-                    description: "",
-                    kind: FieldKind::Select,
-                    default: "手动",
-                    options: &["手动", "PAC"],
-                    actions: &[],
-                },
-                FieldSpec {
-                    key: "SystemProxyStatus",
-                    label: "实际代理状态",
-                    description: "由系统代理服务返回",
-                    kind: FieldKind::ReadOnly,
-                    default: "",
-                    options: &[],
-                    actions: &[],
-                },
-                FieldSpec {
-                    key: "SystemProxyAddress",
-                    label: "服务器地址",
-                    description: "",
-                    kind: FieldKind::ReadOnly,
-                    default: "",
-                    options: &[],
-                    actions: &["复制代理地址"],
-                },
-            ],
-        },
-        SectionSpec {
-            title: "代理守卫",
-            fields: vec![
-                FieldSpec {
-                    key: "EnableProxyGuard",
-                    label: "启用代理守卫",
-                    description: "定期检查并恢复系统代理",
-                    kind: FieldKind::Toggle,
-                    default: "false",
-                    options: &[],
-                    actions: &[],
-                },
-                FieldSpec {
-                    key: "ProxyGuardDuration",
-                    label: "检查间隔（秒）",
-                    description: "",
-                    kind: FieldKind::Number,
-                    default: "10",
-                    options: &[],
-                    actions: &[],
-                },
-            ],
-        },
-        SectionSpec {
-            title: "绕过代理",
-            fields: vec![
-                FieldSpec {
-                    key: "UseDefaultBypass",
-                    label: "使用默认绕过列表",
-                    description: "",
-                    kind: FieldKind::Toggle,
-                    default: "true",
-                    options: &[],
-                    actions: &[],
-                },
-                FieldSpec {
-                    key: "EnableBypassCheck",
-                    label: "校验绕过地址",
-                    description: "",
-                    kind: FieldKind::Toggle,
-                    default: "true",
-                    options: &[],
-                    actions: &[],
-                },
-                FieldSpec {
-                    key: "BypassList",
-                    label: "绕过地址",
-                    description: "每行一个；支持通配域名、IP 和 CIDR",
-                    kind: FieldKind::Multiline,
-                    default: default_bypass(),
-                    options: &[],
-                    actions: &[],
-                },
-            ],
-        },
-        SectionSpec {
-            title: "PAC",
-            fields: vec![
-                FieldSpec {
-                    key: "PacAddress",
-                    label: "PAC 地址",
-                    description: "",
-                    kind: FieldKind::ReadOnly,
-                    default: "",
-                    options: &[],
-                    actions: &["复制 PAC 地址"],
-                },
-                FieldSpec {
-                    key: "PacScript",
-                    label: "PAC 脚本",
-                    description: "支持 %proxy_host% 与 %mixed-port% 占位符",
-                    kind: FieldKind::Multiline,
-                    default: "function FindProxyForURL(url, host) {\n  return \"PROXY %proxy_host%:%mixed-port%; SOCKS5 %proxy_host%:%mixed-port%; DIRECT;\";\n}",
-                    options: &[],
-                    actions: &[],
-                },
-            ],
-        },
-        SectionSpec {
-            title: "平台工具",
-            fields: vec![FieldSpec {
-                key: "OpenUwpLoopbackClick",
-                label: "UWP 应用代理",
-                description: "仅适用于 Windows",
-                kind: FieldKind::ReadOnly,
-                default: "",
+    vec![SectionSpec {
+        title: "系统代理",
+        fields: vec![
+            FieldSpec {
+                key: "IsSystemProxyEnabled",
+                label: "启用系统代理",
+                description: "",
+                kind: FieldKind::Toggle,
+                default: "false",
                 options: &[],
-                actions: &["打开 UWP 回环工具"],
-            }],
-        },
-    ]
+                actions: &[],
+            },
+            FieldSpec {
+                key: "SystemProxyHost",
+                label: "代理主机",
+                description: "",
+                kind: FieldKind::Text,
+                default: "127.0.0.1",
+                options: &[],
+                actions: &[],
+            },
+            FieldSpec {
+                key: "SystemProxyModeIndex",
+                label: "代理模式",
+                description: "",
+                kind: FieldKind::Select,
+                default: "手动",
+                options: &["手动", "PAC"],
+                actions: &[],
+            },
+            FieldSpec {
+                key: "EnableProxyGuard",
+                label: "代理守卫",
+                description: "",
+                kind: FieldKind::Toggle,
+                default: "false",
+                options: &[],
+                actions: &[],
+            },
+            FieldSpec {
+                key: "ProxyGuardDuration",
+                label: "检查间隔（秒）",
+                description: "",
+                kind: FieldKind::Number,
+                default: "10",
+                options: &[],
+                actions: &[],
+            },
+            FieldSpec {
+                key: "BypassList",
+                label: "绕过地址",
+                description: "每行一个域名、IP 或 CIDR",
+                kind: FieldKind::Multiline,
+                default: default_bypass(),
+                options: &[],
+                actions: &[],
+            },
+            FieldSpec {
+                key: "PacScript",
+                label: "PAC 脚本",
+                description: "支持 %proxy_host% 与 %mixed-port% 占位符",
+                kind: FieldKind::Multiline,
+                default: "function FindProxyForURL(url, host) {\n  return \"PROXY %proxy_host%:%mixed-port%; SOCKS5 %proxy_host%:%mixed-port%; DIRECT;\";\n}",
+                options: &[],
+                actions: &[],
+            },
+        ],
+    }]
 }
-
 fn tun_sections() -> Vec<SectionSpec> {
     vec![
         SectionSpec {
@@ -365,26 +290,15 @@ fn tun_sections() -> Vec<SectionSpec> {
         },
         SectionSpec {
             title: "DNS",
-            fields: vec![
-                FieldSpec {
-                    key: "TunDnsMode",
-                    label: "DNS 模式",
-                    description: "",
-                    kind: FieldKind::Select,
-                    default: "自动",
-                    options: &["自动", "禁用", "原生", "劫持"],
-                    actions: &[],
-                },
-                FieldSpec {
-                    key: "DnsHijack",
-                    label: "DNS 劫持",
-                    description: "每行一个，例如 any:53、tcp://any:53",
-                    kind: FieldKind::Multiline,
-                    default: "any:53",
-                    options: &[],
-                    actions: &[],
-                },
-            ],
+            fields: vec![FieldSpec {
+                key: "DnsHijack",
+                label: "DNS 劫持",
+                description: "每行一个，例如 any:53、tcp://any:53",
+                kind: FieldKind::Multiline,
+                default: "any:53",
+                options: &[],
+                actions: &[],
+            }],
         },
         SectionSpec {
             title: "服务与权限",
@@ -508,6 +422,15 @@ fn general_extensions() -> Vec<SectionSpec> {
         SectionSpec {
             title: "测速与日志",
             fields: vec![
+                FieldSpec {
+                    key: "ProxyGroupToolsPosition",
+                    label: "代理组工具位置",
+                    description: "",
+                    kind: FieldKind::Select,
+                    default: "右侧",
+                    options: &["左侧", "右侧"],
+                    actions: &[],
+                },
                 FieldSpec {
                     key: "AutoCheckUpdate",
                     label: "自动检查更新",
@@ -1145,15 +1068,6 @@ fn original_sections(kind: SettingsKind) -> Vec<SectionSpec> {
                 title: "版本管理",
                 fields: vec![
                     FieldSpec {
-                        key: "StartCore",
-                        label: "启动时运行内核",
-                        description: "",
-                        kind: FieldKind::Toggle,
-                        default: "true",
-                        options: &[],
-                        actions: &[],
-                    },
-                    FieldSpec {
                         key: "CoreReleaseIndex",
                         label: "发行通道",
                         description: "选择后点击“应用”，下载并启动对应内核",
@@ -1310,26 +1224,15 @@ fn original_sections(kind: SettingsKind) -> Vec<SectionSpec> {
             },
             SectionSpec {
                 title: "WebUI",
-                fields: vec![
-                    FieldSpec {
-                        key: "NewWebUiName",
-                        label: "新增面板",
-                        description: "URL 可使用 %host、%port 和 %secret 变量",
-                        kind: FieldKind::Text,
-                        default: "名称",
-                        options: &[],
-                        actions: &["添加 WebUI"],
-                    },
-                    FieldSpec {
-                        key: "CoreAction16",
-                        label: "恢复默认面板",
-                        description: "MetaCubeXD / YACD / Zashboard",
-                        kind: FieldKind::ReadOnly,
-                        default: "",
-                        options: &[],
-                        actions: &["恢复默认 WebUI"],
-                    },
-                ],
+                fields: vec![FieldSpec {
+                    key: "NewWebUiName",
+                    label: "新增面板",
+                    description: "URL 可使用 %host、%port 和 %secret 变量",
+                    kind: FieldKind::Text,
+                    default: "名称",
+                    options: &[],
+                    actions: &["添加 WebUI"],
+                }],
             },
             SectionSpec {
                 title: "访问控制",
@@ -1663,7 +1566,7 @@ fn original_sections(kind: SettingsKind) -> Vec<SectionSpec> {
                     FieldSpec {
                         key: "ProfileUseProxy",
                         label: "订阅下载代理",
-                        description: "开启后始终使用本地代理；关闭后先直连，失败时再使用代理",
+                        description: "新建订阅默认使用内核代理",
                         kind: FieldKind::Toggle,
                         default: "false",
                         options: &[],
@@ -1852,13 +1755,13 @@ fn original_sections(kind: SettingsKind) -> Vec<SectionSpec> {
                         actions: &["创建备份", "恢复最新备份", "打开备份目录"],
                     },
                     FieldSpec {
-                        key: "SettingsAction29",
-                        label: "重置应用",
-                        description: "重置前请先创建备份",
+                        key: "ResetProgram",
+                        label: "重置程序",
+                        description: "删除全部配置并退出程序",
                         kind: FieldKind::ReadOnly,
                         default: "",
                         options: &[],
-                        actions: &["重置应用"],
+                        actions: &["重置程序"],
                     },
                 ],
             },
@@ -1917,7 +1820,7 @@ pub(crate) fn section_tab(kind: SettingsKind, title: &str, key: &str) -> usize {
 
 pub(crate) fn field_visible(kind: SettingsKind, key: &str) -> bool {
     match (kind, key) {
-        (SettingsKind::SysProxy, "OpenUwpLoopbackClick") | (SettingsKind::Tun, "TunAction1") => {
+        (SettingsKind::Tun, "TunAction1") => {
             cfg!(target_os = "windows")
         }
         (SettingsKind::Tun, "AutoRedirect") => cfg!(target_os = "linux"),
@@ -1958,20 +1861,10 @@ pub(crate) fn field_enabled(
         (SettingsKind::Sniffer, _) => {
             enabled("SnifferOverrideEnabled") && enabled("SnifferEnabled")
         }
-        (
-            SettingsKind::SysProxy,
-            "SystemProxyModeIndex" | "EnableProxyGuard" | "UseDefaultBypass" | "EnableBypassCheck",
-        ) => enabled("IsSystemProxyEnabled"),
-        (SettingsKind::SysProxy, "ProxyGuardDuration") => {
-            enabled("IsSystemProxyEnabled") && enabled("EnableProxyGuard")
-        }
-        (SettingsKind::SysProxy, "BypassList") => {
-            enabled("IsSystemProxyEnabled")
-                && !enabled("UseDefaultBypass")
-                && values
-                    .get("SystemProxyModeIndex")
-                    .is_none_or(|value| value != "PAC")
-        }
+        (SettingsKind::SysProxy, "ProxyGuardDuration") => enabled("EnableProxyGuard"),
+        (SettingsKind::SysProxy, "BypassList") => values
+            .get("SystemProxyModeIndex")
+            .is_none_or(|value| value != "PAC"),
         (SettingsKind::SysProxy, "PacScript") => values
             .get("SystemProxyModeIndex")
             .is_some_and(|value| value == "PAC"),
@@ -2056,8 +1949,6 @@ fn validate_preferences(values: &BTreeMap<String, String>) -> Option<String> {
     if values
         .get("SystemProxyModeIndex")
         .is_some_and(|value| value != "PAC")
-        && !on("UseDefaultBypass")
-        && on("EnableBypassCheck")
         && let Some(value) = values.get("BypassList")
         && !split_entries(value).all(valid_bypass)
     {
@@ -2338,15 +2229,8 @@ mod tests {
         let mut values = BTreeMap::from([
             ("IsSystemProxyEnabled".into(), "true".into()),
             ("SystemProxyModeIndex".into(), "手动".into()),
-            ("UseDefaultBypass".into(), "true".into()),
             ("AutoRoute".into(), "false".into()),
         ]);
-        assert!(!super::field_enabled(
-            SettingsKind::SysProxy,
-            "BypassList",
-            &values
-        ));
-        values.insert("UseDefaultBypass".into(), "false".into());
         assert!(super::field_enabled(
             SettingsKind::SysProxy,
             "BypassList",
@@ -2407,7 +2291,6 @@ mod tests {
             .map(|field| (field.key.to_owned(), field.default.to_owned()))
             .collect();
         values.insert("SystemProxyHost".into(), "::1".into());
-        values.insert("UseDefaultBypass".into(), "false".into());
         values.insert(
             "BypassList".into(),
             "*.example.com,192.168.0.0/16;<local>".into(),

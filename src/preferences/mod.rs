@@ -17,7 +17,6 @@ pub(crate) fn defaults(kind: SettingsKind) -> Values {
         .collect();
     if kind == SettingsKind::Core {
         schema::store_panels(&schema::default_panels(), &mut values);
-        values.insert("StartCore".into(), "true".into());
     }
     if kind == SettingsKind::Resources {
         for (key, database) in [
@@ -50,29 +49,53 @@ pub(crate) fn initialize(repository: &Repository) -> Result<(), StorageError> {
     crate::core::recover_pending(repository.paths()).map_err(std::io::Error::other)?;
     // Core and resource settings share one versioned native/app document, owned
     // by the core configuration workflow. User sources are never seeded here.
-    let core = crate::configuration::Preferences::load(repository.paths())
-        .map_err(std::io::Error::other)?;
+    let mut failures = Vec::new();
+    let core = crate::configuration::Preferences::load(repository.paths());
+    if let Err(error) = &core {
+        failures.push(error.clone());
+    }
     let mut pending = Vec::new();
     for kind in SettingsKind::ALL
         .into_iter()
         .filter(|kind| !matches!(kind, SettingsKind::Core | SettingsKind::Resources))
     {
-        let namespace = Namespace::parse(kind.id())?;
-        let merged = values(repository, kind)?;
-        validate(kind, &merged).map_err(|error| {
-            std::io::Error::other(format!(
-                "{}：{error}；请修正文件后重试",
-                repository.document_path(&namespace).display()
-            ))
-        })?;
-        if repository.read(&namespace)?.is_empty() || repository.read(&namespace)? != merged {
-            pending.push((namespace, merged));
+        let result = (|| {
+            let namespace = Namespace::parse(kind.id())?;
+            let saved = repository.read(&namespace)?;
+            let mut merged = defaults(kind);
+            merged.extend(saved.clone());
+            validate(kind, &merged).map_err(|error| {
+                std::io::Error::other(format!(
+                    "{}：{error}；请修正文件后重试",
+                    repository.document_path(&namespace).display()
+                ))
+            })?;
+            if saved != merged {
+                pending.push((namespace, merged));
+            }
+            Ok::<_, StorageError>(())
+        })();
+        if let Err(error) = result {
+            failures.push(error.to_string());
         }
     }
+    let selected = crate::configuration::selected_profile(repository.paths());
+    if let Err(error) = &selected {
+        failures.push(error.clone());
+    }
+    let chain = crate::proxies::chain_config::Config::load(repository.paths());
+    if let Err(error) = &chain {
+        failures.push(error.clone());
+    }
+    if !failures.is_empty() {
+        return Err(std::io::Error::other(crate::failure::join(&failures)).into());
+    }
+    let core = core.map_err(std::io::Error::other)?;
     crate::configuration::initialize_selection(repository.paths())
         .map_err(std::io::Error::other)?;
-    crate::proxies::chain_config::Config::load(repository.paths())
-        .and_then(|chain| chain.save(repository.paths()))
+    chain
+        .map_err(std::io::Error::other)?
+        .save(repository.paths())
         .map_err(std::io::Error::other)?;
     core.save(repository.paths())
         .map_err(std::io::Error::other)?;
@@ -167,7 +190,6 @@ mod tests {
         let core = crate::configuration::Preferences::load(&paths).unwrap();
         assert_eq!(core.values()["MixedPort"], "7897");
         assert!(!core.values()["GeoIpUrl"].is_empty());
-        assert_eq!(core.values()["StartCore"], "true");
         assert_eq!(
             values(&repository, SettingsKind::General).unwrap()["ThemeIndex"],
             "dark"

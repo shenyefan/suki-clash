@@ -32,10 +32,16 @@ pub(crate) fn expand(
     cx: &mut App,
 ) {
     use crate::ui::{self, theme::layout};
-    use gpui_kit::component::{WindowExt, input::Editor};
+    use gpui_kit::component::{
+        WindowExt,
+        button::{Button, ButtonVariants},
+        h_flex,
+        input::Editor,
+    };
     window.open_dialog(cx, move |dialog, window, cx| {
         let state = state.clone();
         let label = title.clone();
+        let copy = state.clone();
         ui::modal(
             dialog,
             title.clone(),
@@ -54,6 +60,17 @@ pub(crate) fn expand(
                     .into_any_element()
             },
         ))
-        .footer(ui::modal_close("完成"))
+        .footer(
+            h_flex()
+                .gap(crate::ui::theme::space::SM)
+                .child(Button::new("copy-source").label("复制").ghost().on_click(
+                    move |_, _, cx| {
+                        cx.write_to_clipboard(ClipboardItem::new_string(
+                            copy.read(cx).value().to_string(),
+                        ));
+                    },
+                ))
+                .child(ui::modal_close("完成")),
+        )
     });
 }

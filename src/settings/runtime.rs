@@ -7,7 +7,7 @@ use gpui_kit::{
     assets::IconName,
     component::{
         Disableable, Icon, Sizable,
-        button::{Button, ButtonVariants},
+        button::Button,
         input::{Editor, Input},
         scroll::ScrollableElement,
         switch::Switch,
@@ -19,12 +19,14 @@ use gpui_kit::{
 
 impl SettingsPage {
     pub(super) fn runtime_view(&self, window: &mut Window, cx: &mut Context<Self>) -> Div {
+        if self.kind == SettingsKind::SysProxy {
+            return self.system_proxy_view(window, cx);
+        }
         let tabs: &[&str] = match self.kind {
             SettingsKind::Core => &["常规", "网络", "访问", "维护"],
             SettingsKind::Dns => &["常规", "服务器", "Fake-IP", "解析策略", "Hosts"],
             SettingsKind::Sniffer => &["常规", "协议", "过滤"],
             SettingsKind::Resources => &["数据库", "代理集合", "规则集合"],
-            SettingsKind::SysProxy => &["常规", "绕过", "PAC"],
             SettingsKind::Tun => &["常规", "路由与 DNS", "高级"],
             _ => &["常规", "外观", "托盘", "网络", "同步", "维护"],
         };
@@ -84,25 +86,6 @@ impl SettingsPage {
                         )
                     }),
             )
-            .when(
-                matches!(self.kind, SettingsKind::Dns | SettingsKind::Sniffer),
-                |toolbar| {
-                    toolbar.child(
-                        Button::new("dns-edit-mode")
-                            .icon(gpui_kit::assets::IconName::FileCode)
-                            .outline()
-                            .with_size(control::STANDARD)
-                            .label(if self.dns_raw {
-                                "表单编辑"
-                            } else {
-                                "YAML 编辑"
-                            })
-                            .on_click(cx.listener(|this, _, w, cx| {
-                                this.switch_dns_mode(!this.dns_raw, w, cx)
-                            })),
-                    )
-                },
-            )
             .when(self.kind == SettingsKind::Resources, |toolbar| {
                 toolbar.child(
                     Button::new("resources-update-all")
@@ -151,7 +134,7 @@ impl SettingsPage {
         };
         ui::workspace()
             .child(header)
-            .child(toolbar)
+            .when(!self.dns_raw, |workspace| workspace.child(toolbar))
             .child(ui::workspace_body().child(if self.dns_raw {
                 let viewport = body
                     .id("settings-yaml-viewport")
@@ -180,23 +163,72 @@ impl SettingsPage {
                     .into_any_element()
             }))
             .when(
-                !matches!(self.kind, SettingsKind::Core | SettingsKind::Resources),
+                matches!(self.kind, SettingsKind::Dns | SettingsKind::Sniffer),
                 |workspace| {
-                    workspace.child(
-                        ui::workspace_footer().child(div().flex_1()).child(
-                            Button::new("runtime-reset")
-                                .icon(gpui_kit::assets::IconName::RotateCcw)
-                                .ghost()
-                                .with_size(control::STANDARD)
-                                .label("恢复默认")
-                                .disabled(self.saving || self.session.read(cx).core_busy())
-                                .on_click(
-                                    cx.listener(|this, _, window, cx| this.reset(window, cx)),
-                                ),
-                        ),
-                    )
+                    workspace.child(ui::workspace_footer().child(div().flex_1()).when(
+                        matches!(self.kind, SettingsKind::Dns | SettingsKind::Sniffer),
+                        |footer| {
+                            footer.child(
+                                Button::new("dns-edit-mode")
+                                    .icon(IconName::FileCode)
+                                    .outline()
+                                    .with_size(control::STANDARD)
+                                    .label(if self.dns_raw {
+                                        "表单编辑"
+                                    } else {
+                                        "YAML 编辑"
+                                    })
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.switch_dns_mode(!this.dns_raw, window, cx)
+                                    })),
+                            )
+                        },
+                    ))
                 },
             )
+    }
+    pub(super) fn defer_destructive(
+        &mut self,
+        action: &'static str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.pending_action.is_some() {
+            ui::show_error("已有待执行操作，请先完成或撤销".into(), window, cx);
+            return;
+        }
+        let owner = cx.weak_entity();
+        let note = ui::notifications::undo(
+            window,
+            format!("将在 5 秒后{action}"),
+            cx,
+            move |_, cx| {
+                let _ = owner.update(cx, |this, cx| {
+                    this.pending_action = None;
+                    cx.notify();
+                });
+                true
+            },
+        );
+        self.pending_action = Some(cx.spawn_in(window, async move |owner, cx| {
+            cx.background_executor()
+                .timer(std::time::Duration::from_secs(5))
+                .await;
+            let _ = owner.update_in(cx, |this, window, cx| {
+                if let Some(task) = this.pending_action.take() {
+                    task.detach();
+                }
+                if let Some(note) = note {
+                    note.update(cx, |note, cx| note.dismiss(window, cx));
+                }
+                if action == "重置程序" {
+                    crate::core::reset_program(window, cx);
+                } else {
+                    crate::core::request(crate::core::Command::FlushFakeIp, window, cx);
+                }
+                cx.notify();
+            });
+        }));
     }
     pub(super) fn runtime_command(
         &mut self,
@@ -209,7 +241,10 @@ impl SettingsPage {
             "停止内核" => Some(crate::core::Command::Stop),
             "重启内核" => Some(crate::core::Command::Restart),
             "校验配置" => Some(crate::core::Command::Validate),
-            "清空 Fake-IP 缓存" => Some(crate::core::Command::FlushFakeIp),
+            "清空 Fake-IP 缓存" => {
+                self.defer_destructive("清空 Fake-IP 缓存", window, cx);
+                return;
+            }
             "更新 GeoData" => Some(crate::core::Command::UpdateGeo),
             "刷新版本列表" => Some(crate::core::Command::Versions { refresh: true }),
             "加载版本列表" => Some(crate::core::Command::Versions { refresh: false }),

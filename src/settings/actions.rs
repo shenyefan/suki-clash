@@ -10,6 +10,44 @@ impl SettingsPage {
         cx: &mut Context<Self>,
     ) -> bool {
         match action {
+            "导出诊断信息" => {
+                storage::execute(
+                    storage::Command::Diagnostics,
+                    window,
+                    cx,
+                    |result, window, cx| match result {
+                        Ok(storage::Outcome::Document(path)) => {
+                            cx.reveal_path(&path);
+                            ui::notifications::push(window, "诊断包已导出", cx);
+                        }
+                        Err(error) => ui::show_error(error.to_string(), window, cx),
+                        _ => {}
+                    },
+                );
+            }
+            "查看运行配置" => {
+                if let Err(error) = crate::core::execute(
+                    crate::core::Command::RuntimeConfig,
+                    window,
+                    cx,
+                    |result, window, cx| {
+                        if result.is_ok() {
+                            let content = crate::core::controller(cx)
+                                .read(cx)
+                                .snapshot()
+                                .runtime_yaml()
+                                .map(str::to_owned);
+                            if let Some(content) = content {
+                                let editor = cx
+                                    .new(|cx| ui::editor::state("yaml", content, true, window, cx));
+                                ui::editor::expand(editor, "运行配置".into(), true, window, cx);
+                            }
+                        }
+                    },
+                ) {
+                    ui::show_error(error, window, cx);
+                }
+            }
             "复制版本号" => cx.write_to_clipboard(ClipboardItem::new_string(format!(
                 "Suki Clash v{}",
                 env!("CARGO_PKG_VERSION")
@@ -57,10 +95,6 @@ impl SettingsPage {
                     ),
                 };
                 cx.write_to_clipboard(ClipboardItem::new_string(output));
-            }
-            "复制代理地址" | "复制 PAC 地址" => {
-                // These values must come from the OS/runtime adapter, not a configured guess.
-                crate::integration::request_with(action, self.command_values(cx), window, cx);
             }
             _ => return false,
         }

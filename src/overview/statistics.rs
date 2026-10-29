@@ -48,6 +48,8 @@ pub(crate) struct Metadata {
     pub(crate) host: String,
     #[serde(default, rename = "destinationIP")]
     pub(crate) destination_ip: String,
+    #[serde(default, rename = "remoteDestination")]
+    pub(crate) remote_destination: String,
     #[serde(default)]
     pub(crate) process: String,
     #[serde(default, rename = "processPath")]

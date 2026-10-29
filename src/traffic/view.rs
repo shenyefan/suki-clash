@@ -356,8 +356,8 @@ impl Render for TrafficPage {
                                         .icon(IconName::Trash)
                                         .label("清空已关闭")
                                         .disabled(count1 == 0)
-                                        .on_click(cx.listener(|this, _, _, cx| {
-                                            this.connection_records.clear_closed();
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            let removed = this.connection_records.clear_closed();
                                             this.table.update(cx, |table, cx| {
                                                 table
                                                     .delegate_mut()
@@ -368,6 +368,23 @@ impl Render for TrafficPage {
                                                 table.clear_selection(cx);
                                                 cx.notify();
                                             });
+                                            let owner = cx.weak_entity();
+                                            ui::notifications::undo(
+                                                window,
+                                                "已清空已关闭连接",
+                                                cx,
+                                                move |_, cx| {
+                                                    owner
+                                                        .update(cx, |this, cx| {
+                                                            this.connection_records
+                                                                .restore_closed(removed.clone());
+                                                            this.sync_connection_rows(cx);
+                                                            cx.notify();
+                                                            true
+                                                        })
+                                                        .unwrap_or(true)
+                                                },
+                                            );
                                             cx.notify();
                                         })),
                                 )

@@ -46,19 +46,7 @@ impl TrafficPage {
                             }),
                     );
                 }
-                let table = table.clone();
-                menu.separator()
-                    .item(
-                        crate::ui::actions::menu("恢复默认列").on_click(move |_, _, cx| {
-                            table.update(cx, |table, cx| {
-                                table.delegate_mut().hidden_columns.clear();
-                                table.delegate_mut().column_order =
-                                    (0..CONNECTION_COLUMNS.len()).collect();
-                                table.refresh(cx);
-                                cx.notify();
-                            });
-                        }),
-                    )
+                menu
             })
     }
 
@@ -118,17 +106,41 @@ impl TrafficPage {
 
     pub(super) fn connection_details(&self, record: Record, cx: &mut Context<Self>) -> Div {
         let target = record.connection.clone();
-        let fields = |indices: &[usize]| {
+        let extra = |label: &str| {
+            record
+                .details
+                .lines()
+                .filter_map(|line| line.split_once('\t'))
+                .find(|(name, _)| *name == label)
+                .map(|(_, value)| value.to_owned())
+                .unwrap_or_default()
+        };
+        let section = |title: &'static str, fields: Vec<(&'static str, String)>| {
             v_flex()
+                .min_w(space::NONE)
                 .gap(space::MD)
-                .children(indices.iter().map(|index| {
-                    v_flex()
+                .child(div().font_weight(text::EMPHASIS).child(title))
+                .children(fields.into_iter().map(|(label, value)| {
+                    h_flex()
+                        .items_start()
+                        .gap(space::MD)
                         .min_w(space::NONE)
-                        .gap(space::XS)
-                        .child(ui::muted(CONNECTION_COLUMNS[*index].0, cx).text_size(text::CAPTION))
-                        .child(div().truncate().child(record.cells[*index].clone()))
+                        .child(
+                            ui::muted(label, cx)
+                                .w(layout::DETAIL_LABEL_WIDTH)
+                                .flex_shrink_0()
+                                .text_size(text::CAPTION),
+                        )
+                        .child(div().flex_1().min_w(space::NONE).whitespace_normal().child(
+                            if value.is_empty() {
+                                "—".into()
+                            } else {
+                                value
+                            },
+                        ))
                 }))
         };
+        let copy = record.details.replace('\t', "：");
         ui::bottom_details(cx)
             .child(
                 h_flex()
@@ -155,6 +167,16 @@ impl TrafficPage {
                                     })),
                             )
                             .child(ui::muted(record.cells[0].clone(), cx).truncate()),
+                    )
+                    .child(
+                        Button::new("copy-connection-details")
+                            .ghost()
+                            .with_size(control::STANDARD)
+                            .icon(IconName::Copy)
+                            .label("复制详情")
+                            .on_click(move |_, _, cx| {
+                                cx.write_to_clipboard(ClipboardItem::new_string(copy.clone()))
+                            }),
                     )
                     .child(
                         Button::new("close-selected-connection")
@@ -196,10 +218,48 @@ impl TrafficPage {
                             .grid()
                             .grid_cols(layout::CONNECTION_DETAILS_COLUMNS)
                             .gap(space::SECTION)
-                            .child(fields(&[11, 5, 6]))
-                            .child(fields(&[3, 4]))
-                            .child(fields(&[1, 2]))
-                            .child(fields(&[9, 10, 8])),
+                            .child(section(
+                                "连接",
+                                vec![
+                                    ("主机", record.cells[0].clone()),
+                                    ("协议", record.cells[11].clone()),
+                                    ("源地址", record.cells[9].clone()),
+                                    ("目标地址", record.cells[10].clone()),
+                                    ("远端目标", extra("远端目标")),
+                                ],
+                            ))
+                            .child(section(
+                                "流量",
+                                vec![
+                                    ("下载速率", record.cells[3].clone()),
+                                    ("上传速率", record.cells[4].clone()),
+                                    ("下载总量", record.cells[1].clone()),
+                                    ("上传总量", record.cells[2].clone()),
+                                ],
+                            ))
+                            .child(section(
+                                "路由",
+                                vec![
+                                    ("规则", record.cells[6].clone()),
+                                    ("代理链", record.cells[5].clone()),
+                                ],
+                            ))
+                            .child(section(
+                                "进程与时间",
+                                vec![
+                                    ("进程", record.cells[7].clone()),
+                                    ("进程路径", extra("进程路径")),
+                                    ("开始时间", {
+                                        let full = extra("完整开始时间");
+                                        if full.is_empty() {
+                                            record.cells[8].clone()
+                                        } else {
+                                            full
+                                        }
+                                    }),
+                                    ("连接 ID", extra("连接 ID")),
+                                ],
+                            )),
                     ),
             )
     }

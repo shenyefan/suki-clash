@@ -1125,18 +1125,13 @@ async fn stopped_resource_settings_save_without_starting_core() {
 }
 
 #[tokio::test]
-async fn disabled_startup_keeps_core_stopped_and_generic_settings_save_immediately() {
+async fn missing_core_does_not_block_generic_settings_saves() {
     use crate::preferences::SettingsKind;
     let (_root, paths) = fixture(None);
     let mut owner = actor(paths.clone());
-    owner
-        .save_settings(
-            SettingsKind::Core,
-            crate::storage::Values::from([("StartCore".into(), "false".into())]),
-        )
-        .await
-        .unwrap();
-    owner.startup().await.unwrap();
+    assert!(owner.startup().await.unwrap_err().contains("未安装"));
+    owner.publish(Phase::Failed, None);
+    assert_eq!(owner.snapshot.label(), "不存在内核");
     assert!(owner.running.is_none());
     owner
         .save_settings(
@@ -1621,6 +1616,7 @@ async fn force_subscription_proxy_does_not_silently_download_direct_when_core_is
     let mut document = Document::new(1, DocumentKind::Profile);
     document.url = "http://127.0.0.1:1/config".into();
     document.content.clear();
+    document.self_proxy = true;
     let error = owner
         .profiles(super::super::ProfileCommand::Save {
             expected: Default::default(),
@@ -1809,6 +1805,7 @@ async fn real_websocket_traffic_connections_and_confirmed_close_use_private_ipc(
         runtime_events.clone(),
         cancellation,
         None,
+        None,
     ));
     let client = owner.running.as_ref().unwrap().launch.client.clone();
     let mut connections = client.websocket("/connections?interval=100").await.unwrap();
@@ -1977,6 +1974,7 @@ async fn real_group_tests_keep_group_urls_and_results_separate() {
             .send(super::super::delays::Request {
                 id: index as u64 + 1,
                 test: crate::proxies::runtime::Test {
+                    urls: Default::default(),
                     group: Some(group.into()),
                     node: Some("hop".into()),
                     generation: target.generation,
@@ -2036,6 +2034,7 @@ fn measurement_requests_do_not_reserve_the_lifecycle_lane() {
     assert!(
         service
             .test_delay(crate::proxies::runtime::Test {
+                urls: Default::default(),
                 group: None,
                 node: None,
                 generation: 1,
@@ -2390,7 +2389,7 @@ async fn real_rules_overrides_dns_sniffer_apply_atomically_without_restarting() 
 #[tokio::test]
 async fn global_dns_saves_while_stopped_and_invalid_edits_preserve_committed_yaml() {
     use crate::{preferences::SettingsKind, storage::Values};
-    let (_root, paths) = fixture(None);
+    let (_root, paths) = fixture(Some(SLEEPING_CORE));
     let mut owner = actor(paths.clone());
     owner
         .save_settings(
@@ -2451,4 +2450,62 @@ async fn global_dns_saves_while_stopped_and_invalid_edits_preserve_committed_yam
     let values = crate::preferences::values(&repository, SettingsKind::Dns).unwrap();
     assert_eq!(values["DnsOverrideEnabled"], "false");
     assert_eq!(values["Nameserver"], "9.9.9.9");
+}
+
+#[tokio::test]
+async fn enabling_kernel_features_requires_installed_core_without_saving_the_switch() {
+    use crate::{preferences::SettingsKind, storage::Values};
+    let (_root, paths) = fixture(None);
+    let mut owner = actor(paths.clone());
+    for (kind, key) in [
+        (SettingsKind::Dns, "DnsOverrideEnabled"),
+        (SettingsKind::Sniffer, "SnifferOverrideEnabled"),
+        (SettingsKind::SysProxy, "IsSystemProxyEnabled"),
+        (SettingsKind::Tun, "IsTunEnabled"),
+    ] {
+        let error = owner
+            .save_settings(kind, Values::from([(key.into(), "true".into())]))
+            .await
+            .unwrap_err();
+        assert!(error.contains("「内核」"), "{error}");
+        let repository = Repository::open(paths.clone()).unwrap();
+        assert_eq!(
+            crate::preferences::values(&repository, kind).unwrap()[key],
+            "false"
+        );
+        assert!(owner.running.is_none());
+    }
+}
+
+#[tokio::test]
+async fn stopped_system_proxy_edits_only_save_and_enabling_requires_readiness() {
+    use crate::{preferences::SettingsKind, storage::Values};
+    let (_root, paths) = fixture(Some(SLEEPING_CORE));
+    let mut owner = actor(paths.clone());
+    owner
+        .save_settings(
+            SettingsKind::SysProxy,
+            Values::from([("SystemProxyHost".into(), "::1".into())]),
+        )
+        .await
+        .unwrap();
+    let repository = Repository::open(paths).unwrap();
+    assert_eq!(
+        crate::preferences::values(&repository, SettingsKind::SysProxy).unwrap()["SystemProxyHost"],
+        "::1"
+    );
+    assert_eq!(owner.snapshot.system_proxy.enabled(), None);
+    let error = owner
+        .save_settings(
+            SettingsKind::SysProxy,
+            Values::from([("IsSystemProxyEnabled".into(), "true".into())]),
+        )
+        .await
+        .unwrap_err();
+    assert!(error.contains("未就绪"), "{error}");
+    assert_eq!(
+        crate::preferences::values(&repository, SettingsKind::SysProxy).unwrap()["IsSystemProxyEnabled"],
+        "false"
+    );
+    assert!(owner.running.is_none());
 }

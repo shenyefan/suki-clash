@@ -2,7 +2,6 @@ pub(crate) use crate::proxies::runtime::ProxyMode;
 /// Read-only projection of observed runtime state shared by the feature views.
 #[derive(Default)]
 pub(crate) struct Session {
-    system_proxy: Option<bool>,
     tun: Option<bool>,
     core: crate::core::Snapshot,
     core_busy: bool,
@@ -51,7 +50,7 @@ impl Session {
         self.core_busy
     }
     pub(crate) fn system_proxy(&self) -> Option<bool> {
-        self.system_proxy
+        self.core.system_proxy().enabled()
     }
     pub(crate) fn tun(&self) -> Option<bool> {
         self.tun

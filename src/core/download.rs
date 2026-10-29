@@ -50,6 +50,7 @@ impl Transfer {
             },
             &SubscriptionTransport::System,
             true,
+            false,
         )
     }
     pub(super) fn icon(http: &Http, paths: &AppPaths, url: &str) -> Result<Self, String> {
@@ -65,6 +66,7 @@ impl Transfer {
                 allow_empty: false,
             },
             &SubscriptionTransport::System,
+            false,
             false,
         )
     }
@@ -86,6 +88,7 @@ impl Transfer {
                 allow_empty: false,
             },
             &SubscriptionTransport::System,
+            false,
             false,
         )
     }
@@ -114,6 +117,7 @@ impl Transfer {
             },
             transport,
             false,
+            document.accept_invalid_certs,
         )
     }
     pub(super) fn probe(
@@ -136,6 +140,7 @@ impl Transfer {
             },
             transport,
             false,
+            false,
         )
     }
     fn request(
@@ -144,6 +149,7 @@ impl Transfer {
         request: Request<'_>,
         transport: &SubscriptionTransport,
         https_only: bool,
+        accept_invalid_certs: bool,
     ) -> Result<Self, String> {
         if !crate::profiles::model::valid_remote_url(request.url) {
             return Err("HTTP 请求地址无效".into());
@@ -155,7 +161,11 @@ impl Transfer {
             return Err("HTTP 请求标头超过长度上限".into());
         }
         let agent = header(request.agent)?;
-        let client = http.client(transport, https_only)?;
+        let client = if accept_invalid_certs {
+            http.client_with_tls(transport, https_only, true)?
+        } else {
+            http.client(transport, https_only)?
+        };
         let timeout = Duration::from_secs(request.timeout);
         let mut builder = client
             .get(request.url)
@@ -297,6 +307,7 @@ mod tests {
             },
             &SubscriptionTransport::Direct,
             false,
+            false,
         )
         .unwrap();
         let mut progress = Vec::new();
@@ -322,6 +333,7 @@ mod tests {
                 allow_empty: false,
             },
             &SubscriptionTransport::Direct,
+            false,
             false,
         )
         .unwrap();
@@ -357,6 +369,7 @@ mod tests {
                 allow_empty: false,
             },
             &SubscriptionTransport::Direct,
+            false,
             false,
         )
         .unwrap();
@@ -402,6 +415,7 @@ mod tests {
             },
             &SubscriptionTransport::Direct,
             false,
+            false,
         )
         .unwrap();
         let error = transfer.finish(|_, _| {}).await.unwrap_err();
@@ -422,6 +436,7 @@ mod tests {
                         allow_empty: false
                     },
                     &SubscriptionTransport::Direct,
+                    false,
                     false
                 )
                 .is_err()
@@ -448,6 +463,7 @@ mod tests {
                 allow_empty: false,
             },
             &SubscriptionTransport::Direct,
+            false,
             false,
         )
         .unwrap();

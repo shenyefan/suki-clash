@@ -1,3 +1,73 @@
+#[derive(Default)]
+pub(super) struct Filter {
+    pub(super) text: crate::search::Search,
+    expression: Option<(char, u32, bool)>,
+    protocol: Option<String>,
+}
+impl Filter {
+    pub(super) fn compile(&mut self, query: &str) {
+        self.expression = None;
+        self.protocol = None;
+        let query = query.trim();
+        if let Ok(pattern) = regex::Regex::new(r"(?i)delay([=<>])(\d+|timeout|error)")
+            && let Some(parts) = pattern.captures(query)
+        {
+            self.expression = Some((
+                parts[1].chars().next().unwrap_or('='),
+                match parts[2].to_ascii_lowercase().as_str() {
+                    "timeout" => 3000,
+                    "error" => 100000,
+                    value => value.parse().unwrap_or(u32::MAX),
+                },
+                parts[2].eq_ignore_ascii_case("timeout") || parts[2].eq_ignore_ascii_case("error"),
+            ));
+        }
+        if self.expression.is_none()
+            && let Some(index) = query.to_ascii_lowercase().find("type=")
+        {
+            self.protocol = Some(query[index + 5..].to_ascii_lowercase());
+        }
+        let whole_word = self.text.whole_word;
+        if self.text.regular_expression {
+            self.text.whole_word = false;
+        }
+        self.text
+            .compile(if self.expression.is_some() || self.protocol.is_some() {
+                ""
+            } else {
+                query
+            });
+        self.text.whole_word = whole_word;
+    }
+    fn matches(&self, node: &Node) -> bool {
+        if let Some((operator, threshold, special)) = self.expression {
+            let value = node.delay.or_else(|| {
+                if node
+                    .failure
+                    .as_ref()
+                    .is_some_and(|failure| !failure.contains("超时"))
+                {
+                    Some(100000)
+                } else if node.tested {
+                    Some(3000)
+                } else {
+                    None
+                }
+            });
+            return value.is_some_and(|value| match operator {
+                '=' if special && threshold == 3000 => (3000..100000).contains(&value),
+                '=' if special && threshold == 100000 => value >= 100000,
+                '=' => value == threshold,
+                '<' => value <= threshold,
+                _ => value >= threshold,
+            });
+        }
+        if let Some(protocol) = &self.protocol {
+            return node.protocol.to_ascii_lowercase().contains(protocol);
+        }
+        self.text.error.is_none() && self.text.matches(&node.name)
+    }
+}
 #[derive(Clone)]
 pub(super) struct Node {
     id: String,
@@ -8,6 +78,7 @@ pub(super) struct Node {
     tested: bool,
     failure: Option<String>,
     testing: bool,
+    sort_key: Option<(u8, Option<u32>)>,
 }
 
 impl Node {
@@ -41,6 +112,24 @@ impl Node {
     }
     pub(super) fn tested(&self) -> bool {
         self.tested
+    }
+    fn latency_key(&self) -> (u8, Option<u32>) {
+        self.sort_key.unwrap_or_else(|| {
+            (
+                if self.testing {
+                    3
+                } else if self.delay.is_some() {
+                    0
+                } else if self.failure.is_some() {
+                    2
+                } else if self.tested {
+                    1
+                } else {
+                    4
+                },
+                self.delay,
+            )
+        })
     }
     fn matches(&self, query: &str) -> bool {
         [&self.name, &self.region, &self.protocol]
@@ -113,14 +202,20 @@ impl ProxyGroup {
                     id: name.clone(),
                     name: name.clone(),
                     kind,
-                    nodes: group
-                        .all
-                        .as_ref()?
+                    nodes: proxies
+                        .members
+                        .get(name)?
                         .iter()
-                        .map(|name| {
-                            let proxy = proxies.entries.get(name);
+                        .map(|member| {
+                            let name = &member.name;
+                            let proxy = proxies.member_proxy(member);
+                            let measurement_key = proxies.measurement_key(&group.name, member);
                             Node {
-                                id: name.clone(),
+                                id: format!(
+                                    "{}:{}",
+                                    member.record_id.as_deref().unwrap_or(name),
+                                    member.occurrence
+                                ),
                                 name: name.clone(),
                                 region: String::new(),
                                 protocol: proxy
@@ -128,7 +223,7 @@ impl ProxyGroup {
                                     .unwrap_or_else(|| "未知".into()),
                                 delay: proxies
                                     .measurements
-                                    .get(&(group.name.clone(), name.clone()))
+                                    .get(&(group.name.clone(), measurement_key.clone()))
                                     .map(|result| result.as_ref().copied().unwrap_or(0))
                                     .or_else(|| {
                                         proxy
@@ -136,17 +231,19 @@ impl ProxyGroup {
                                             .map(|history| history.delay)
                                     })
                                     .filter(|delay| *delay > 0 && *delay < timeout),
+                                sort_key: None,
                                 testing: proxies
                                     .testing
-                                    .contains(&(group.name.clone(), name.clone())),
+                                    .contains(&(group.name.clone(), measurement_key.clone())),
                                 failure: proxies
                                     .measurements
-                                    .get(&(group.name.clone(), name.clone()))
+                                    .get(&(group.name.clone(), measurement_key.clone()))
                                     .and_then(|result| result.as_ref().err())
-                                    .cloned(),
+                                    .cloned()
+                                    .or_else(|| member.reason.map(str::to_owned)),
                                 tested: proxies
                                     .measurements
-                                    .contains_key(&(group.name.clone(), name.clone()))
+                                    .contains_key(&(group.name.clone(), measurement_key.clone()))
                                     || proxy.is_some_and(|proxy| !proxy.history.is_empty()),
                             }
                         })
@@ -154,6 +251,13 @@ impl ProxyGroup {
                 })
             })
             .collect()
+    }
+    pub(super) fn keep_latency_order(&mut self, previous: &Self) {
+        for node in &mut self.nodes {
+            if let Some(old) = previous.nodes.iter().find(|old| old.id == node.id) {
+                node.sort_key = Some(old.latency_key());
+            }
+        }
     }
     pub(super) fn len(&self) -> usize {
         self.nodes.len()
@@ -171,6 +275,18 @@ impl ProxyGroup {
         "—".into()
     }
 
+    pub(super) fn visible_filtered(
+        &self,
+        filter: &Filter,
+        available: bool,
+        sort: SortOrder,
+        reverse: bool,
+    ) -> Vec<Node> {
+        self.visible_nodes("", available, sort, reverse)
+            .into_iter()
+            .filter(|node| filter.matches(node))
+            .collect()
+    }
     pub(super) fn visible_nodes(
         &self,
         query: &str,
@@ -201,31 +317,18 @@ impl ProxyGroup {
                 }
             }),
             SortOrder::Latency => nodes.sort_by(|a, b| {
-                let rank = |node: &Node| {
-                    if node.testing {
-                        3
-                    } else if node.delay.is_some() {
-                        0
-                    } else if node.failure.is_some() {
-                        2
-                    } else if node.tested {
-                        1
-                    } else {
-                        4
-                    }
-                };
-                rank(a)
-                    .cmp(&rank(b))
-                    .then_with(|| match (a.delay, b.delay) {
-                        (Some(a), Some(b)) => {
-                            if reverse {
-                                b.cmp(&a)
-                            } else {
-                                a.cmp(&b)
-                            }
+                let (a_rank, a_delay) = a.latency_key();
+                let (b_rank, b_delay) = b.latency_key();
+                a_rank.cmp(&b_rank).then_with(|| match (a_delay, b_delay) {
+                    (Some(a), Some(b)) => {
+                        if reverse {
+                            b.cmp(&a)
+                        } else {
+                            a.cmp(&b)
                         }
-                        _ => std::cmp::Ordering::Equal,
-                    })
+                    }
+                    _ => std::cmp::Ordering::Equal,
+                })
             }),
         }
         nodes
@@ -275,6 +378,7 @@ pub(super) fn sample_groups() -> Vec<ProxyGroup> {
         tested: true,
         failure: None,
         testing: false,
+        sort_key: None,
     })
     .collect();
     vec![
@@ -372,5 +476,89 @@ mod delay_order_tests {
                 ["4", "3", "2", "1", "0"]
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod incremental_delay_tests {
+    use super::*;
+    #[test]
+    fn measurement_changes_display_without_reordering_until_batch_completion() {
+        let previous = sample_groups().remove(0);
+        let before = previous
+            .visible_nodes("", false, SortOrder::Latency, false)
+            .iter()
+            .map(Node::id)
+            .collect::<Vec<_>>();
+        let mut live = sample_groups().remove(0);
+        live.nodes[0].delay = Some(900);
+        live.nodes[1].testing = true;
+        live.keep_latency_order(&previous);
+        assert_eq!(live.nodes[0].delay(), Some(900));
+        assert_eq!(
+            live.visible_nodes("", false, SortOrder::Latency, false)
+                .iter()
+                .map(Node::id)
+                .collect::<Vec<_>>(),
+            before
+        );
+        for node in &mut live.nodes {
+            node.sort_key = None;
+        }
+        assert_ne!(
+            live.visible_nodes("", false, SortOrder::Latency, false)
+                .iter()
+                .map(Node::id)
+                .collect::<Vec<_>>(),
+            before
+        );
+    }
+}
+
+#[cfg(test)]
+mod advanced_search_tests {
+    use super::*;
+    fn node(name: &str, delay: Option<u32>, failure: Option<&str>) -> Node {
+        Node {
+            id: name.into(),
+            name: name.into(),
+            region: String::new(),
+            protocol: "Trojan".into(),
+            delay,
+            tested: delay.is_some() || failure.is_some(),
+            failure: failure.map(str::to_owned),
+            testing: false,
+            sort_key: None,
+        }
+    }
+    #[test]
+    fn expressions_preserve_numeric_equality_timeout_ranges_and_invalid_regex() {
+        let mut filter = Filter::default();
+        let slow = node("Tokyo", Some(3200), None);
+        let exact = node("Tokyo", Some(3000), None);
+        filter.compile("delay=3000");
+        assert!(!filter.matches(&slow));
+        assert!(filter.matches(&exact));
+        filter.compile("delay=timeout");
+        assert!(filter.matches(&slow));
+        assert!(!filter.matches(&node("failed", None, Some("连接失败"))));
+        filter.compile("delay=error");
+        assert!(filter.matches(&node("failed", None, Some("连接失败"))));
+        filter.compile("delay<3000");
+        assert!(filter.matches(&exact));
+        filter.compile("type=troj");
+        assert!(filter.matches(&exact));
+        filter.text.regular_expression = true;
+        filter.text.whole_word = true;
+        filter.compile("Tok");
+        assert!(filter.matches(&exact));
+        filter.compile("[");
+        assert!(filter.text.error.is_some());
+        assert!(!filter.matches(&node("[", None, None)));
+        filter.text.regular_expression = false;
+        filter.text.whole_word = false;
+        filter.text.case_sensitive = true;
+        filter.compile("tokyo");
+        assert!(!filter.matches(&exact));
     }
 }

@@ -13,7 +13,7 @@ pub(crate) use service::{Command, Outcome, Service, ServiceError};
 use std::{collections::BTreeMap, path::PathBuf};
 
 struct Bridge {
-    service: service::Service,
+    service: Service,
     tasks: BTreeMap<service::RequestId, Task<()>>,
     _quit: Subscription,
 }
@@ -24,6 +24,9 @@ pub(crate) fn logs(cx: &App) -> crate::logging::Feed {
 }
 pub(crate) fn shutdown(cx: &mut App) -> Option<std::thread::JoinHandle<()>> {
     cx.global_mut::<Bridge>().service.shutdown()
+}
+pub(crate) fn paths(cx: &App) -> Option<AppPaths> {
+    cx.global::<Bridge>().service.paths().cloned()
 }
 pub(crate) fn announce(level: &'static str, message: String, cx: &mut App) {
     announce_module(level, "core", message, cx);
@@ -47,7 +50,7 @@ pub(crate) fn announce_module(
     }
 }
 pub(crate) fn init(service: Service, cx: &mut App) {
-    crate::ui::notifications::init(cx);
+    ui::notifications::init(cx);
     if let Some(paths) = service.paths() {
         crate::core::init(paths.clone(), service.logs(), cx);
     } else {
@@ -135,7 +138,7 @@ pub(crate) fn execute(
     let success_level = match &command {
         #[cfg(test)]
         Command::Save { .. } => "DEBUG",
-        Command::OpenDirectory(_) | Command::OpenDocument(_) => "DEBUG",
+        Command::OpenDirectory(_) | Command::OpenDocument(_) | Command::Diagnostics => "DEBUG",
         _ => "INFO",
     };
     let pending = match cx.global_mut::<Bridge>().service.submit(command) {

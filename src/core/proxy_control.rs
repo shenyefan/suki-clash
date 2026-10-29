@@ -194,6 +194,7 @@ impl Actor {
                     return Err("内核配置已变更，请重试节点选择".into());
                 }
                 let before = client.proxies(&[]).await?;
+                let previous_node = before.selected(&group).map(str::to_owned);
                 let proxy = before.entries.get(&group).ok_or("代理组不存在")?;
                 if !matches!(proxy.kind.as_str(), "Selector" | "URLTest" | "Fallback")
                     || !proxy
@@ -217,6 +218,10 @@ impl Actor {
                         return Err(format!("节点已切换；{error}"));
                     }
                 }
+                if previous_node.as_deref() != Some(node.as_str()) {
+                    self.cleanup_previous_proxy(previous_node.as_deref())
+                        .await?;
+                }
                 self.snapshot.information =
                     Some(if actual.selected(&group) == Some(node.as_str()) {
                         "节点已切换".into()
@@ -236,6 +241,7 @@ impl Actor {
                     return Err("内核配置已变更，请重试".into());
                 }
                 let proxies = client.proxies(&[]).await?;
+                let previous_node = proxies.selected(&group).map(str::to_owned);
                 let proxy = proxies.entries.get(&group).ok_or("代理组不存在")?;
                 if !matches!(proxy.kind.as_str(), "URLTest" | "Fallback") {
                     return Err("此代理组不支持自动选择".into());
@@ -259,6 +265,8 @@ impl Actor {
                         .save(&self.paths)
                         .map_err(|error| format!("自动选择已恢复；{error}"))?;
                 }
+                self.cleanup_previous_proxy(previous_node.as_deref())
+                    .await?;
                 self.snapshot.information = Some("已恢复自动选择".into());
             }
         }

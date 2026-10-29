@@ -65,6 +65,15 @@ impl LogBuffer {
             });
         }
     }
+    pub(super) fn restore(&mut self, entries: Vec<LogEntry>) {
+        self.entries.extend(entries);
+        self.entries.sort_by_key(|entry| entry.id);
+        self.entries.dedup_by_key(|entry| entry.id);
+        let paused = self.paused;
+        self.paused = false;
+        self.append([]);
+        self.paused = paused;
+    }
     pub(super) fn clear(&mut self, source: usize) {
         self.entries.retain(|entry| entry.source != source);
     }
@@ -115,6 +124,32 @@ pub(super) fn initial_entries() -> Vec<LogEntry> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn undo_clear_preserves_new_records_pause_and_bounded_history() {
+        let mut buffer = LogBuffer::default();
+        buffer.append(initial_entries());
+        let removed = buffer
+            .entries
+            .iter()
+            .filter(|entry| entry.source == 0)
+            .cloned()
+            .collect::<Vec<_>>();
+        buffer.clear(0);
+        buffer.append(initial_entries());
+        let new_id = buffer.entries.last().unwrap().id;
+        buffer.paused = true;
+        buffer.restore(removed.clone());
+        buffer.restore(removed);
+        assert!(buffer.paused);
+        assert!(buffer.entries.iter().any(|entry| entry.id == new_id));
+        let ids = buffer
+            .entries
+            .iter()
+            .map(|entry| entry.id)
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(ids.len(), buffer.entries.len());
+        assert!(buffer.entries.iter().any(|entry| entry.source == 0));
+    }
     #[test]
     fn retention_pause_and_clear_preserve_other_source() {
         let mut buffer = LogBuffer::default();

@@ -300,15 +300,37 @@ impl TrafficPage {
             );
             return;
         }
-        self.table.update(cx, |table, cx| {
+        let removed = self.table.update(cx, |table, cx| {
             let delegate = table.delegate_mut();
-            if kind == TrafficKind::Logs {
-                let tab = delegate.tab;
-                delegate.records.retain(|r| r.source != tab);
-            }
+            let tab = delegate.tab;
+            let removed = delegate
+                .records
+                .iter()
+                .filter(|record| record.source == tab)
+                .cloned()
+                .collect::<Vec<_>>();
+            delegate.records.retain(|record| record.source != tab);
             delegate.rebuild();
             table.clear_selection(cx);
             cx.notify();
+            removed
+        });
+        let table = self.table.downgrade();
+        crate::ui::notifications::undo(window, "已清空日志", cx, move |_, cx| {
+            table
+                .update(cx, |table, cx| {
+                    let delegate = table.delegate_mut();
+                    for record in &removed {
+                        if !delegate.records.iter().any(|entry| entry.id == record.id) {
+                            delegate.records.push(record.clone());
+                        }
+                    }
+                    delegate.records.sort_by_key(|record| record.id);
+                    delegate.rebuild();
+                    cx.notify();
+                    true
+                })
+                .unwrap_or(true)
         });
         cx.notify();
     }

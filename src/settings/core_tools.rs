@@ -4,7 +4,6 @@ use crate::{
     configuration::tunnels::{self, Tunnel},
     core,
     session::Session,
-    storage::Values,
     ui,
     ui::theme::{control, layout, space, text},
 };
@@ -73,19 +72,36 @@ impl SettingsPage {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        match core::submit(
+        let owner = cx.weak_entity();
+        let restore = entry.clone();
+        match core::execute(
             core::Command::Tunnel(tunnels::Change::Remove(entry)),
             window,
             cx,
+            move |result, window, cx| {
+                let _ = owner.update(cx, |this, cx| {
+                    this.saving = false;
+                    cx.notify();
+                });
+                if result.is_ok() {
+                    let restore = restore.clone();
+                    ui::notifications::undo(window, "已删除隧道", cx, move |window, cx| {
+                        match core::submit(
+                            core::Command::Tunnel(tunnels::Change::Add(restore.clone())),
+                            window,
+                            cx,
+                        ) {
+                            Ok(_) => true,
+                            Err(error) => {
+                                ui::show_error(error, window, cx);
+                                false
+                            }
+                        }
+                    });
+                }
+            },
         ) {
-            Ok(id) => {
-                self.saving = true;
-                self.core_pending = Some((
-                    id,
-                    Values::from([("Tunnels".into(), String::new())]),
-                    window.window_handle(),
-                ));
-            }
+            Ok(()) => self.saving = true,
             Err(error) => ui::show_error(error, window, cx),
         }
         cx.notify();

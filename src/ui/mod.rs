@@ -16,6 +16,8 @@ use gpui_kit::{
     component::{
         ActiveTheme, Disableable, Icon, Selectable, Sizable, WindowExt,
         button::{Button, ButtonVariants},
+        empty::{Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle},
+        form::{Field, Form},
         h_flex, v_flex,
     },
     *,
@@ -136,17 +138,30 @@ pub(crate) fn empty(icon: IconName, heading: &str, description: &str, cx: &App) 
         .min_h(layout::EMPTY_STATE_HEIGHT)
         .px(space::LG)
         .child(
-            Icon::new(icon)
-                .size(layout::ICON_FEATURE)
-                .text_color(cx.theme().muted_foreground),
+            Empty::new().p(space::NONE).header(
+                EmptyHeader::new()
+                    .max_w_full()
+                    .gap(space::SM)
+                    .media(
+                        EmptyMedia::new().mb(space::NONE).child(
+                            Icon::new(icon)
+                                .size(layout::ICON_FEATURE)
+                                .text_color(cx.theme().muted_foreground),
+                        ),
+                    )
+                    .title(
+                        EmptyTitle::new()
+                            .text_size(text::BODY)
+                            .font_weight(text::EMPHASIS)
+                            .child(heading.to_owned()),
+                    )
+                    .description(
+                        EmptyDescription::new()
+                            .text_size(text::BODY)
+                            .child(description.to_owned()),
+                    ),
+            ),
         )
-        .child(
-            div()
-                .text_center()
-                .font_weight(text::EMPHASIS)
-                .child(heading.to_owned()),
-        )
-        .child(muted(description.to_owned(), cx).text_center())
 }
 /// The same empty-state anatomy, sized for an embedded list or a short dialog.
 pub(crate) fn empty_inline(icon: IconName, heading: &str, description: &str, cx: &App) -> Div {
@@ -187,6 +202,10 @@ pub(crate) fn show_error(message: String, window: &mut Window, cx: &mut App) {
 }
 
 pub(crate) fn request_command(action: &str, window: &mut Window, cx: &mut App) {
+    if action == "切换系统代理" {
+        crate::core::request(crate::core::Command::ToggleSystemProxy, window, cx);
+        return;
+    }
     crate::integration::request(action, window, cx);
 }
 pub(crate) fn detail_dialog(
@@ -216,19 +235,33 @@ pub(crate) fn detail_dialog(
     })
 }
 
-/// Shared form layout used by core dialogs and all other form dialogs.
+/// Stack for fields, rows and auxiliary content; native Form owns field layout.
 pub(crate) fn form() -> Div {
-    v_flex().w_full().gap(space::LG)
+    v_flex().w_full().flex_shrink_0().gap(space::LG)
 }
 pub(crate) fn form_row() -> Div {
-    h_flex().w_full().items_start().gap(space::MD)
+    h_flex()
+        .w_full()
+        .flex_shrink_0()
+        .items_start()
+        .gap(space::MD)
 }
-pub(crate) fn field_label(label: &str, control: impl IntoElement) -> Div {
-    v_flex()
+pub(crate) fn field_label(label: &str, control: impl IntoElement) -> impl IntoElement + Styled {
+    let field = div()
+        .id(SharedString::from(format!("field-{label}")))
         .min_w(space::NONE)
-        .gap(space::XS)
-        .child(div().child(label.to_owned()))
-        .child(control)
+        .child(
+            Form::new()
+                .with_size(control::STANDARD)
+                .label_text_size(text::BODY)
+                .child(Field::new().label(label.to_owned()).child(control)),
+        );
+    #[cfg(test)]
+    let field = {
+        use gpui_kit::test::TestSupportExt as _;
+        field.test_support()
+    };
+    field
 }
 pub(crate) fn dialog_footer(commit: &str) -> impl IntoElement {
     dialog_footer_pending(commit, false)

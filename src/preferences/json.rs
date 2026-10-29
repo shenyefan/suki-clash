@@ -74,7 +74,7 @@ pub(crate) fn encode(values: &Values) -> Result<Vec<u8>, String> {
         let kind = definitions.get(&name).map(|(_, kind)| *kind);
         let value = if key == "Tunnels" {
             yaml_object(text)?
-        } else if kind == Some(FieldKind::Toggle) || key == "StartCore" {
+        } else if kind == Some(FieldKind::Toggle) {
             match text.as_str() {
                 "true" => true.into(),
                 "false" => false.into(),

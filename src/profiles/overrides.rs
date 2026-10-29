@@ -1,7 +1,7 @@
 use super::{ProfilesPage, model::Document};
 use crate::{
     ui,
-    ui::theme::{control, space, text},
+    ui::theme::{control, layout, space, stroke, text},
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
@@ -10,6 +10,7 @@ use gpui_kit::{
         ActiveTheme, Disableable, Sizable,
         button::{Button, ButtonVariants},
         h_flex,
+        list::ListItem,
         menu::DropdownMenu,
         switch::Switch,
         v_flex,
@@ -37,16 +38,14 @@ impl ProfilesPage {
         }
     }
 
-    fn override_row(
-        &self,
-        document: &Document,
-        index: usize,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
+    fn override_row(&self, document: &Document, cx: &mut Context<Self>) -> AnyElement {
         let id = document.id;
         let owner = cx.entity();
         let remote = document.is_remote();
         let script = document.kind == super::model::DocumentKind::JavaScript;
+        let draggable = !self.saving && !self.session.read(cx).core_busy();
+        let after = self.override_drop == Some((id, true));
+        let drag_owner = cx.entity();
         let menu = ui::icon_button(("override-menu", id), IconName::Ellipsis, "覆写操作")
             .dropdown_menu(move |mut menu, _, _| {
                 for action in ["更新", "编辑信息", "打开文件", "执行日志", "删除"] {
@@ -63,87 +62,169 @@ impl ProfilesPage {
                 }
                 menu
             });
-        h_flex()
-            .id(("override-row", id))
-            .when(!self.saving && !self.session.read(cx).core_busy(), |row| {
+        let row = ListItem::new(("override-row", id))
+            .accessibility_label(format!("覆写 {}，拖动排序", document.name))
+            .when(draggable, |row| {
                 row.on_drag(
                     super::organize::DocumentDrag {
                         id,
                         name: document.name.clone(),
                         overrides: true,
                     },
-                    |drag, _, _, cx| cx.new(|_| drag.clone()),
+                    move |drag, _, _, cx| {
+                        drag_owner.update(cx, |this, cx| {
+                            this.override_drop = None;
+                            cx.notify();
+                        });
+                        cx.new(|_| drag.clone())
+                    },
                 )
             })
-            .drag_over::<super::organize::DocumentDrag>(|style, _, _, cx| {
-                style.bg(cx.theme().accent)
+            .can_drop(move |value, _, _| {
+                draggable
+                    && value
+                        .downcast_ref::<super::organize::DocumentDrag>()
+                        .is_some_and(|drag| drag.overrides && drag.id != id)
+            })
+            .on_drag_move(cx.listener(
+                move |this, event: &DragMoveEvent<super::organize::DocumentDrag>, _, cx| {
+                    if event.drag(cx).overrides
+                        && event.drag(cx).id != id
+                        && event.bounds.contains(&event.event.position)
+                    {
+                        let target = Some((id, event.event.position.y >= event.bounds.center().y));
+                        if this.override_drop != target {
+                            this.override_drop = target;
+                            cx.notify();
+                        }
+                    } else if this.override_drop.is_some_and(|(target, _)| target == id) {
+                        this.override_drop = None;
+                        cx.notify();
+                    }
+                },
+            ))
+            .drag_over::<super::organize::DocumentDrag>(move |style, _, _, cx| {
+                style.bg(cx.theme().drop_target)
             })
             .on_drop(cx.listener(
                 move |this, drag: &super::organize::DocumentDrag, window, cx| {
-                    if drag.overrides {
-                        this.move_document(drag.id, id, window, cx);
+                    let Some((target, after)) = this.override_drop.take() else {
+                        return;
+                    };
+                    let mut documents = this.documents.clone();
+                    let Some(from) = documents.iter().position(|document| document.id == drag.id)
+                    else {
+                        return;
+                    };
+                    let document = documents.remove(from);
+                    let Some(target_index) =
+                        documents.iter().position(|document| document.id == target)
+                    else {
+                        return;
+                    };
+                    let to = target_index + usize::from(after);
+                    if from == to {
+                        return;
+                    }
+                    documents.insert(to, document);
+                    let draft = documents.clone();
+                    match this.persist_documents(documents, None, window, cx, |_, _, _| {}) {
+                        Ok(()) => this.documents = draft,
+                        Err(error) => ui::show_error(error, window, cx),
                     }
                 },
             ))
             .w_full()
-            .gap(space::MD)
+            .h_full()
+            .rounded(cx.theme().radius)
             .px(space::LG)
             .py(space::MD)
             .child(
-                gpui_kit::component::Icon::new(IconName::ArrowDownUp)
-                    .size(crate::ui::theme::layout::ICON)
-                    .text_color(cx.theme().muted_foreground),
-            )
-            .child(ui::muted(format!("{:02}", index + 1), cx).text_size(text::CAPTION))
-            .child(
-                v_flex()
-                    .flex_1()
+                h_flex()
+                    .w_full()
                     .min_w(space::NONE)
-                    .gap(space::XS)
+                    .gap(space::MD)
                     .child(
-                        div()
-                            .font_weight(text::EMPHASIS)
-                            .truncate()
-                            .child(document.name.clone()),
+                        div().cursor_grab().child(
+                            gpui_kit::component::Icon::new(IconName::GripVertical)
+                                .size(layout::ICON)
+                                .text_color(cx.theme().muted_foreground),
+                        ),
                     )
                     .child(
-                        ui::muted(
-                            format!(
-                                "{} · {} · {} 行",
-                                document.stage(),
-                                document
-                                    .scope_profile
-                                    .map(|_| document.scope_name.as_str())
-                                    .unwrap_or("所有订阅"),
-                                document.content.lines().count()
+                        v_flex()
+                            .flex_1()
+                            .min_w(space::NONE)
+                            .gap(space::XS)
+                            .child(
+                                div()
+                                    .font_weight(text::EMPHASIS)
+                                    .truncate()
+                                    .child(document.name.clone()),
+                            )
+                            .child(
+                                ui::muted(
+                                    format!(
+                                        "{} · {} · {} 行",
+                                        document.stage(),
+                                        document
+                                            .scope_profile
+                                            .map(|_| document.scope_name.as_str())
+                                            .unwrap_or("所有订阅"),
+                                        document.content.lines().count()
+                                    ),
+                                    cx,
+                                )
+                                .text_size(text::CAPTION)
+                                .truncate(),
                             ),
-                            cx,
-                        )
-                        .text_size(text::CAPTION)
-                        .truncate(),
-                    ),
+                    )
+                    .child(
+                        Button::new(("override-edit", id))
+                            .ghost()
+                            .with_size(control::STANDARD)
+                            .icon(IconName::Pencil)
+                            .label("编辑")
+                            .on_click(cx.listener(move |this, _, w, cx| {
+                                this.document_action(id, "编辑文件", w, cx)
+                            })),
+                    )
+                    .child(
+                        Switch::new(("override-enabled", id))
+                            .with_size(control::STANDARD)
+                            .checked(document.enabled)
+                            .disabled(self.saving || self.session.read(cx).core_busy())
+                            .accessibility_label(format!("启用{}", document.name))
+                            .on_change(cx.listener(move |this, enabled, w, cx| {
+                                this.update_override(id, *enabled, w, cx)
+                            })),
+                    )
+                    .child(menu),
+            );
+        div()
+            .relative()
+            .size_full()
+            .child(row)
+            .when(
+                cx.has_active_drag() && self.override_drop.is_some_and(|(target, _)| target == id),
+                |row| {
+                    let indicator = div()
+                        .id(("override-insertion", id))
+                        .absolute()
+                        .left(space::NONE)
+                        .right(space::NONE)
+                        .h(stroke::INSERTION)
+                        .bg(cx.theme().primary)
+                        .when(after, |line| line.bottom(space::NONE))
+                        .when(!after, |line| line.top(space::NONE));
+                    #[cfg(test)]
+                    let indicator = {
+                        use gpui_kit::test::TestSupportExt as _;
+                        indicator.test_support()
+                    };
+                    row.child(indicator)
+                },
             )
-            .child(
-                Button::new(("override-edit", id))
-                    .ghost()
-                    .with_size(control::STANDARD)
-                    .icon(IconName::Pencil)
-                    .label("编辑")
-                    .on_click(cx.listener(move |this, _, w, cx| {
-                        this.document_action(id, "编辑文件", w, cx)
-                    })),
-            )
-            .child(
-                Switch::new(("override-enabled", id))
-                    .with_size(control::STANDARD)
-                    .checked(document.enabled)
-                    .disabled(self.saving || self.session.read(cx).core_busy())
-                    .accessibility_label(format!("启用{}", document.name))
-                    .on_change(cx.listener(move |this, enabled, w, cx| {
-                        this.update_override(id, *enabled, w, cx)
-                    })),
-            )
-            .child(menu)
             .into_any_element()
     }
 
@@ -202,6 +283,30 @@ impl ProfilesPage {
                     } else {
                         let height =
                             crate::ui::theme::list::DETAIL_ROW_HEIGHT.to_pixels(window.rem_size());
+                        let surface = div()
+                            .id("override-list-surface")
+                            .flex_1()
+                            .min_h(space::NONE)
+                            .rounded(cx.theme().radius_lg)
+                            .overflow_hidden()
+                            // GPUI overflow masks are rectangular. Inset the
+                            // scroll viewport so hovered rows stay inside the corners.
+                            .p(space::SM)
+                            .bg(ui::theme::preferences_tint(cx))
+                            .child(ui::virtual_rows::rows(
+                                cx.entity(),
+                                "override-rows",
+                                vec![height; self.documents.len()],
+                                &self.list_scroll,
+                                move |this, index, _, cx| {
+                                    this.override_row(&this.documents[index], cx)
+                                },
+                            ));
+                        #[cfg(test)]
+                        let surface = {
+                            use gpui_kit::test::TestSupportExt as _;
+                            surface.test_support()
+                        };
                         v_flex()
                             .size_full()
                             .gap(space::LG)
@@ -210,22 +315,7 @@ impl ProfilesPage {
                                     .text_size(text::CAPTION),
                             )
                             .child(ui::section("覆写文件", cx).px(space::LG))
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_h(space::NONE)
-                                    .rounded(cx.theme().radius_lg)
-                                    .bg(ui::theme::preferences_tint(cx))
-                                    .child(ui::virtual_rows::rows(
-                                        cx.entity(),
-                                        "override-rows",
-                                        vec![height; self.documents.len()],
-                                        &self.list_scroll,
-                                        move |this, index, _, cx| {
-                                            this.override_row(&this.documents[index], index, cx)
-                                        },
-                                    )),
-                            )
+                            .child(surface)
                             .into_any_element()
                     }),
             )
@@ -290,6 +380,101 @@ mod tests {
                 })
                 .unwrap();
         }
+        crate::integration::finish_test_services(cx);
+    }
+}
+
+#[cfg(test)]
+mod drag_tests {
+    use super::{Document, ProfilesPage};
+    use gpui_kit::component::WindowExt;
+    use gpui_kit::test::{TestEventExt, TestWindowExt};
+    use gpui_kit::{
+        AppContext, Bounds, MouseButton, TestAppContext, WindowBounds, WindowOptions, point, px,
+        size,
+    };
+
+    #[gpui_kit::test]
+    fn native_row_drag_uses_the_hovered_half_and_skips_unchanged_order(cx: &mut TestAppContext) {
+        let root = tempfile::tempdir().unwrap();
+        let service = crate::integration::Service::start(
+            crate::storage::Repository::open(crate::storage::AppPaths::isolated(root.path()))
+                .unwrap(),
+        )
+        .unwrap();
+        cx.update(|cx| {
+            crate::integration::init(service, cx);
+            gpui_kit::init(cx);
+            crate::ui::configure_theme(cx);
+            cx.set_reduce_motion(true);
+        });
+        let (handle, page) = cx.update(|cx| {
+            gpui_kit::open_window(
+                WindowOptions {
+                    window_bounds: Some(WindowBounds::Windowed(Bounds::new(
+                        Default::default(),
+                        size(px(1000.), px(800.)),
+                    ))),
+                    ..Default::default()
+                },
+                cx,
+                |window, cx| {
+                    let session = cx.new(crate::session::Session::new);
+                    cx.new(|cx| ProfilesPage::new(true, session, window, cx))
+                },
+            )
+            .unwrap()
+        });
+        handle
+            .update(cx, |_, window, cx| {
+                page.update(cx, |page, cx| {
+                    page.documents = (1..=3)
+                        .map(|id| Document::new(id, super::super::model::DocumentKind::Yaml))
+                        .collect();
+                    cx.notify();
+                });
+                window.render_frame(cx);
+                let first = window.find(("override-row", 1u64)).bounds();
+                let second = window.find(("override-row", 2u64)).bounds();
+                let surface = window.find("override-list-surface").bounds();
+                let inset = crate::ui::theme::space::SM.to_pixels(window.rem_size());
+                assert_eq!(first.left(), surface.left() + inset);
+                assert_eq!(first.top(), surface.top() + inset);
+                assert_eq!(first.right(), surface.right() - inset);
+                window.hover(("override-row", 1u64), cx);
+                assert_eq!(window.find(("override-row", 1u64)).bounds(), first);
+                let start = point(first.left() + px(12.), first.center().y);
+                let top = point(
+                    second.left() + px(12.),
+                    second.top() + second.size.height / 4.,
+                );
+                let bottom = point(
+                    second.left() + px(12.),
+                    second.bottom() - second.size.height / 4.,
+                );
+                window.clear_notifications(cx);
+                window.pointer_down(start, MouseButton::Left, cx);
+                window.pointer_move(top, Some(MouseButton::Left), cx);
+                window.pointer_move(top, Some(MouseButton::Left), cx);
+                let line = window.find(("override-insertion", 2u64)).bounds();
+                assert_eq!(line.top(), second.top());
+                assert_eq!(line.size.height, crate::ui::theme::stroke::INSERTION);
+                window.pointer_move(bottom, Some(MouseButton::Left), cx);
+                let line = window.find(("override-insertion", 2u64)).bounds();
+                assert_eq!(line.bottom(), second.bottom());
+                window.pointer_move(top, Some(MouseButton::Left), cx);
+                window.pointer_up(top, MouseButton::Left, cx);
+                assert!(window.try_find(("override-insertion", 2u64)).is_none());
+                assert!(page.read(cx).override_drop.is_none());
+                assert!(crate::ui::notifications::current(window, cx).is_empty());
+                window.drag(start, bottom, cx);
+                assert!(page.read(cx).override_drop.is_none());
+                // The UI test adapter has no lifecycle worker. A changed order reaches
+                // submission and reports that real error; the unchanged order did not.
+                assert_eq!(crate::ui::notifications::current(window, cx).len(), 1);
+                assert!(!cx.has_active_drag());
+            })
+            .unwrap();
         crate::integration::finish_test_services(cx);
     }
 }
