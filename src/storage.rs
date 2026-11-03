@@ -73,13 +73,6 @@ struct Envelope {
     values: Values,
 }
 
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct NativeBackup {
-    configuration: serde_yaml_ng::Value,
-    enabled: bool,
-}
-
 pub(crate) struct Repository {
     paths: AppPaths,
 }
@@ -287,60 +280,6 @@ impl Repository {
             serde_json::to_vec_pretty(&Envelope { version: 1, values })?
         };
         atomic_write(&self.path(namespace), &bytes)
-    }
-    pub(crate) fn backup_values(
-        &self,
-        namespace: &Namespace,
-        values: &Values,
-    ) -> Result<PathBuf, StorageError> {
-        let path = self
-            .paths
-            .directory(DirectoryKind::Backups)
-            .join(format!("{}.json", namespace.name()));
-        let values = persistent_values(values);
-        let bytes = if let Some(kind) = crate::preferences::kind_for_page(namespace.name())
-            .filter(|kind| crate::preferences::native::key(*kind).is_some())
-        {
-            let bytes =
-                crate::preferences::native::encode(kind, &values).map_err(io::Error::other)?;
-            let configuration = serde_yaml_ng::from_slice(&bytes).map_err(io::Error::other)?;
-            serde_json::to_vec_pretty(&NativeBackup {
-                configuration,
-                enabled: values
-                    .get(crate::preferences::native::flag(kind))
-                    .is_some_and(|value| value == "true"),
-            })?
-        } else if namespace.is_setting() {
-            crate::preferences::json::encode(&values).map_err(io::Error::other)?
-        } else {
-            serde_json::to_vec_pretty(&Envelope { version: 1, values })?
-        };
-        atomic_write(&path, &bytes)?;
-        Ok(path)
-    }
-    pub(crate) fn backup(&self, namespace: &Namespace) -> Result<PathBuf, StorageError> {
-        self.backup_values(namespace, &self.read(namespace)?)
-    }
-    pub(crate) fn restore(&self, namespace: &Namespace) -> Result<Values, StorageError> {
-        let bytes = fs::read(
-            self.paths
-                .directory(DirectoryKind::Backups)
-                .join(format!("{}.json", namespace.name())),
-        )?;
-        if let Some(kind) = crate::preferences::kind_for_page(namespace.name())
-            .filter(|kind| crate::preferences::native::key(*kind).is_some())
-        {
-            let backup: NativeBackup = serde_json::from_slice(&bytes)?;
-            let text = serde_yaml_ng::to_string(&backup.configuration).map_err(io::Error::other)?;
-            let mut values = crate::preferences::native::decode(kind, text.as_bytes())
-                .map_err(StorageError::Settings)?;
-            values.insert(
-                crate::preferences::native::flag(kind).into(),
-                backup.enabled.to_string(),
-            );
-            return Ok(values);
-        }
-        decode_document(&bytes, namespace)
     }
 }
 

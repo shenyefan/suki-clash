@@ -1,6 +1,10 @@
 # Clash Verge Rev 功能对照与差距清单
 
-更新日期：2026-11-03。参考本地 `clash-verge-rev-dev/`（tauri.conf.json 标记 2.5.9），不是线上最新版声明。对照本轮 Suki 实现（含系统代理、重置、代理来源／搜索／测速、代理链、诊断与界面修正），不能据此推断已发布版本。参考目录没有独立 Git 身份，不使用父仓库 SHA 标记 CV 版本。
+上游版本另见 [版本与同步记录](cv-upstream-sync.md)（2026-11-03）：本地已同步为dev 2.5.10（5b7e876），旧目录精确匹配2.5.9快照eefd025；官方稳定版2.5.9。新增U01服务SSH私钥暂存、U02服务Geo反向同步、U03全局模式普通组展示，本轮均已补齐；这是R01–R61之后的上游增量适配。
+
+同步后的39个提交已作功能增量对照，见[更新差异复核](cv-update-comparison-2026-11-03.md)。自动备份／WebDAV继续暂缓；Muse AI列入用户决定的仪表盘能力；交付变更留给成熟工具集成。没有把新参考文件自动算作原逐文件审计覆盖。
+
+更新日期：2026-11-03。历史对照基线为CV 2.5.9快照eefd025；当前参考目录已同步到dev 2.5.10／5b7e876，新增文件变化未自动计入原审计覆盖。对照本轮 Suki 实现（含系统代理、重置、代理来源／搜索／测速、代理链、诊断与界面修正），不能据此推断已发布版本。参考目录现有独立 Git 身份，版本以其自身HEAD为准，不使用父仓库SHA。
 
 第一批修复（2026-11-02）：R29/R34/R30/R04/R47/R42/R45及L02/L04已完成代码整改，仍待真实平台验收。下列各行中这些编号的历史问题以[修复清单](cv-repair-checklist.md)状态为准；其余问题未自动关闭。根项目246项通过、16项忽略，check／严格Clippy通过。
 
@@ -23,7 +27,7 @@ S01的8项无消费者设置入口／默认值／枚举依赖已清理，保留�
 | 暂缓 | 通知诊断复制、完整配置合成报告、仪表盘定制、本地图标入口；原先WebDAV、自动备份和多语言继续暂缓 |
 | 待用户决定的仪表盘能力 | 网络测试、内存、解锁检测；独立提出，不归入暂缓 |
 | 后续成熟工具集成 | 应用升级、打包、签名／公证及发布；独立提出 |
-| 仍需验收 | 真实Gist／安全凭据、三平台服务／TUN／代理／退出恢复、原生窗口与大列表性能；尚未判定的Provider物化／系统DNS语义仍单列 |
+| 仍需验收 | 真实Gist／安全凭据、三平台服务／TUN／代理／退出恢复、原生窗口与大列表性能；Provider物化／系统DNS语义已确认并适配；高级Provider表达式物化的明确限制见下述补充记录 |
 
 ## 范围与状态
 
@@ -40,11 +44,15 @@ S01的8项无消费者设置入口／默认值／枚举依赖已清理，保留�
 
 ## 本次源码复核
 
-已完成范围的逐项复核见 [2026-10-31 复核清单](cv-parity-review-2026-10-31.md)。发现 61 项代码差距、5 项桌面生命周期差距及 1 组入口／范围问题；不能把当前差距概括为仅剩验收。R01–R61、L01–L05 为本轮源码复核结果；包含开机注册、服务独立启动、关闭隐藏、托盘退出、重置、重启和注销／关机，历史验证记录只对应当时快照。
+已完成范围的逐项复核见 [2026-10-31 复核清单](cv-parity-review-2026-10-31.md)。发现 61 项代码差距、5 项桌面生命周期差距及 1 组入口／范围问题；该段为修复前发现，已确认缺陷的最新关闭状态以修复清单为准；新增能力与明确限制另列。R01–R61、L01–L05 为本轮源码复核结果；包含开机注册、服务独立启动、关闭隐藏、托盘退出、重置、重启和注销／关机，历史验证记录只对应当时快照。
 
 应用登录自启动与 OS 提权服务启动分别管理；服务存在不代表 GUI 或内核已自启动。正常窗口关闭／托盘退出等 19 个场景及实际清理边界见复核报告的生命周期场景表。
 
 已登记936个文本的修复前全文阅读完成，修复后变更／检查另见修复清单；覆盖基线以 [文件台账](cv-file-review.md) 为准；之前的能力覆盖表不代表所有文件已全文审查。
+
+## 本地备份与待确认项补全（2026-11-03）
+
+本地完整历史／导入导出已接，三类待确认项均已闭合证据并处理，见[补全记录](local-backup-and-parity.md)。Provider常规覆盖和重命名已实现；高级regexp2／override-expr／部分特殊替换仍明确拒绝链物化，属于已确认的能力限制，不能归为全部完成。macOS采用Mihomo原生临时DNS，不改用户服务DNS。下载／TLS按既定严格策略保留设计差异；自动测速等专项回归已补。
 
 ## 当前重点缺项
 
@@ -52,7 +60,7 @@ S01的8项无消费者设置入口／默认值／枚举依赖已清理，保留�
 | --- | --- |
 | 系统网络 | 第一、二批已修复TUN标识、服务归属与补偿、代理分路等代码缺口；剩余真实服务／TUN／UWP／防火墙及系统网络平台验收 |
 | 桌面生命周期 | 第六批已修登录注册协调、初始静默和原生重开；剩余托盘视觉、跨平台登录任务及正式包URI验收 |
-| 备份与更新 | Gist完整备份已有；独立本地备份管理未扩展，WebDAV／自动备份暂缓，应用升级与交付改列工具集成 |
+| 备份与更新 | Gist及独立本地备份管理已有，WebDAV／自动备份暂缓，应用升级与交付改列工具集成 |
 | 代理与订阅 | Provider同步及恢复第四批已修；第五批修复测速参数／原值／首页组选取与URL共享、搜索筛选；增强表单与嵌套组展示本批已补；剩余真实来源重绑验收 |
 | 观测与工具 | 完整合成报告／诊断复制暂缓；网络测试、内存、解锁检测独立待用户决定；仪表盘定制暂缓，真实查询服务验收另列 |
 | 验收与其他差异 | Windows/Linux 原生运行与真实凭据读写、服务日志及故障恢复；多语言暂缓，不增加双列表 |
@@ -68,14 +76,14 @@ S01的8项无消费者设置入口／默认值／枚举依赖已清理，保留�
 | C01 | 部分 | 系统信息与诊断 | 已接 OS 版本、架构、主机、实际权限、自启动回读和应用运行时长；仪表盘及详情已接。服务模式与后台服务状态已接；真实平台服务诊断及交接验收仍待完成。 | [system-info-card.tsx](../clash-verge-rev-dev/src/components/home/system-info-card.tsx) | [view.rs](../src/overview/view.rs) |
 | C02 | 部分 | 系统代理 | 三平台手动/PAC、回读、守卫、失败恢复与退出清理已接。macOS已接鉴权helper分路及离线清理；Windows默认及RAS逐连接检查点，KDE原值回退已修。权限拒绝停止自动处理，显式操作可重试。退出可取消与系统结束有界清理已接。剩余真实三平台网络／权限／退出恢复验收。 | [sysopt.rs](../clash-verge-rev-dev/src-tauri/src/core/sysopt.rs) | [macos.rs](../src/system_proxy/macos.rs) |
 | C03 | 部分 | TUN 与系统网络 | 常驻服务执行、TUN原生标识、DNS补齐、校验／热更新／回读及失败恢复已接；自动路由／重定向联动提交已修，日常开关不提权。真实网卡、路由、DNS与平台验收待完成。 | [tun.rs](../clash-verge-rev-dev/src-tauri/src/enhance/tun.rs) | [TUN 与服务](tun-service.md) |
-| C04 | 部分 | 平台服务 | 安装、修复、停止服务内核、卸载及显式转子进程已接；转换保留各阶段提交事实与独立补偿，Unix卸载先确认停止／注销再删除。令牌契约、默认服务归属、健康监督、资源恢复及防火墙部分成功已修。协议现为revision 8，应用与服务同步更新，不提供旧协议兼容。剩余真实安装／交接及故障集成验收。 | [service.rs](../clash-verge-rev-dev/src-tauri/src/core/service.rs) | [privileged.rs](../src/core/privileged.rs) |
+| C04 | 部分 | 平台服务 | 安装、修复、停止服务内核、卸载及显式转子进程已接；转换保留各阶段提交事实与独立补偿，Unix卸载先确认停止／注销再删除。令牌契约、默认服务归属、健康监督、资源恢复及防火墙部分成功已修。协议现为revision 9，应用与服务同步更新，不提供旧协议兼容。剩余真实安装／交接及故障集成验收。 | [service.rs](../clash-verge-rev-dev/src-tauri/src/core/service.rs) | [privileged.rs](../src/core/privileged.rs) |
 | C05 | 已有主体 | Windows 集成 | 采用 ClashSuki 的 FirewallAPI 原生枚举／回环方案，应用选择弹窗可搜索并编辑；未知／已卸载应用豁免保留。服务鉴权写入、并发前置检查、回读与失败恢复；防火墙仅重建服务批准内核及已认证用户应用目录内核的固定命名规则，失败恢复原规则，不接收任意程序路径。无需外部 enableLoopback.exe。剩余为 Windows 实机验收。 | [win_uwp.rs](../clash-verge-rev-dev/src-tauri/src/core/win_uwp.rs) | [windows_network.rs](../platform-service/src/windows_network.rs) |
 | C06 | 部分 | 启动与窗口生命周期 | 自启动、静默、关闭到托盘、启动脚本及清理后重启已接。启动协调GUI登录注册与期望值；设置显示OS实际状态、刷新和修正漂移，重置清GUI登录注册，不动helper注册。静默建窗隐藏且不聚焦，托盘失败显示主窗。Windows登录任务权限及回退保留原XML。剩余三平台原生生命周期验收。 | [autostart.rs](../clash-verge-rev-dev/src-tauri/src/core/autostart.rs) | [autostart_windows.rs](../src/desktop/autostart_windows.rs) |
 | C07 | 部分 | 单实例与外部导入 | 当前用户实例锁、认证回环端点、第二实例唤起／订阅导入、明确URI名称、有界队列及协议注册已接。macOS官方on_reopen、单实例与托盘共用显示主窗口入口。cargo run不代替正式应用包URI注册验收；正式跨平台激活仍待验收。 | [server.rs](../clash-verge-rev-dev/src-tauri/src/utils/server.rs) | [main.rs](../src/main.rs) |
 | C08 | 部分 | 托盘 | OS原生附着菜单、点击行为、普通／系统代理／TUN三态和自定义图标、macOS网速、模式／订阅／组／节点及维护动作已接。组图标按组／来源／代次绑定，拒绝迟到；同目标原生写入失败暂停，明确点击可重试。无独立窗口或自绘滚动条，TUN优先级与CV一致。Quit清本应用效果并保留空闲helper。剩余原生菜单完整视觉、跨平台和故障验收。 | [tray](../clash-verge-rev-dev/src-tauri/src/core/tray) | [tray](../src/tray) |
 | C09 | 工具集成 | 应用升级 | 按用户决定，应用升级交由后续选定的成熟工具实现；从当前功能开发清单独立提出。现有Mihomo内核升级不等于应用升级。 | [updater.rs](../clash-verge-rev-dev/src-tauri/src/core/updater.rs) | [integration.rs](../src/integration.rs) |
 | C10 | 工具集成 | 打包签名与发布 | 按用户决定，完整打包、签名／公证、更新验签及发布通道由后续成熟工具承担，独立列为工具集成任务。现有packaging服务材料不表示完整应用发布链已交付。 | [tauri.conf.json](../clash-verge-rev-dev/src-tauri/tauri.conf.json) | [bootstrap](../src/bootstrap/mod.rs) |
-| C11 | 部分 | 完整备份 | 完整当前配置／订阅／覆写／增强归档、校验及恢复已接入Gist备份。Gist可创建独立历史、分页、下载、恢复、删除与可选Age加密；本地独立备份历史管理／文件导入导出入口仍未作为本轮Gist任务扩展。 | [backup.rs](../clash-verge-rev-dev/src-tauri/src/core/backup.rs) | [storage.rs](../src/storage.rs) |
+| C11 | 部分 | 完整备份 | 完整当前配置／订阅／覆写／增强归档、校验及恢复已接入Gist备份。Gist可创建独立历史、分页、下载、恢复、删除与可选Age加密；本地完整历史、文件导入／导出、恢复和删除现已接入维护，共用同一归档与恢复工作流。 | [backup.rs](../clash-verge-rev-dev/src-tauri/src/core/backup.rs) | [storage.rs](../src/storage.rs) |
 | C12 | 暂缓 | WebDAV | 凭据安全保存、连接配置、远程备份创建/列表/删除/下载/恢复及失败恢复。现有凭据字段明确拒绝保存。 | [backup.rs](../clash-verge-rev-dev/src-tauri/src/core/backup.rs) | [core_apply.rs](../src/settings/core_apply.rs) |
 | C13 | 暂缓 | 自动备份 | 定时备份、配置变化触发、保留数量及本地/远程历史策略执行；字段仅持久化。 | [auto_backup.rs](../clash-verge-rev-dev/src-tauri/src/core/auto_backup.rs) | [schema.rs](../src/preferences/schema.rs) |
 | C14 | 部分 | JavaScript 增强 | QuickJS同步main、后台合成、中断／取消、内存／栈／输入输出／日志预算及语法检查已接；执行失败保留有效配置，外部源码文件为唯一正文来源。用户内容无恢复默认。真实跨平台引擎验收待补。 | [script.rs](../clash-verge-rev-dev/src-tauri/src/enhance/script.rs) | [mod.rs](../src/configuration/mod.rs) |
@@ -87,7 +95,7 @@ S01的8项无消费者设置入口／默认值／枚举依赖已清理，保留�
 | C20 | 部分 | 代理来源身份 | 来源ID／occurrence、Provider作用范围、稳定缓存同步、来源证明和冷启动选择恢复已有。本批补嵌套组当前路径、实际叶协议与已回读能力；循环／缺失／歧义保持未知，保留选择身份。剩余真实服务缓存／慢来源／重绑验收；冷启动链缺确认缓存时明确拒绝。 | [proxy_view.rs](../clash-verge-rev-dev/src-tauri/src/core/proxy_view.rs) | [runtime.rs](../src/proxies/runtime.rs) |
 | C21 | 部分 | 代理高级搜索 | 已接大小写、整词、正则、delay 比较及 timeout/error、type=、独立分组过滤；无效正则不匹配并报错，数值相等与 timeout 区间分开。搜索选项位于搜索框内。第五批已清理失效组筛选，清除动作覆盖全部筛选；数值搜索保留原始延迟，超时／失败按明确状态筛选。 | [proxy](../clash-verge-rev-dev/src/components/proxy) | [model.rs](../src/proxies/model.rs) |
 | C22 | 部分 | 分组工具与导航 | 逐组测速地址、工具左右位置、组头单行、拖动排序、虚拟列表吸顶和返回顶部已接。组头与节点统一不透明主题底色，吸顶完整遮住下方文字；单条延迟立即显示，批次结束排序。按要求无侧边快速跳转。吸顶交互仍需完整窗口验收。 第五批：逐组URL按订阅保存在统一程序设置，页面仅保留输入草稿，首页与手动／自动测速共用。 | [proxy](../clash-verge-rev-dev/src/components/proxy) | [view.rs](../src/proxies/view.rs) |
-| C23 | 部分 | 测速自动化 | 已接自动当前节点检测开关/间隔执行与首页快捷测速，复用同一并发、去重和代次隔离通道；设置位于通用设置，快捷测试位于首页策略节点旁。专门的自动调度/取消回归及完整实机链路仍待补。 第五批：首页组选择按订阅记忆，自动测速读取同一组选择与测速URL；输入范围与执行一致，批次按来源身份去重，保留原始延迟并明确区分超时／失败。 | [current-proxy-card.tsx](../clash-verge-rev-dev/src/components/home/current-proxy-card.tsx) | [monitor.rs](../src/core/monitor.rs) |
+| C23 | 部分 | 测速自动化 | 已接自动当前节点检测开关/间隔执行与首页快捷测速，复用同一并发、去重和代次隔离通道；设置位于通用设置，快捷测试位于首页策略节点旁。专门的自动调度／间隔／取消／迟到结果回归已补，完整实机链路待验收。 第五批：首页组选择按订阅记忆，自动测速读取同一组选择与测速URL；输入范围与执行一致，批次按来源身份去重，保留原始延迟并明确区分超时／失败。 | [current-proxy-card.tsx](../clash-verge-rev-dev/src/components/home/current-proxy-card.tsx) | [monitor.rs](../src/core/monitor.rs) |
 | C24 | 部分 | 节点切换关闭连接 | AutoCloseConnection已接节点／取消固定、模式切换与关闭系统代理。旧节点只清chains含原节点的快照ID，全清同样按快照ID确认；并发新连接不误关／误报。初查、删除、回读错误均保留已提交事实，R60及C24文案补充已修；隔离并发回归通过，真实流量链路待验收。 | [proxy](../clash-verge-rev-dev/src/components/proxy) | [proxy_control.rs](../src/core/proxy_control.rs) |
 | C25 | 部分 | 链式节点编排 | 入口／中继／出口单行拖排、类型靠右、删除最右、清空撤销与完整YAML已接，无箭头／延迟。Provider按来源及occurrence实例化；有界缓存同步后走原候选流重绑，未知来源拒绝；仅use/include-all的合法目标组可加入物化出口。R05/R32/R37已修；真实平台及来源更新端到端验收仍待补。 | [proxy-chain.tsx](../clash-verge-rev-dev/src/components/proxy/proxy-chain.tsx) | [chain.rs](../src/proxies/chain.rs) |
 | C26 | 部分 | 链式状态对齐 | Selector／URLTest应用、重启恢复、既有dialer反解、循环／缺失检查已有；固定出口与实际now分别报告。断开后按目标连接ID核对，已提交后清理失败仍同步编辑器expected／epoch；受控重启后重新取当前Client。R36已修，持久链按确认的缓存来源恢复；真实服务交接验收仍待完成。 | [proxy-groups.tsx](../clash-verge-rev-dev/src/components/proxy/proxy-groups.tsx) | [chain.rs](../src/core/chain.rs) |
@@ -114,7 +122,7 @@ S01的8项无消费者设置入口／默认值／枚举依赖已清理，保留�
 | B04 | 已有主体 | 资源与内核升级 | GeoIP/GeoSite/MMDB/ASN 更新、规则/代理集合读取更新、内核发行频道/版本下载安装和取消清理。不是应用升级。 | [provider-button.tsx](../clash-verge-rev-dev/src/components/rule/provider-button.tsx) | [resources.rs](../src/core/resources.rs) |
 | B05 | 已有主体 | 实时采集与列表 | traffic/connections 私有 WS、监督重连/代次隔离、有界批次、流量统计持久化、连接历史、虚拟表格与选中/滚动分离。缺项见 C29/C31/C32。 | [connections.tsx](../clash-verge-rev-dev/src/pages/connections.tsx) | [streams.rs](../src/core/streams.rs) |
 | B06 | 已有主体 | 日志与通知 | 日志独立级别／保存、有界列表、倒序及搜索已有；第六批补齐URL及字段定点脱敏、文件错误内存降级、恢复后重试、完整UTF8记录轮转和服务历史游标。toast自动关闭含撤销，持续下载保留。通知诊断复制尚缺。 | [logs.tsx](../clash-verge-rev-dev/src/pages/logs.tsx) | [logging.rs](../src/logging.rs) |
-| B07 | 已有主体 | 设置和公共操作 | 原生YAML／程序JSON、默认值／坏文件保护、自动保存、主题／背景、目录／网卡已有。环境变量复制按HTTP／SOCKS有效端口生成并清不可用协议变量，无监听明确报错；状态卡搜索已修。剩余S01入口清理。 | [verge.rs](../clash-verge-rev-dev/src-tauri/src/config/verge.rs) | [mod.rs](../src/preferences/mod.rs) |
+| B07 | 已有主体 | 设置和公共操作 | 原生YAML／程序JSON、默认值／坏文件保护、自动保存、主题／背景、目录／网卡已有。环境变量复制按HTTP／SOCKS有效端口生成并清不可用协议变量，无监听明确报错；状态卡搜索已修。S01入口清理已完成。 | [verge.rs](../clash-verge-rev-dev/src-tauri/src/config/verge.rs) | [mod.rs](../src/preferences/mod.rs) |
 | B08 | 已有主体 | Gist完整备份 | 设置→同步提供配置／创建／历史入口。完整当前配置及正文归档、内容摘要／版本／路径校验、私有Gist独立历史／分页／下载／恢复／删除，Age可选；Token与私钥安全存储，备份排除凭据库／本机同步，恢复保留本机登录注册。失败补偿文件、凭据和代理；删除／恢复／凭据清除执行前5秒可撤销。仅隔离模拟验证，未真实上传。 | [GitHub Gist API](https://docs.github.com/en/rest/gists/gists?apiVersion=2026-03-10) | [backup](../src/backup) |
 
 ## 导航目的地核对

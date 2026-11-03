@@ -401,54 +401,33 @@ impl Actor {
                         .map(str::to_owned),
                 })
             });
-        let strategies = [if document.self_proxy {
+        let strategy = if document.self_proxy {
             local.ok_or("订阅下载代理需要已就绪的内核 HTTP 或混合端口")?
         } else if document.with_proxy {
             SubscriptionTransport::System
         } else {
             SubscriptionTransport::Direct
-        }];
-        let mut failures = Vec::new();
-        for (index, strategy) in strategies.iter().enumerate() {
-            if matches!(strategy, SubscriptionTransport::Proxy { .. })
-                && let Some(error) = self
-                    .snapshot
-                    .preferences
-                    .as_ref()
-                    .and_then(super::Preferences::local_proxy_error)
-            {
-                failures.push(error);
-                continue;
-            }
-            self.progress(
-                match (
-                    document.kind == crate::profiles::model::DocumentKind::Profile,
-                    index == 0,
-                ) {
-                    (true, true) => "下载订阅",
-                    (true, false) => "重试订阅下载",
-                    (false, true) => "下载覆写",
-                    (false, false) => "重试覆写下载",
-                },
-            );
-            let result = self.fetch_profile_once(document, agent, strategy).await;
-            match result {
-                Ok((bytes, headers)) => {
-                    return crate::profiles::remote::apply(document, &bytes, &headers, initial);
-                }
-                Err(error) => {
-                    if self.transfer.is_some() {
-                        return Err(error);
-                    }
-                    failures.push(error);
-                }
-            }
+        };
+        if matches!(strategy, SubscriptionTransport::Proxy { .. })
+            && let Some(error) = self
+                .snapshot
+                .preferences
+                .as_ref()
+                .and_then(super::Preferences::local_proxy_error)
+        {
+            return Err(error);
         }
-        Err(failures
-            .last()
-            .cloned()
-            .unwrap_or_else(|| "订阅下载失败".into()))
+        self.progress(
+            if document.kind == crate::profiles::model::DocumentKind::Profile {
+                "下载订阅"
+            } else {
+                "下载覆写"
+            },
+        );
+        let (bytes, headers) = self.fetch_profile_once(document, agent, &strategy).await?;
+        crate::profiles::remote::apply(document, &bytes, &headers, initial)
     }
+
     async fn fetch_profile_once(
         &mut self,
         document: &Document,

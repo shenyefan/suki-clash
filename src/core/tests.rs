@@ -3405,10 +3405,10 @@ async fn gist_restore_rolls_back_files_and_credentials_on_cleanup_failure_and_st
     let vault = CredentialStore::new(&paths);
     vault.write(77, "local-token", "").await.unwrap();
     vault.fail_next_delete(77);
-    assert!(owner.restore_gist_archive(archive.clone()).await.is_err());
+    assert!(owner.restore_archive(archive.clone()).await.is_err());
     assert_eq!(repository::read(&paths).unwrap().1[0].url, doc.url);
     assert_eq!(vault.read(77).await.unwrap().0, "local-token");
-    owner.restore_gist_archive(archive).await.unwrap();
+    owner.restore_archive(archive).await.unwrap();
     assert_eq!(
         repository::read(&paths).unwrap().1[0].url,
         "https://backup.example/sub"
@@ -3417,4 +3417,64 @@ async fn gist_restore_rolls_back_files_and_credentials_on_cleanup_failure_and_st
     assert!(owner.running.is_none());
     assert_eq!(owner.snapshot.phase, Phase::Stopped);
     assert!(owner.snapshot.operation_committed);
+}
+
+#[tokio::test]
+async fn local_backup_import_export_restore_use_the_complete_archive_without_starting_core() {
+    use crate::core::local_backup::Command as Backup;
+    let (root, paths) = fixture(None);
+    let mut owner = actor(paths.clone());
+    let original = crate::preferences::values(
+        &crate::storage::Repository::open(paths.clone()).unwrap(),
+        crate::preferences::SettingsKind::General,
+    )
+    .unwrap();
+    owner.local_backup(Backup::Create).await.unwrap();
+    let id = owner.snapshot.local_backup.entries[0].id.clone();
+    let target = root.path().join("export.suki-backup");
+    owner
+        .local_backup(Backup::Export {
+            id: id.clone(),
+            target: target.clone(),
+        })
+        .await
+        .unwrap();
+    let mut values = crate::preferences::defaults(crate::preferences::SettingsKind::General);
+    values.insert("ThemeIndex".into(), "浅色".into());
+    crate::storage::Repository::open(paths.clone())
+        .unwrap()
+        .save(
+            &crate::storage::Namespace::parse("settings").unwrap(),
+            &values,
+        )
+        .unwrap();
+    owner
+        .local_backup(Backup::Restore(id.clone()))
+        .await
+        .unwrap();
+    assert_eq!(
+        crate::preferences::values(
+            &crate::storage::Repository::open(paths.clone()).unwrap(),
+            crate::preferences::SettingsKind::General
+        )
+        .unwrap(),
+        original
+    );
+    assert!(owner.running.is_none());
+    owner.local_backup(Backup::Delete(id)).await.unwrap();
+    assert!(owner.snapshot.local_backup.entries.is_empty());
+    owner.local_backup(Backup::Import(target)).await.unwrap();
+    assert_eq!(owner.snapshot.local_backup.entries.len(), 1);
+    let invalid = root.path().join("invalid.suki-backup");
+    std::fs::write(&invalid, "bad backup").unwrap();
+    assert!(owner.local_backup(Backup::Import(invalid)).await.is_err());
+    assert_eq!(owner.snapshot.local_backup.entries.len(), 1);
+    assert_eq!(
+        crate::preferences::values(
+            &crate::storage::Repository::open(paths.clone()).unwrap(),
+            crate::preferences::SettingsKind::General
+        )
+        .unwrap(),
+        original
+    );
 }

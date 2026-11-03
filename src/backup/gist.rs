@@ -170,7 +170,7 @@ impl Gist {
     }
 }
 fn validate_content(content: &str) -> Result<(), String> {
-    if content.len() > super::ENCODED_LIMIT {
+    if content.len() > 8 * 1024 * 1024 {
         return Err("Gist备份超过8MiB上限".into());
     }
     if !content.starts_with(super::HEADER)

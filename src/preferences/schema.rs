@@ -528,26 +528,15 @@ fn general_extensions() -> Vec<SectionSpec> {
         },
         SectionSpec {
             title: "备份文件",
-            fields: vec![
-                FieldSpec {
-                    key: "LocalBackupHistory",
-                    label: "本地备份",
-                    description: "查看、恢复、导出或删除历史备份",
-                    kind: FieldKind::ReadOnly,
-                    default: "",
-                    options: &[],
-                    actions: &["本地备份历史", "导入备份"],
-                },
-                FieldSpec {
-                    key: "RemoteBackupHistory",
-                    label: "远程备份",
-                    description: "查看、恢复、下载或删除 WebDAV 备份",
-                    kind: FieldKind::ReadOnly,
-                    default: "",
-                    options: &[],
-                    actions: &["远程备份历史"],
-                },
-            ],
+            fields: vec![FieldSpec {
+                key: "RemoteBackupHistory",
+                label: "远程备份",
+                description: "查看、恢复、下载或删除 WebDAV 备份",
+                kind: FieldKind::ReadOnly,
+                default: "",
+                options: &[],
+                actions: &["远程备份历史"],
+            }],
         },
         SectionSpec {
             title: "自动备份",
@@ -1679,11 +1668,11 @@ fn original_sections(kind: SettingsKind) -> Vec<SectionSpec> {
                     FieldSpec {
                         key: "SettingsAction28",
                         label: "备份与恢复",
-                        description: "备份本地设置或恢复最新备份",
+                        description: "配置、订阅与覆写的完整本地备份",
                         kind: FieldKind::ReadOnly,
                         default: "",
                         options: &[],
-                        actions: &["创建备份", "恢复最新备份", "打开备份目录"],
+                        actions: &["创建本地备份", "本地备份历史", "打开备份目录"],
                     },
                     FieldSpec {
                         key: "ResetProgram",

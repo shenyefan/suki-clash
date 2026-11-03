@@ -12,11 +12,13 @@ mod connections;
 mod download;
 pub(crate) mod gist;
 mod install;
+pub(crate) mod local_backup;
 mod proxy_control;
 mod system_proxy;
 pub(crate) use install::recover_pending;
 mod interfaces;
 pub(crate) use interfaces::Interface;
+mod geo_sync;
 mod launch;
 mod output;
 mod ownership;
@@ -111,6 +113,7 @@ pub(crate) struct Snapshot {
     pub(crate) autostart: Option<Result<bool, String>>,
     revision: u64,
     pub(crate) gist: gist::State,
+    pub(crate) local_backup: local_backup::State,
     pub(crate) proxy_preferences: crate::proxies::preferences::Preferences,
     generation: u64,
     request_id: Option<u64>,

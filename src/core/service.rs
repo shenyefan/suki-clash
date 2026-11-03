@@ -16,6 +16,7 @@ pub(crate) enum Command {
     ToggleSystemProxy,
     AutostartStatus,
     Gist(super::gist::Command),
+    LocalBackup(super::local_backup::Command),
     ProxyPreferences {
         profile: Option<u64>,
         change: crate::proxies::preferences::Change,
@@ -590,6 +591,7 @@ impl Actor {
                             },
                             Command::AutostartStatus => { let actual = crate::desktop::autostart::enabled(); self.snapshot.autostart = Some(actual.clone()); actual.map(|_| ()) },
                             Command::Gist(command) => self.gist(command).await,
+                            Command::LocalBackup(command) => self.local_backup(command).await,
                             Command::ToggleSystemProxy => self.toggle_system_proxy().await,
                             Command::ToggleTun => {
                                 let current=self.running.as_ref().ok_or("内核未就绪，无法切换虚拟网卡")?.launch.client.tun_enabled().await?;
@@ -656,7 +658,7 @@ impl Actor {
                     };
                     // Service installation and machine network writes have an external commit point.
                     // Finish their acknowledged result before exit cleanup instead of abandoning the owner.
-                    let result = if matches!(&request.command,Command::PlatformService(_)|Command::WindowsNetwork(_)|Command::Gist(super::gist::Command::Restore(_) | super::gist::Command::Create | super::gist::Command::Delete(_) | super::gist::Command::Configure { .. })) {
+                    let result = if matches!(&request.command,Command::PlatformService(_)|Command::WindowsNetwork(_)|Command::LocalBackup(_)|Command::Gist(super::gist::Command::Restore(_) | super::gist::Command::Create | super::gist::Command::Delete(_) | super::gist::Command::Configure { .. })) {
                         operation.await
                     }else{tokio::select! {
                         biased;
@@ -673,7 +675,7 @@ impl Actor {
                     self.snapshot.progress=None;
                     if let Err(error) = result {
                         // Preparation failure must preserve an existing ready child.
-                        let phase = if matches!(&request.command, Command::Gist(_)) { self.snapshot.phase } else if self.running.is_some() && self.snapshot.phase == Phase::Ready { Phase::Ready } else { Phase::Failed };
+                        let phase = if matches!(&request.command, Command::Gist(_) | Command::LocalBackup(_)) { self.snapshot.phase } else if self.running.is_some() && self.snapshot.phase == Phase::Ready { Phase::Ready } else { Phase::Failed };
                         self.publish(phase, Some(error));
                     } else {self.publish(self.snapshot.phase,None);}
                     drop(request);
@@ -910,6 +912,7 @@ impl Actor {
     }
 
     pub(super) async fn validate(&mut self, launch: Launch) -> Result<Launch, String> {
+        self.sync_service_geo().await?;
         let launch = launch;
         if self.validation.is_some() {
             return Err("上一次校验进程尚未确认退出，请先停止内核任务".into());
@@ -1331,8 +1334,22 @@ impl Actor {
         self.progress("更新 Geo 数据");
         client.update_geo().await?;
         self.geo_unknown = false;
+        self.sync_service_geo()
+            .await
+            .map_err(|error| format!("GeoData 已在内核更新；应用数据库同步失败：{error}"))?;
         self.snapshot.resources.refresh_files(&self.paths);
         self.completed("GeoData 已更新".into());
+        Ok(())
+    }
+    async fn sync_service_geo(&mut self) -> Result<(), String> {
+        if let Some(Running {
+            child: Process::Service(session),
+            ..
+        }) = &self.running
+            && session.sync_geo(&self.paths).await? > 0
+        {
+            self.snapshot.resources.refresh_files(&self.paths);
+        }
         Ok(())
     }
     async fn fetch(&mut self, url: &str, limit: u64) -> Result<Vec<u8>, String> {

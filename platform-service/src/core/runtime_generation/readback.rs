@@ -1,4 +1,4 @@
-//! Reads manifest-declared provider caches from the private runtime directory.
+//! Reads declared provider caches and fixed Geo databases from the private runtime directory.
 //! Undeclared paths are rejected before target lookup.
 
 use super::assets::{
@@ -23,16 +23,26 @@ pub(crate) async fn read_runtime_file(
         .map_err(|error| invalid_asset(error.to_string()))?
         .for_owner(&owner.identity)
         .runtime_dir();
+    read_declared_file(&generation, destination, offset).await
+}
+
+async fn read_declared_file(
+    generation: &Path,
+    destination: &str,
+    offset: u64,
+) -> Result<RuntimeFileOutcome, ServiceError> {
     let key = destination_key(&validate_destination(destination)?)?;
-    let manifest = read_manifest(&generation).await.map_err(invalid_asset)?;
-    if !manifest.remote_providers.contains_key(&key) {
+    let manifest = read_manifest(generation).await.map_err(invalid_asset)?;
+    if !manifest.remote_providers.contains_key(&key)
+        && !crate::RUNTIME_GEO_ASSETS.contains(&destination)
+    {
         return Err(invalid_asset(format!(
-            "runtime file {key:?} is not a declared provider cache"
+            "runtime file {key:?} is not a declared provider cache or a Geo database"
         )));
     }
     read_chunk(
-        &generation,
-        &resolve_in_generation(&generation, destination)?,
+        generation,
+        &resolve_in_generation(generation, destination)?,
         offset,
     )
     .await
@@ -122,4 +132,59 @@ fn hex_encode(bytes: &[u8]) -> String {
         let _ = write!(encoded, "{byte:02x}");
     }
     encoded
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn geo_readback_does_not_expose_other_assets_or_private_keys() {
+        let root = tempfile::tempdir().unwrap();
+        tokio::fs::write(
+            root.path().join(MANIFEST_FILE_NAME),
+            br#"{"assets":{},"remote_providers":{}}"#,
+        )
+        .await
+        .unwrap();
+        for name in crate::RUNTIME_GEO_ASSETS {
+            tokio::fs::write(root.path().join(name), b"geo")
+                .await
+                .unwrap();
+            assert!(
+                matches!(read_declared_file(root.path(), name, 0).await.unwrap(), RuntimeFileOutcome::Chunk { hex, len: 3, .. } if hex=="67656f")
+            );
+        }
+        for name in [
+            "ssh-private-key",
+            RUNTIME_CONFIG_FILE_NAME,
+            MANIFEST_FILE_NAME,
+            "../Country.mmdb",
+            "keys/private.pem",
+        ] {
+            assert!(
+                read_declared_file(root.path(), name, 0).await.is_err(),
+                "{name}"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn geo_alias_cannot_read_an_outside_file() {
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::NamedTempFile::new().unwrap();
+        tokio::fs::write(
+            root.path().join(MANIFEST_FILE_NAME),
+            br#"{"assets":{},"remote_providers":{}}"#,
+        )
+        .await
+        .unwrap();
+        std::os::unix::fs::symlink(outside.path(), root.path().join("Country.mmdb")).unwrap();
+        assert!(
+            read_declared_file(root.path(), "Country.mmdb", 0)
+                .await
+                .is_err()
+        );
+    }
 }

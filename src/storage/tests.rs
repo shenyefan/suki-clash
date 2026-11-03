@@ -76,23 +76,7 @@ fn unsupported_or_corrupt_storage_is_not_silently_replaced() {
 }
 
 #[test]
-fn restoring_backup_returns_a_draft_without_overwriting_committed_settings() {
-    let root = tempfile::tempdir().unwrap();
-    let store = repository(root.path());
-    let before = Values::from([("theme".into(), "light".into())]);
-    let after = Values::from([("theme".into(), "dark".into())]);
-    store.save(&namespace(), &before).unwrap();
-    let backup = store.backup(&namespace()).unwrap();
-    store.save(&namespace(), &after).unwrap();
-    assert_eq!(store.restore(&namespace()).unwrap(), before);
-    assert_eq!(store.read(&namespace()).unwrap(), after);
-    fs::write(backup, b"broken backup").unwrap();
-    assert!(store.restore(&namespace()).is_err());
-    assert_eq!(store.read(&namespace()).unwrap(), after);
-}
-
-#[test]
-fn credential_fields_are_not_written_into_settings_or_backups() {
+fn credential_fields_are_not_written_into_settings() {
     let root = tempfile::tempdir().unwrap();
     let store = repository(root.path());
     let values = Values::from([
@@ -104,12 +88,9 @@ fn credential_fields_are_not_written_into_settings_or_backups() {
     ]);
     assert!(contains_session_credentials(&values));
     store.save(&namespace(), &values).unwrap();
-    let backup = store.backup(&namespace()).unwrap();
-    for path in [store.path(&namespace()), backup] {
-        let persisted = fs::read_to_string(path).unwrap();
-        assert!(!persisted.contains("private-"));
-        assert!(!persisted.contains("controller-secret"));
-    }
+    let persisted = fs::read_to_string(store.path(&namespace())).unwrap();
+    assert!(!persisted.contains("private-"));
+    assert!(!persisted.contains("controller-secret"));
     assert_eq!(
         store.read(&namespace()).unwrap(),
         Values::from([("ThemeIndex".into(), "深色".into())])
@@ -126,27 +107,4 @@ fn snapshot_reads_only_registered_documents_and_preserves_other_files() {
     store.save(&namespace(), &values).unwrap();
     assert_eq!(store.snapshot().unwrap()[&namespace()], values);
     assert_eq!(fs::read(unrelated).unwrap(), b"unowned document");
-}
-
-#[test]
-fn native_backup_keeps_application_switch_separate_and_restore_does_not_write_settings() {
-    let root = tempfile::tempdir().unwrap();
-    let store = repository(root.path());
-    let dns = Namespace::parse("dns").unwrap();
-    let mut values = crate::preferences::defaults(crate::preferences::SettingsKind::Dns);
-    values.insert("DnsOverrideEnabled".into(), "true".into());
-    store.save(&dns, &values).unwrap();
-    let backup = store.backup(&dns).unwrap();
-    let document: serde_json::Value = serde_json::from_slice(&fs::read(backup).unwrap()).unwrap();
-    assert_eq!(document["enabled"], true);
-    assert!(document["configuration"].get("override-enabled").is_none());
-    values.insert("DnsOverrideEnabled".into(), "false".into());
-    store.save(&dns, &values).unwrap();
-    let before = fs::read(crate::preferences::app::path(store.paths())).unwrap();
-    assert_eq!(store.restore(&dns).unwrap()["DnsOverrideEnabled"], "true");
-    assert_eq!(
-        fs::read(crate::preferences::app::path(store.paths())).unwrap(),
-        before
-    );
-    assert_eq!(store.read(&dns).unwrap()["DnsOverrideEnabled"], "false");
 }

@@ -199,12 +199,14 @@ impl ProxyGroup {
             .order
             .iter()
             .filter(|name| {
-                if mode == Some(crate::session::ProxyMode::Global) {
-                    name.as_str() == "GLOBAL"
-                } else {
-                    name.as_str() != "GLOBAL"
-                }
+                mode == Some(crate::session::ProxyMode::Global) && name.as_str() == "GLOBAL"
             })
+            .chain(
+                proxies
+                    .order
+                    .iter()
+                    .filter(|name| name.as_str() != "GLOBAL"),
+            )
             .filter_map(|name| {
                 let group = proxies.entries.get(name)?;
                 if group.hidden {
@@ -502,6 +504,33 @@ pub(super) fn sample_groups() -> Vec<ProxyGroup> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn global_mode_keeps_nested_groups_available_after_the_global_exit() {
+        let raw = br#"{"proxies":{"GLOBAL":{"name":"GLOBAL","type":"Selector","all":["outer"],"now":"outer"},"outer":{"name":"outer","type":"Selector","all":["inner"],"now":"inner"},"inner":{"name":"inner","type":"URLTest","all":["leaf"],"now":"leaf"},"hidden":{"name":"hidden","type":"Selector","all":["leaf"],"hidden":true},"leaf":{"name":"leaf","type":"Trojan"}}}"#;
+        let proxies = crate::proxies::runtime::Proxies::parse(
+            raw,
+            &[
+                "outer".into(),
+                "hidden".into(),
+                "inner".into(),
+                "GLOBAL".into(),
+            ],
+        )
+        .unwrap();
+        let groups = ProxyGroup::observed(&proxies, Some(crate::session::ProxyMode::Global), 5000);
+        assert_eq!(
+            groups.iter().map(ProxyGroup::id).collect::<Vec<_>>(),
+            ["GLOBAL", "outer", "inner"]
+        );
+        assert_eq!(groups[0].nodes[0].display_name(), "outer · inner → leaf");
+        assert_eq!(groups[1].nodes[0].name(), "inner");
+        let rule = ProxyGroup::observed(&proxies, Some(crate::session::ProxyMode::Rule), 5000);
+        assert_eq!(
+            rule.iter().map(ProxyGroup::id).collect::<Vec<_>>(),
+            ["outer", "inner"]
+        );
+    }
 
     #[test]
     fn nested_groups_show_selected_path_protocol_and_observed_capabilities() {

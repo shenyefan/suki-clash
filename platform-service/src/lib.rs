@@ -91,9 +91,18 @@ pub static IPC_AUTH_EXPECT: &str = r#"A thing of beauty is a joy for ever. Its l
 
 pub static VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const PROTOCOL_EPOCH: u16 = 2;
-pub const PROTOCOL_REVISION: u16 = 8;
-pub const MIN_SUPPORTED_CLIENT_REVISION: u16 = 8;
-pub const MIN_REQUIRED_SERVICE_REVISION: u16 = 8;
+pub const PROTOCOL_REVISION: u16 = 9;
+pub const MIN_SUPPORTED_CLIENT_REVISION: u16 = 9;
+pub const MIN_REQUIRED_SERVICE_REVISION: u16 = 9;
+/// Core-owned geographic databases that may be read back from an authenticated session.
+pub const RUNTIME_GEO_ASSETS: &[&str] = &[
+    "Country.mmdb",
+    "ASN.mmdb",
+    "geoip.dat",
+    "geosite.dat",
+    "geoip.metadb",
+    "GeoSite.dat",
+];
 /// Revision that introduced `/clash/stage-runtime`.
 /// This is a capability gate, not the minimum compatible service revision.
 pub const MIN_SERVICE_REVISION_FOR_RUNTIME_STAGING: u16 = 2;

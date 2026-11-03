@@ -343,6 +343,163 @@ pub(super) async fn run(
 mod tests {
     use super::*;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    #[tokio::test]
+    async fn automatic_measurement_respects_interval_and_cancels_old_generation() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::time::Duration;
+
+        let root = tempfile::Builder::new()
+            .prefix("suki-auto-delay-")
+            .tempdir_in("/tmp")
+            .unwrap();
+        let paths = AppPaths::isolated(root.path());
+        crate::storage::Repository::open(paths.clone()).unwrap();
+        let mut settings = crate::preferences::defaults(crate::preferences::SettingsKind::General);
+        settings.insert("EnableAutoDelay".into(), "true".into());
+        settings.insert("AutoDelayInterval".into(), "1".into());
+        settings.insert("DelayTestTimeout".into(), "60000".into());
+        crate::preferences::app::write_values(&paths, "general", &settings).unwrap();
+
+        let endpoint = root.path().join("api.sock");
+        let listener = tokio::net::UnixListener::bind(&endpoint).unwrap();
+        let observations = Arc::new(AtomicUsize::new(0));
+        let measurements = Arc::new(AtomicUsize::new(0));
+        let started = Arc::new(tokio::sync::Notify::new());
+        let cancelled = Arc::new(tokio::sync::Notify::new());
+        let calls = observations.clone();
+        let probes = measurements.clone();
+        let begin = started.clone();
+        let closed = cancelled.clone();
+        let server = tokio::spawn(async move {
+            let mut tasks = JoinSet::new();
+            loop {
+                tokio::select! {
+                    accepted = listener.accept() => {
+                        let (mut socket, _) = accepted.unwrap();
+                        let calls = calls.clone();
+                        let probes = probes.clone();
+                        let begin = begin.clone();
+                        let closed = closed.clone();
+                        tasks.spawn(async move {
+                            let mut bytes = [0; 8192];
+                            let n = socket.read(&mut bytes).await.unwrap();
+                            let request = String::from_utf8_lossy(&bytes[..n]);
+                            let body = if request.starts_with("GET /configs ") {
+                                calls.fetch_add(1, Ordering::SeqCst);
+                                r#"{"mode":"rule"}"#
+                            } else if request.starts_with("GET /proxies ") {
+                                r#"{"proxies":{"g":{"name":"g","type":"Selector","all":["node"],"now":"node"},"node":{"name":"node","type":"Socks5"}}}"#
+                            } else if request.starts_with("GET /providers/proxies ") {
+                                r#"{"providers":{}}"#
+                            } else {
+                                assert!(request.starts_with("GET /proxies/node/delay?"));
+                                if probes.fetch_add(1, Ordering::SeqCst) == 0 {
+                                    begin.notify_one();
+                                    assert_eq!(socket.read(&mut bytes).await.unwrap(), 0);
+                                    closed.notify_one();
+                                    return;
+                                }
+                                r#"{"delay":11}"#
+                            };
+                            socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
+                        });
+                    },
+                    _ = tasks.join_next(), if !tasks.is_empty() => {},
+                }
+            }
+        });
+        let target = Target {
+            logs: None,
+            client: super::super::client::Client::new(
+                super::super::client::Endpoint::Unix(endpoint),
+                "test".into(),
+            ),
+            http: Default::default(),
+            generation: 7,
+            epoch: 9,
+            order: vec!["g".into()],
+            proxy_port: 0,
+            proxy_auth: None,
+            dns_mode: None,
+            proxy_error: None,
+        };
+        let (targets, changes) = watch::channel(Some(target.clone()));
+        let (sender, requests) = async_channel::bounded(2);
+        let (updates, mut events) = watch::channel(State::default());
+        let (shutdown, cancellation) = watch::channel(false);
+        let worker = tokio::spawn(run(paths.clone(), changes, requests, updates, cancellation));
+        tokio::time::timeout(Duration::from_secs(3), started.notified())
+            .await
+            .unwrap();
+        assert_eq!(observations.load(Ordering::SeqCst), 1);
+        // The scheduler polls every five seconds, but the saved interval is one minute.
+        tokio::time::sleep(Duration::from_millis(5200)).await;
+        assert_eq!(observations.load(Ordering::SeqCst), 1);
+        assert_eq!(measurements.load(Ordering::SeqCst), 1);
+        targets.send_replace(None);
+        tokio::time::timeout(Duration::from_secs(3), cancelled.notified())
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                if events.borrow().generation == 0 && events.borrow().testing.is_empty() {
+                    break;
+                }
+                events.changed().await.unwrap();
+            }
+        })
+        .await
+        .unwrap();
+        assert!(events.borrow().results.is_empty());
+        assert!(events.borrow().completed.is_empty());
+
+        settings.insert("EnableAutoDelay".into(), "false".into());
+        crate::preferences::app::write_values(&paths, "general", &settings).unwrap();
+        targets.send_replace(Some(Target {
+            generation: 8,
+            epoch: 10,
+            ..target
+        }));
+        sender
+            .send(Request {
+                id: 2,
+                test: Test {
+                    generation: 8,
+                    epoch: 10,
+                    group: Some("g".into()),
+                    node: Some("node".into()),
+                    urls: Default::default(),
+                },
+            })
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                if events.borrow().generation == 8 && !events.borrow().completed.is_empty() {
+                    break;
+                }
+                events.changed().await.unwrap();
+            }
+        })
+        .await
+        .unwrap();
+        let final_state = events.borrow().clone();
+        assert_eq!(final_state.epoch, 10);
+        assert_eq!(final_state.results[&("g".into(), "node".into())], Ok(11));
+        assert!(final_state.testing.is_empty());
+        assert!(final_state.batches.is_empty());
+        assert_eq!(final_state.completed.len(), 1);
+        assert_eq!(measurements.load(Ordering::SeqCst), 2);
+        shutdown.send_replace(true);
+        tokio::time::timeout(Duration::from_secs(3), worker)
+            .await
+            .unwrap()
+            .unwrap();
+        server.abort();
+        let _ = server.await;
+    }
+
     #[tokio::test]
     async fn fast_result_is_published_while_slow_node_is_still_pending() {
         let root = tempfile::Builder::new()

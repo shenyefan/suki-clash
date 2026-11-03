@@ -158,7 +158,7 @@ impl Actor {
                     &content,
                     (!key.is_empty()).then_some(key.as_str()),
                 )?;
-                self.restore_gist_archive(archive).await?;
+                self.restore_archive(archive).await?;
             }
             Command::Delete(id) => {
                 self.progress("删除 Gist 备份");
@@ -171,11 +171,11 @@ impl Actor {
         }
         Ok(())
     }
-    pub(super) async fn restore_gist_archive(
+    pub(super) async fn restore_archive(
         &mut self,
         archive: crate::backup::Archive,
     ) -> Result<(), String> {
-        self.progress("恢复 Gist 备份");
+        self.progress("恢复备份");
         let staged = archive.stage(&self.paths)?;
         Launch::preview(&staged.paths).await?;
         let old_profiles = crate::profiles::repository::read(&self.paths)?.1;
@@ -260,7 +260,7 @@ impl Actor {
         if let Err(error) = self.sync_system_proxy().await {
             return Err(format!("备份已恢复；{error}"));
         }
-        self.completed("Gist备份已恢复".into());
+        self.completed("备份已恢复".into());
         Ok(())
     }
     fn refresh_restored_settings(&mut self) -> Result<(), String> {

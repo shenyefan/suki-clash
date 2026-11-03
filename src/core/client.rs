@@ -253,6 +253,9 @@ impl Client {
     }
     pub(super) async fn tun_enabled(&self) -> Result<bool, String> {
         let config = self.json("/configs").await?;
+        Self::read_tun_enabled(&config)
+    }
+    fn read_tun_enabled(config: &serde_json::Value) -> Result<bool, String> {
         config
             .get("tun")
             .and_then(|tun| tun.get("enable"))
@@ -261,9 +264,25 @@ impl Client {
     }
     pub(super) async fn verify_tun(&self, expected: &serde_yaml_ng::Value) -> Result<bool, String> {
         let desired = crate::configuration::tun::enabled(expected)?;
-        let actual = self.tun_enabled().await?;
+        let config = self.json("/configs").await?;
+        let actual = Self::read_tun_enabled(&config)?;
         if desired != actual {
             return Err("内核虚拟网卡状态与请求不一致".into());
+        }
+        #[cfg(target_os = "macos")]
+        if actual
+            && let Some(expected_mode) = expected
+                .get("tun")
+                .and_then(|tun| tun.get("dns-mode"))
+                .and_then(serde_yaml_ng::Value::as_str)
+                .filter(|mode| !mode.is_empty())
+            && config
+                .get("tun")
+                .and_then(|tun| tun.get("dns-mode"))
+                .and_then(serde_json::Value::as_str)
+                != Some(expected_mode)
+        {
+            return Err("内核未确认虚拟网卡 DNS 模式，请更新内核或修正配置".into());
         }
         Ok(actual)
     }
@@ -592,6 +611,7 @@ mod tests {
         status: u16,
         body: &[u8],
         framing: &str,
+        request_path: &'static str,
     ) -> (tempfile::TempDir, Client, tokio::task::JoinHandle<()>) {
         let root = tempfile::Builder::new()
             .prefix("suki-api-")
@@ -606,7 +626,7 @@ mod tests {
             let mut bytes = vec![0; 4096];
             let read = stream.read(&mut bytes).await.unwrap();
             let request = String::from_utf8_lossy(&bytes[..read]);
-            assert!(request.starts_with("GET /version HTTP/1.1"));
+            assert!(request.starts_with(&format!("GET {request_path} HTTP/1.1")));
             assert!(
                 request
                     .to_lowercase()
@@ -626,8 +646,13 @@ mod tests {
     async fn version_uses_private_http_transport_and_supports_chunked_bodies() {
         let body = r#"{"version":"v1.test"}"#;
         let chunked = format!("{:x}\r\n{body}\r\n0\r\n\r\n", body.len());
-        let (_root, client, server) =
-            respond(200, chunked.as_bytes(), "Transfer-Encoding: chunked").await;
+        let (_root, client, server) = respond(
+            200,
+            chunked.as_bytes(),
+            "Transfer-Encoding: chunked",
+            "/version",
+        )
+        .await;
         assert_eq!(client.version().await.unwrap(), "v1.test");
         server.await.unwrap();
     }
@@ -643,6 +668,7 @@ mod tests {
                 status,
                 body.as_bytes(),
                 &format!("Content-Length: {}", body.len()),
+                "/version",
             )
             .await;
             let error = client.version().await.unwrap_err();
@@ -655,9 +681,50 @@ mod tests {
     #[tokio::test]
     async fn oversized_response_is_rejected() {
         let body = vec![b'x'; super::RESPONSE_LIMIT + 1];
-        let (_root, client, server) =
-            respond(200, &body, &format!("Content-Length: {}", body.len())).await;
+        let (_root, client, server) = respond(
+            200,
+            &body,
+            &format!("Content-Length: {}", body.len()),
+            "/version",
+        )
+        .await;
         assert!(client.version().await.unwrap_err().contains("大小限制"));
+        server.await.unwrap();
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn macos_tun_dns_requires_actual_mode_readback_not_only_unknown_field_acceptance() {
+        let expected: serde_yaml_ng::Value =
+            serde_yaml_ng::from_str("tun: {enable: true, dns-mode: native}").unwrap();
+        for (body, succeeds) in [
+            (r#"{"tun":{"enable":true,"dns-mode":"native"}}"#, true),
+            (r#"{"tun":{"enable":true,"dns-mode":"disabled"}}"#, false),
+            (r#"{"tun":{"enable":true}}"#, false),
+            (r#"{"tun":{"enable":false,"dns-mode":"native"}}"#, false),
+        ] {
+            let (_root, client, server) = respond(
+                200,
+                body.as_bytes(),
+                &format!("Content-Length: {}", body.len()),
+                "/configs",
+            )
+            .await;
+            assert_eq!(client.verify_tun(&expected).await.is_ok(), succeeds);
+            server.await.unwrap();
+        }
+        // Turning TUN off must not require the feature that an older core ignored.
+        let expected: serde_yaml_ng::Value =
+            serde_yaml_ng::from_str("tun: {enable: false}").unwrap();
+        let body = r#"{"tun":{"enable":false}}"#;
+        let (_root, client, server) = respond(
+            200,
+            body.as_bytes(),
+            &format!("Content-Length: {}", body.len()),
+            "/configs",
+        )
+        .await;
+        assert!(!client.verify_tun(&expected).await.unwrap());
         server.await.unwrap();
     }
 }

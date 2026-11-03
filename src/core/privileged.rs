@@ -137,6 +137,26 @@ impl Session {
         }
         Ok(())
     }
+    pub(super) async fn sync_geo(&self, paths: &AppPaths) -> Result<usize, String> {
+        super::geo_sync::sync(
+            &paths.directory(crate::storage::DirectoryKind::Core),
+            |destination, offset| async move {
+                response(
+                    suki_service::read_runtime_file(
+                        &self.credentials,
+                        &self.proof,
+                        &suki_service::RuntimeFileRequest {
+                            destination,
+                            offset,
+                        },
+                    )
+                    .await
+                    .map_err(|error| error.to_string())?,
+                )
+            },
+        )
+        .await
+    }
     pub(super) async fn sync_providers(
         &self,
         launch: &Launch,

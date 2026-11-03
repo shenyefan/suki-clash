@@ -1,5 +1,6 @@
 //! Complete user-configuration archives. The lifecycle actor owns capture and restoration.
 mod gist;
+pub(crate) mod local;
 use crate::storage::{AppPaths, Namespace, Repository, atomic_write};
 use base64::Engine as _;
 pub(crate) use gist::Gist;
@@ -12,7 +13,7 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 const TOTAL_LIMIT: usize = 32 * 1024 * 1024;
-const ENCODED_LIMIT: usize = 8 * 1024 * 1024;
+pub(crate) const ENCODED_LIMIT: usize = 48 * 1024 * 1024;
 const HEADER: &str = "SUKI-CLASH-BACKUP-1\n";
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -252,13 +253,13 @@ impl Archive {
             text
         };
         if text.len() > ENCODED_LIMIT {
-            return Err("Gist备份编码超过8MiB上限".into());
+            return Err("备份编码超过48MiB上限".into());
         }
         Ok(text)
     }
     pub(crate) fn decode(text: &str, identity: Option<&str>) -> Result<Self, String> {
         if text.len() > ENCODED_LIMIT {
-            return Err("Gist备份超过8MiB上限".into());
+            return Err("备份超过48MiB上限".into());
         }
         let decrypted;
         let text = if text.starts_with("-----BEGIN AGE ENCRYPTED FILE-----") {

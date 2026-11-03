@@ -141,6 +141,19 @@ pub(crate) fn prepare(config: &mut Mapping) -> Result<(), String> {
                 .or_insert("2001:2::0/64".into());
         }
     }
+    // macOS otherwise keeps a LAN resolver outside the auto-routed TUN. Let
+    // Mihomo own a temporary catch-all resolver instead of overwriting a
+    // network service's persistent DNS settings. Explicit native choices stand.
+    #[cfg(target_os = "macos")]
+    if dns.get("enable").and_then(Value::as_bool) == Some(true)
+        && dns.get("enhanced-mode").and_then(Value::as_str) == Some("fake-ip")
+        && let Some(tun) = config.get_mut("tun").and_then(Value::as_mapping_mut)
+        && tun
+            .get("dns-mode")
+            .is_none_or(|value| value.as_str() == Some(""))
+    {
+        tun.insert("dns-mode".into(), "native".into());
+    }
     config.insert("dns".into(), dns.into());
     Ok(())
 }
@@ -223,6 +236,39 @@ mod tests {
         let mut disabled: Mapping = serde_yaml_ng::from_str("tun: {enable: false}").unwrap();
         prepare(&mut disabled).unwrap();
         assert!(disabled.get("dns").is_none());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_fake_ip_uses_core_owned_dns_without_overwriting_native_choices() {
+        for supplied in [None, Some("")] {
+            let mut config: Mapping = serde_yaml_ng::from_str(
+                "tun: {enable: true, dns-hijack: []}\ndns: {enhanced-mode: fake-ip}",
+            )
+            .unwrap();
+            if let Some(mode) = supplied {
+                config["tun"]["dns-mode"] = mode.into();
+            }
+            prepare(&mut config).unwrap();
+            assert_eq!(config["tun"]["dns-mode"], "native");
+            assert_eq!(config["tun"]["dns-hijack"], Value::Sequence(vec![]));
+        }
+        for mode in ["disabled", "native", "hijack"] {
+            let mut config: Mapping = serde_yaml_ng::from_str(&format!(
+                "tun: {{enable: true, dns-mode: {mode}}}\ndns: {{enhanced-mode: fake-ip}}"
+            ))
+            .unwrap();
+            prepare(&mut config).unwrap();
+            assert_eq!(config["tun"]["dns-mode"], mode);
+        }
+        for source in [
+            "tun: {enable: false}\ndns: {enhanced-mode: fake-ip}",
+            "tun: {enable: true}\ndns: {enable: false, enhanced-mode: redir-host}",
+        ] {
+            let mut config: Mapping = serde_yaml_ng::from_str(source).unwrap();
+            prepare(&mut config).unwrap();
+            assert!(config["tun"].get("dns-mode").is_none());
+        }
     }
     #[test]
     fn repository_uses_only_native_tun_fields() {

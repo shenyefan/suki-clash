@@ -10,6 +10,12 @@ impl SettingsPage {
         cx: &mut Context<Self>,
     ) -> bool {
         match action {
+            "创建本地备份" => crate::core::request(
+                crate::core::Command::LocalBackup(crate::core::local_backup::Command::Create),
+                window,
+                cx,
+            ),
+            "本地备份历史" => super::local_backup::open(window, cx),
             "配置 Gist 备份" => super::gist::configure(window, cx),
             "创建 Gist 备份" => crate::core::request(
                 crate::core::Command::Gist(crate::core::gist::Command::Create),

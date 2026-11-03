@@ -7,6 +7,7 @@ mod core_tools;
 mod dns;
 mod fields;
 mod gist;
+mod local_backup;
 mod preferences;
 mod resources;
 mod runtime;
@@ -445,33 +446,6 @@ impl SettingsPage {
             Err(error) => ui::show_error(error.to_string(), window, cx),
         }
     }
-    fn save_inner(&mut self, backup: bool, window: &mut Window, cx: &mut Context<Self>) {
-        let values = self.values(cx);
-        self.commit_core(values, window, cx);
-        if backup && let Ok(namespace) = crate::storage::Namespace::parse(self.kind.id()) {
-            store::execute(
-                store::Command::Backup(namespace),
-                window,
-                cx,
-                |result, window, cx| match result {
-                    Ok(store::Outcome::Backup(path)) => {
-                        crate::ui::notifications::push(
-                            window,
-                            format!(
-                                "备份已创建：{}",
-                                path.file_name()
-                                    .and_then(|name| name.to_str())
-                                    .unwrap_or("设置备份")
-                            ),
-                            cx,
-                        );
-                    }
-                    Err(error) => ui::show_error(error.to_string(), window, cx),
-                    _ => {}
-                },
-            );
-        }
-    }
     fn assign_values(
         &mut self,
         values: &BTreeMap<String, String>,
@@ -640,9 +614,7 @@ impl SettingsPage {
             }
         } else if matches!(
             action,
-            "创建备份"
-                | "恢复最新备份"
-                | "重置程序"
+            "重置程序"
                 | "退出应用"
                 | "复制版本号"
                 | "复制环境变量"
@@ -675,29 +647,6 @@ impl SettingsPage {
         }
         match action {
             "退出应用" => crate::core::quit(cx),
-            "创建备份" => self.save_inner(true, window, cx),
-            "恢复最新备份" => {
-                let owner = cx.weak_entity();
-                if let Ok(namespace) = crate::storage::Namespace::parse(self.kind.id()) {
-                    store::execute(
-                        store::Command::Restore(namespace),
-                        window,
-                        cx,
-                        move |result, window, cx| {
-                            let _ = owner.update(cx, |this, cx| match result {
-                                Ok(store::Outcome::Restored(values)) => {
-                                    this.core_syncing = true;
-                                    this.assign_values(&values, window, cx);
-                                    this.core_syncing = false;
-                                    this.commit_core(this.values(cx), window, cx);
-                                }
-                                Err(error) => ui::show_error(error.to_string(), window, cx),
-                                _ => {}
-                            });
-                        },
-                    );
-                }
-            }
             "重置程序" => {
                 let owner = cx.weak_entity();
                 window.open_alert_dialog(cx, move |dialog, window, cx| {

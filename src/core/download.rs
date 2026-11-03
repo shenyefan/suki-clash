@@ -483,4 +483,45 @@ mod tests {
             0
         );
     }
+
+    #[tokio::test]
+    async fn unsafe_redirects_fail_without_sending_credentials_or_retrying() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = AppPaths::isolated(root.path());
+        paths.create().unwrap();
+        for destination in [
+            "ftp://127.0.0.1/private",
+            "http://user:password@127.0.0.1/private",
+        ] {
+            let reply = format!(
+                "HTTP/1.1 302 Found\r\nLocation: {destination}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            );
+            let (url, server) = response(reply.as_bytes()).await;
+            let mut transfer = Transfer::request(
+                &Http::default(),
+                &paths,
+                Request {
+                    url: &url,
+                    agent: "SukiClash/0.1",
+                    authorization: "Bearer private-token",
+                    timeout: Duration::from_secs(2),
+                    limit: 1024,
+                    allow_empty: false,
+                },
+                &SubscriptionTransport::Direct,
+                false,
+                false,
+            )
+            .unwrap();
+            let failure = transfer.finish(|_, _| {}).await.unwrap_err();
+            assert_eq!(failure, "HTTP 重定向失败");
+            assert!(!failure.contains("private-token"));
+            assert!(!failure.contains("password"));
+            assert!(server.await.unwrap().starts_with("GET /file "));
+            assert_eq!(
+                transfer.finish(|_, _| {}).await.unwrap_err(),
+                "HTTP 请求已执行或取消"
+            );
+        }
+    }
 }

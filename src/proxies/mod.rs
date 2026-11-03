@@ -140,10 +140,15 @@ impl ProxiesPage {
                             .map(|group| group.id())
                             .collect::<Vec<_>>();
                         groups.sort_by_key(|group| {
-                            old_order
-                                .iter()
-                                .position(|id| id == &group.id())
-                                .unwrap_or(usize::MAX)
+                            (
+                                this.observed.mode != runtime.mode
+                                    && runtime.mode == Some(crate::session::ProxyMode::Global)
+                                    && group.id() != "GLOBAL",
+                                old_order
+                                    .iter()
+                                    .position(|id| id == &group.id())
+                                    .unwrap_or(usize::MAX),
+                            )
                         });
                         let ids = groups.iter().map(ProxyGroup::id).collect::<BTreeSet<_>>();
                         this.expanded.retain(|id| ids.contains(id));
@@ -323,5 +328,84 @@ impl ProxiesPage {
 
     fn refresh_list(&mut self, _: &mut Window, cx: &mut Context<Self>) {
         cx.notify();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ProxiesPage, model::ProxyGroup, runtime};
+    use crate::session::Session;
+    use gpui_kit::{AppContext, TestAppContext, WindowOptions};
+
+    #[gpui_kit::test]
+    fn entering_global_mode_prepends_exit_without_losing_group_order_or_filter(
+        cx: &mut TestAppContext,
+    ) {
+        let root = tempfile::tempdir().unwrap();
+        let paths = crate::storage::AppPaths::isolated(root.path());
+        let service =
+            crate::integration::Service::start(crate::storage::Repository::open(paths).unwrap())
+                .unwrap();
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            crate::integration::init(service, None, cx);
+        });
+        let (handle, session, page) = cx.update(|cx| {
+            let session = cx.new(|_| Session::default());
+            let state = session.clone();
+            let (handle, page) =
+                gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
+                    cx.new(|cx| ProxiesPage::new(state, window, cx))
+                })
+                .unwrap();
+            (handle, session, page)
+        });
+        let proxies = runtime::Proxies::parse(
+            br#"{"proxies":{"outer":{"name":"outer","type":"Selector","all":["inner"],"now":"inner"},"inner":{"name":"inner","type":"Selector","all":["DIRECT"],"now":"DIRECT"},"GLOBAL":{"name":"GLOBAL","type":"Selector","all":["outer"],"now":"outer"},"DIRECT":{"name":"DIRECT","type":"Direct"}}}"#,
+            &["outer".into(), "inner".into()],
+        )
+        .unwrap();
+        for mode in [
+            crate::session::ProxyMode::Rule,
+            crate::session::ProxyMode::Global,
+        ] {
+            cx.update(|cx| {
+                session.update(cx, |session, cx| {
+                    let snapshot = crate::core::Snapshot::ready_with_providers(
+                        crate::core::ProviderKind::Proxies,
+                        br#"{"providers":{}}"#,
+                    )
+                    .unwrap();
+                    *session = Session::fixture(
+                        snapshot,
+                        crate::core::Runtime {
+                            connected: true,
+                            mode: Some(mode),
+                            proxies: proxies.clone(),
+                            ..Default::default()
+                        },
+                    );
+                    cx.notify();
+                });
+            });
+            cx.run_until_parked();
+            cx.update_window(handle, |_, _, cx| {
+                page.update(cx, |page, _| {
+                    if mode == crate::session::ProxyMode::Rule {
+                        page.groups.reverse();
+                        page.group_filter.insert("inner".into());
+                    } else {
+                        assert_eq!(
+                            page.groups.iter().map(ProxyGroup::id).collect::<Vec<_>>(),
+                            ["GLOBAL", "inner", "outer"]
+                        );
+                        assert_eq!(page.group_filter, ["inner".to_owned()].into());
+                        assert!(page.expanded.contains("GLOBAL"));
+                    }
+                });
+            })
+            .unwrap();
+        }
+        crate::integration::finish_test_services(cx);
     }
 }

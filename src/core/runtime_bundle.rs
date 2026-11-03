@@ -7,14 +7,7 @@ use std::collections::{BTreeMap, HashSet};
 use std::path::{Component, Path, PathBuf};
 use suki_service::{RemoteProvider, RuntimeAsset, RuntimeBundle};
 
-pub(crate) const GEO_ASSETS: &[&str] = &[
-    "Country.mmdb",
-    "ASN.mmdb",
-    "geoip.dat",
-    "geosite.dat",
-    "geoip.metadb",
-    "GeoSite.dat",
-];
+pub(crate) use suki_service::RUNTIME_GEO_ASSETS as GEO_ASSETS;
 
 /// Provider identity used by the runtime config and core API.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -54,7 +47,25 @@ pub(crate) async fn collect_runtime_bundle_from(
         .with_context(|| format!("failed to read runtime config {config_file:?}"))?;
     let config: Value = serde_yaml_ng::from_str(&yaml)
         .with_context(|| format!("failed to parse runtime config {config_file:?}"))?;
-    let parts = collect_runtime_parts(config, config_root)?;
+    let mut parts = collect_runtime_parts(config, config_root)?;
+    // Private keys belong to service publication, not Provider declaration discovery.
+    let mut destinations = parts
+        .assets
+        .iter()
+        .map(|asset| asset.destination.clone())
+        .chain(
+            parts
+                .remote_providers
+                .iter()
+                .map(|declared| declared.provider.destination.clone()),
+        )
+        .collect();
+    collect_ssh_private_keys(
+        &mut parts.config,
+        &std::fs::canonicalize(config_root)?,
+        &mut destinations,
+        &mut parts.assets,
+    )?;
     Ok(RuntimeBundle {
         yaml: serde_yaml_ng::to_string(&parts.config)
             .context("failed to serialize service runtime config")?,
@@ -295,6 +306,90 @@ fn collect_provider_assets(
     Ok(())
 }
 
+/// Mihomo reads SSH file keys relative to its home, including fallback Provider payloads.
+fn collect_ssh_private_keys(
+    config: &mut Value,
+    config_root: &Path,
+    destinations: &mut HashSet<String>,
+    assets: &mut Vec<RuntimeAsset>,
+) -> Result<()> {
+    let Some(config) = config.as_mapping_mut() else {
+        return Ok(());
+    };
+    let mut lists = Vec::new();
+    for (key, value) in config.iter_mut() {
+        match key.as_str() {
+            Some("proxies") => lists.extend(value.as_sequence_mut()),
+            Some("proxy-providers") => lists.extend(
+                value
+                    .as_mapping_mut()
+                    .into_iter()
+                    .flat_map(Mapping::values_mut)
+                    .filter_map(|provider| provider.get_mut("payload")?.as_sequence_mut()),
+            ),
+            _ => {}
+        }
+    }
+    let mut staged = BTreeMap::new();
+    for proxy in lists
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_mapping_mut)
+    {
+        if proxy.get("type").and_then(Value::as_str) != Some("ssh") {
+            continue;
+        }
+        // This is Mihomo's inline-key classification; do not inspect or rewrite key material.
+        let Some(path) = proxy
+            .get("private-key")
+            .and_then(Value::as_str)
+            .filter(|key| !key.is_empty() && !key.contains("PRIVATE KEY"))
+        else {
+            continue;
+        };
+        let name = proxy
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        // Resolve only local disk paths: probing UNC/device paths can authenticate to a server.
+        if (cfg!(not(windows)) && path.starts_with("\\\\"))
+            || matches!(
+                Path::new(path).components().next(),
+                Some(Component::Prefix(prefix))
+                    if !matches!(prefix.kind(), std::path::Prefix::Disk(_) | std::path::Prefix::VerbatimDisk(_))
+            )
+        {
+            bail!("SSH 节点 {name:?} 的私钥文件需位于本地配置目录");
+        }
+        let requested = Path::new(path);
+        let requested = if requested.is_absolute() {
+            requested.to_path_buf()
+        } else {
+            config_root.join(requested)
+        };
+        let source = std::fs::canonicalize(&requested)
+            .map_err(|error| anyhow::anyhow!("SSH 节点 {name:?} 的私钥文件不可用：{error}"))?;
+        if !source.starts_with(config_root) || !source.is_file() {
+            bail!("SSH 节点 {name:?} 的私钥需为配置目录内的普通文件");
+        }
+        let destination = staged.entry(source.clone()).or_insert_with(|| {
+            // A root alias avoids service destination restrictions and the inline-key marker.
+            let destination = allocate_provider_destination(
+                "ssh-private-key",
+                &source.to_string_lossy(),
+                destinations,
+            );
+            assets.push(RuntimeAsset {
+                source: source.to_string_lossy().into_owned(),
+                destination: destination.clone(),
+            });
+            destination
+        });
+        proxy.insert("private-key".into(), destination.clone().into());
+    }
+    Ok(())
+}
+
 fn local_provider_source(config_root: &Path, raw_path: &str) -> Result<PathBuf> {
     let path = Path::new(raw_path);
     let source = if path.is_absolute() {
@@ -370,6 +465,106 @@ fn normalized_destination(relative: &Path) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::{collect_runtime_bundle, remote_providers_of, resolve_provider_path_conflicts};
+
+    #[tokio::test]
+    async fn ssh_keys_are_staged_once_across_nodes_and_provider_payloads() -> anyhow::Result<()> {
+        let temporary = tempfile::tempdir()?;
+        let root = std::fs::canonicalize(temporary.path())?;
+        std::fs::create_dir(root.join("keys"))?;
+        let key = root.join("keys/client.pem");
+        std::fs::write(&key, "private test material")?;
+        let config = root.join("config.yaml");
+        let source = format!(
+            "proxies:\n  - {{ name: relative, type: ssh, private-key: keys/client.pem }}\n  - {{ name: absolute, type: ssh, private-key: {} }}\n  - {{ name: inline, type: ssh, private-key: '-----BEGIN OPENSSH PRIVATE KEY-----' }}\n  - {{ name: password, type: ssh, password: unchanged }}\n  - {{ name: other, type: ss, private-key: ignored }}\nproxy-providers:\n  inline:\n    type: inline\n    payload:\n      - {{ name: inline-payload, type: ssh, private-key: ./keys/client.pem }}\n  remote:\n    type: http\n    url: https://example.test/nodes.yaml\n    path: providers/nodes.yaml\n    payload:\n      - {{ name: fallback, type: ssh, private-key: keys/client.pem }}\n  local:\n    type: file\n    path: providers/local.yaml\n    payload:\n      - {{ name: local-payload, type: ssh, private-key: keys/client.pem }}\n",
+            key.display()
+        );
+        std::fs::write(&config, &source)?;
+        let bundle = collect_runtime_bundle(&config, &root.join("mihomo")).await?;
+        assert_eq!(bundle.assets.len(), 1, "shared keys use one staged asset");
+        let asset = &bundle.assets[0];
+        assert_eq!(asset.source, key.to_string_lossy());
+        assert!(!asset.destination.contains('/'));
+        assert!(!asset.destination.contains("PRIVATE KEY"));
+        let yaml: serde_yaml_ng::Value = serde_yaml_ng::from_str(&bundle.yaml)?;
+        for value in [
+            &yaml["proxies"][0],
+            &yaml["proxies"][1],
+            &yaml["proxy-providers"]["inline"]["payload"][0],
+            &yaml["proxy-providers"]["remote"]["payload"][0],
+            &yaml["proxy-providers"]["local"]["payload"][0],
+        ] {
+            assert_eq!(value["private-key"], asset.destination);
+        }
+        assert_eq!(
+            yaml["proxies"][2]["private-key"],
+            "-----BEGIN OPENSSH PRIVATE KEY-----"
+        );
+        assert_eq!(yaml["proxies"][3]["password"], "unchanged");
+        assert_eq!(yaml["proxies"][4]["private-key"], "ignored");
+        assert_eq!(
+            std::fs::read_to_string(config)?,
+            source,
+            "source stays intact"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn ssh_file_errors_stop_publication_but_not_provider_discovery() -> anyhow::Result<()> {
+        let temporary = tempfile::tempdir()?;
+        let root = std::fs::canonicalize(temporary.path())?;
+        let outside = tempfile::tempdir()?;
+        let outside_key = outside.path().join("private.pem");
+        std::fs::write(&outside_key, "never include this private content in errors")?;
+        let config = root.join("config.yaml");
+        for path in [
+            "missing.pem".to_owned(),
+            ".".to_owned(),
+            outside_key.to_string_lossy().into_owned(),
+            "\\\\server\\private.pem".to_owned(),
+        ] {
+            let source = format!(
+                "proxies:\n  - name: ssh\n    type: ssh\n    private-key: {}\nproxy-providers:\n  remote:\n    type: http\n    url: https://example.test/nodes.yaml\n    path: providers/nodes.yaml\n",
+                serde_json::to_string(&path)?
+            );
+            std::fs::write(&config, &source)?;
+            let error = collect_runtime_bundle(&config, &root.join("mihomo"))
+                .await
+                .err()
+                .ok_or_else(|| anyhow::anyhow!("invalid private key file was accepted"))?;
+            assert!(error.to_string().contains("私钥"));
+            assert!(
+                !error
+                    .to_string()
+                    .contains("never include this private content")
+            );
+            let mapping = serde_yaml_ng::from_str(&source)?;
+            assert_eq!(remote_providers_of(&mapping, &root)?.len(), 1);
+            assert_eq!(std::fs::read_to_string(&config)?, source);
+        }
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn ssh_symlink_cannot_escape_the_config_root() -> anyhow::Result<()> {
+        let temporary = tempfile::tempdir()?;
+        let outside = tempfile::tempdir()?;
+        let key = outside.path().join("private.pem");
+        std::fs::write(&key, "private")?;
+        std::os::unix::fs::symlink(key, temporary.path().join("private.pem"))?;
+        let config = temporary.path().join("config.yaml");
+        std::fs::write(
+            &config,
+            "proxies: [{name: ssh, type: ssh, private-key: private.pem}]\n",
+        )?;
+        let error = collect_runtime_bundle(&config, &temporary.path().join("mihomo"))
+            .await
+            .err()
+            .ok_or_else(|| anyhow::anyhow!("escaping private-key symlink was accepted"))?;
+        assert!(error.to_string().contains("配置目录内"));
+        Ok(())
+    }
 
     #[tokio::test]
     async fn conflicting_sources_get_separate_paths_in_config_bundle_and_readback()

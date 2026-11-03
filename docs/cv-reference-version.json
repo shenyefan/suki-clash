@@ -1,0 +1,82 @@
+{
+  "checked_at": "2026-11-03T14:27:48+08:00",
+  "repository": "https://github.com/clash-verge-rev/clash-verge-rev",
+  "local": {
+    "directory": "clash-verge-rev-dev",
+    "declared_version": "2.5.10",
+    "git_commit": "5b7e876ab0332620e100bf826fc84f20f1658acd",
+    "git_identity_note": "Independent official Git clone; dev tracks origin/dev; working tree clean at synchronization.",
+    "snapshot_sha256": "d5fad25da65a4e7a6e1e16323f24c1027786f0b9c30bb8b3c11528e4be6ade1a",
+    "snapshot_entries": 751,
+    "snapshot_algorithm": "Sorted relative-path NUL kind NUL SHA256(file bytes) or symlink target LF; excludes .git/node_modules/target/dist/.cache path components.",
+    "key_file_sha256": {
+      "package.json": "0c428b63ee7d7ff31eaa0415e8661d2dbdf81e3e464a58077b906bb33a575b73",
+      "src-tauri/tauri.conf.json": "ed5970a200b5dcb7202a917b56b79f650d98fd24098ba1bee77f176a52b9d409",
+      "src-tauri/Cargo.toml": "463719531477579b3bde3b8eb37cb64a89e4990da420a06579ee8da024872c58",
+      "Cargo.lock": "0d73d95386162b536ce049c0c26a40e267c021a485ddf17e3c7102f8254e9565",
+      "Changelog.md": "90254728fe59224426dc5f63cb1756c7efd5f0e85becbf54d342429e83f7971c",
+      "src-tauri/src/core/runtime_bundle.rs": "eeb22264740e26d5051df9528ca625fe2cdb779950faf39333f42fa7bb63768e",
+      "src-tauri/src/core/service.rs": "b06882e4eee76b59517aa231773d510ad50fec3be5608f4d451155a6533c8b60"
+    },
+    "branch": "dev"
+  },
+  "upstream": {
+    "stable": {
+      "version": "2.5.9",
+      "tag": "v2.5.9",
+      "commit": "160bb4fe8eaef2bc626163d89622229e5d7c5b59",
+      "published_at": "2026-11-02T10:09:17Z"
+    },
+    "development": {
+      "branch": "dev",
+      "version": "2.5.10",
+      "commit": "5b7e876ab0332620e100bf826fc84f20f1658acd",
+      "commit_date": "2026-11-03T01:34:16Z",
+      "service_dependency": {
+        "version": "2.7.7",
+        "commit": "3ed29700b093190b5e7addcaa892e77f172af544"
+      }
+    }
+  },
+  "history": [
+    {
+      "date": "2026-11-03",
+      "action": "Initial upstream sync assessment; reference directory and product code unchanged.",
+      "report": "cv-upstream-sync.md"
+    },
+    {
+      "date": "2026-11-03",
+      "action": "Matched old snapshot exactly and replaced reference directory with clean official dev Git clone.",
+      "before": {
+        "directory": "clash-verge-rev-dev",
+        "declared_version": "2.5.9",
+        "git_commit": "eefd025806f255b85e7bc28158c30fdad477935d",
+        "git_identity_note": "All local file paths and Git blob hashes exactly match this upstream commit.",
+        "snapshot_sha256": "cd5c7f51635c1084c6fc37a546cefa22cd895064df68fc32de534a31eafbb5cf",
+        "snapshot_entries": 747,
+        "snapshot_algorithm": "Sorted relative-path NUL kind NUL SHA256(file bytes) or symlink target LF; excludes .git/node_modules/target/dist/.cache path components.",
+        "key_file_sha256": {
+          "package.json": "e8f961a49db5a24f679f12ea725b33464f82362cbd82b648a8f81b15b3fc3188",
+          "src-tauri/tauri.conf.json": "052257f78084ee43cad86ac28cc4b62a7fc4c4fb3b9c97390e979fb755a9fdbe",
+          "src-tauri/Cargo.toml": "82274e1a6b692cf0f340d19b3d368ea572d7c55b375405a114be50dad009dded",
+          "Cargo.lock": "3abd7f2dd5ebfb9394831e0f58018f68371685f68b9e141c6a64911963f6a13d",
+          "Changelog.md": "f2932ef7d2209cb0c23bef7f4b1f60f17cb68c016739d1eabaa545d9780ec9f6",
+          "src-tauri/src/core/runtime_bundle.rs": "c787bb151a54100a655a9cd939330868ac274be50401a1ed0f1bc54811f32ff3",
+          "src-tauri/src/core/service.rs": "a412e27f69e134cc234b171fb34fb81b828093d5803aef9ef0bfe5dc1483f826"
+        }
+      },
+      "after_commit": "5b7e876ab0332620e100bf826fc84f20f1658acd",
+      "changed_paths": 66,
+      "added": 4,
+      "modified": 62,
+      "deleted": 0,
+      "diff_manifest": "cv-reference-sync-2026-11-03.csv",
+      "backup": "clash-verge-rev-dev/.git/suki-reference-before-sync-eefd025-20261103.tar.gz"
+    },
+    {
+      "date": "2026-11-03",
+      "action": "Implemented Suki adaptations U01 SSH key assets, U02 Geo readback, U03 global-mode groups; service protocol revision 9. Reference commit unchanged.",
+      "report": "cv-update-comparison-2026-11-03.md"
+    }
+  ]
+}

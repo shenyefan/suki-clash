@@ -35,8 +35,6 @@ pub(crate) enum Command {
         values: Values,
         documents: Vec<DocumentWrite>,
     },
-    Backup(Namespace),
-    Restore(Namespace),
     OpenDirectory(DirectoryKind),
     OpenDocument(PathBuf),
     Diagnostics,
@@ -48,8 +46,6 @@ impl Command {
             Self::Log { .. } => "写入程序日志",
             #[cfg(test)]
             Self::Save { .. } => "保存配置",
-            Self::Backup(_) => "备份本页设置",
-            Self::Restore(_) => "读取备份草稿",
             Self::OpenDirectory(_) => "打开应用目录",
             Self::OpenDocument(_) => "打开配置文件",
             Self::Diagnostics => "导出诊断信息",
@@ -58,8 +54,6 @@ impl Command {
 }
 pub(crate) enum Outcome {
     Saved,
-    Backup(PathBuf),
-    Restored(Values),
     Directory(PathBuf),
     Document(PathBuf),
 }
@@ -489,15 +483,6 @@ fn execute(
             }
             Ok(Outcome::Document(path))
         }
-        Command::Backup(namespace) if matches!(namespace.name(), "core" | "resources") => {
-            let preferences = crate::configuration::Preferences::load(repository.paths())
-                .map_err(std::io::Error::other)?;
-            repository
-                .backup_values(&namespace, &preferences.values())
-                .map(Outcome::Backup)
-        }
-        Command::Backup(namespace) => repository.backup(&namespace).map(Outcome::Backup),
-        Command::Restore(namespace) => repository.restore(&namespace).map(Outcome::Restored),
         Command::Diagnostics => crate::diagnostics::export(repository)
             .map(Outcome::Document)
             .map_err(|error| std::io::Error::other(error).into()),
@@ -809,7 +794,7 @@ mod tests {
             Repository::open(paths).unwrap().read(&namespace()).unwrap(),
             values("second")
         );
-        assert!(service.submit(Command::Backup(namespace())).is_err());
+        assert!(service.submit(Command::Flush).is_err());
     }
     #[test]
     fn failed_index_write_restores_document_and_keeps_snapshot_unchanged() {

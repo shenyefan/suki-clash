@@ -182,9 +182,9 @@ where
         }
     }
 }
-fn decode_chunk(hex: &str) -> Result<Vec<u8>, String> {
+pub(super) fn decode_chunk(hex: &str) -> Result<Vec<u8>, String> {
     if !hex.len().is_multiple_of(2) {
-        return Err("Provider 分块编码无效".into());
+        return Err("运行文件分块编码无效".into());
     }
     hex.as_bytes()
         .as_chunks::<2>()
@@ -196,8 +196,8 @@ fn decode_chunk(hex: &str) -> Result<Vec<u8>, String> {
                 b'a'..=b'f' => Some(b - b'a' + 10),
                 _ => None,
             };
-            Ok(digit(pair[0]).ok_or("Provider 分块编码无效")? * 16
-                + digit(pair[1]).ok_or("Provider 分块编码无效")?)
+            Ok(digit(pair[0]).ok_or("运行文件分块编码无效")? * 16
+                + digit(pair[1]).ok_or("运行文件分块编码无效")?)
         })
         .collect()
 }

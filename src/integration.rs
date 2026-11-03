@@ -131,12 +131,6 @@ pub(crate) fn execute(
             "settings" => "settings",
             _ => "storage",
         },
-        Command::Backup(namespace) | Command::Restore(namespace) => match namespace.name() {
-            "profile-index" => "profiles",
-            "override-index" => "overrides",
-            "settings" => "settings",
-            _ => "storage",
-        },
         Command::Log { module, .. } => module,
         _ => "storage",
     };
@@ -162,10 +156,7 @@ pub(crate) fn execute(
     let id = pending.id();
     let handle = window.window_handle();
     let task = cx.spawn(async move |cx| {
-        let result = pending.receive().await.map(|outcome| match outcome {
-            Outcome::Restored(values) => Outcome::Restored(choices::decode(values)),
-            other => other,
-        });
+        let result = pending.receive().await;
         cx.update(|cx| match &result {
             Ok(_) => announce_module(success_level, module, format!("{label}已完成"), cx),
             Err(error) => announce_module("ERROR", module, error.to_string(), cx),
