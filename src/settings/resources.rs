@@ -16,8 +16,11 @@ impl SettingsPage {
         if self.session.read(cx).core_busy() {
             return;
         }
+        // A failed submission is still this generation's automatic attempt.
+        // Session sampling must not turn it into a repeated toast/request.
+        self.resource_generation = Some(self.session.read(cx).core().generation());
         match core::submit(core::Command::Resources, window, cx) {
-            Ok(_) => self.resource_generation = Some(self.session.read(cx).core().generation()),
+            Ok(_) => {}
             Err(error) => ui::show_error(error, window, cx),
         }
     }

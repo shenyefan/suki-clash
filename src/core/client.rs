@@ -161,7 +161,7 @@ impl Client {
                     .get("exclude-type")
                     .and_then(serde_yaml_ng::Value::as_str)
                     .unwrap_or_default()
-                    .split(',')
+                    .split('|')
                     .map(str::trim)
                     .filter(|kind| !kind.is_empty())
                     .map(str::to_owned)
@@ -211,7 +211,8 @@ impl Client {
         provider: Option<&str>,
         url: &str,
         timeout: u64,
-    ) -> Result<u32, String> {
+    ) -> Result<u32, crate::proxies::runtime::MeasurementError> {
+        use crate::proxies::runtime::MeasurementError;
         let query = url::form_urlencoded::Serializer::new(String::new())
             .append_pair("url", url)
             .append_pair("timeout", &timeout.to_string())
@@ -224,20 +225,59 @@ impl Client {
             ),
             None => format!("/proxies/{name}/delay?{query}"),
         };
-        let body = self
-            .request(
-                Method::GET,
-                &path,
-                Duration::from_millis(timeout.saturating_add(2000)),
-            )
-            .await?;
+        let (status, body) = tokio::time::timeout(Duration::from_millis(timeout), async {
+            self.exchange_response(self.connect().await?, Method::GET, &path, Vec::new())
+                .await
+        })
+        .await
+        .map_err(|_| MeasurementError::Timeout)?
+        .map_err(MeasurementError::Failed)?;
+        if status == hyper::StatusCode::GATEWAY_TIMEOUT
+            || status == hyper::StatusCode::REQUEST_TIMEOUT
+        {
+            return Err(MeasurementError::Timeout);
+        }
+        if !status.is_success() {
+            return Err(MeasurementError::Failed(format!(
+                "内核本地 API 返回 HTTP {}",
+                status.as_u16()
+            )));
+        }
         #[derive(Deserialize)]
         struct Delay {
             delay: u32,
         }
         serde_json::from_slice::<Delay>(&body)
             .map(|value| value.delay)
-            .map_err(|_| "延迟测试响应无效".into())
+            .map_err(|_| MeasurementError::Failed("延迟测试响应无效".into()))
+    }
+    pub(super) async fn tun_enabled(&self) -> Result<bool, String> {
+        let config = self.json("/configs").await?;
+        config
+            .get("tun")
+            .and_then(|tun| tun.get("enable"))
+            .and_then(serde_json::Value::as_bool)
+            .ok_or_else(|| "内核未返回虚拟网卡实际状态".into())
+    }
+    pub(super) async fn verify_tun(&self, expected: &serde_yaml_ng::Value) -> Result<bool, String> {
+        let desired = crate::configuration::tun::enabled(expected)?;
+        let actual = self.tun_enabled().await?;
+        if desired != actual {
+            return Err("内核虚拟网卡状态与请求不一致".into());
+        }
+        Ok(actual)
+    }
+    pub(super) async fn reload_file(&self, path: &str) -> Result<(), String> {
+        let body = serde_json::to_vec(&serde_json::json!({"path":path}))
+            .map_err(|_| "无法编码配置路径")?;
+        self.request_body(
+            Method::PUT,
+            "/configs?force=true",
+            Duration::from_secs(15),
+            body,
+        )
+        .await
+        .map(|_| ())
     }
     pub(super) async fn reload(&self, yaml: &str) -> Result<(), String> {
         let body = serde_json::to_vec(&serde_json::json!({"payload": yaml}))
@@ -334,6 +374,9 @@ impl Client {
             .await
             .map(|_| ())
     }
+    pub(super) fn set_endpoint(&mut self, endpoint: Endpoint) {
+        self.endpoint = endpoint;
+    }
     pub(super) fn new(endpoint: Endpoint, secret: String) -> Self {
         Self {
             endpoint,
@@ -390,6 +433,24 @@ impl Client {
     where
         S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     {
+        let (status, body) = self
+            .exchange_response(stream, method, path, payload)
+            .await?;
+        if !status.is_success() {
+            return Err(format!("内核本地 API 返回 HTTP {}", status.as_u16()));
+        }
+        Ok(body)
+    }
+    async fn exchange_response<S>(
+        &self,
+        stream: S,
+        method: Method,
+        path: &str,
+        payload: Vec<u8>,
+    ) -> Result<(hyper::StatusCode, Vec<u8>), String>
+    where
+        S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    {
         let (mut sender, connection) = http1::handshake(TokioIo::new(stream))
             .await
             .map_err(|_| "内核本地 HTTP 握手失败".to_owned())?;
@@ -408,12 +469,7 @@ impl Client {
                 .send_request(request)
                 .await
                 .map_err(|_| "内核本地 API 传输失败".to_owned())?;
-            if !response.status().is_success() {
-                return Err(format!(
-                    "内核本地 API 返回 HTTP {}",
-                    response.status().as_u16()
-                ));
-            }
+            let status = response.status();
             let mut body = response.into_body();
             let mut bytes = Vec::new();
             while let Some(frame) = body.frame().await {
@@ -425,7 +481,7 @@ impl Client {
                     bytes.extend_from_slice(&data);
                 }
             }
-            Ok(bytes)
+            Ok((status, bytes))
         };
         tokio::pin!(request);
         tokio::pin!(connection);
@@ -450,6 +506,87 @@ pub(super) fn random_token() -> Result<String, io::Error> {
 mod tests {
     use super::{Client, Endpoint};
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+    #[tokio::test]
+    async fn measurement_classification_uses_status_and_deadline_not_error_text() {
+        use crate::proxies::runtime::MeasurementError;
+        for (status, body, expected) in [
+            (200, r#"{"delay":15000}"#, Ok(15000)),
+            (200, r#"{"delay":0}"#, Ok(0)),
+            (
+                504,
+                r#"{"message":"anything"}"#,
+                Err(MeasurementError::Timeout),
+            ),
+            (
+                500,
+                r#"{"message":"超时"}"#,
+                Err(MeasurementError::Failed(
+                    "内核本地 API 返回 HTTP 500".into(),
+                )),
+            ),
+        ] {
+            let root = tempfile::tempdir_in("/tmp").unwrap();
+            let endpoint = root.path().join("api.sock");
+            let listener = tokio::net::UnixListener::bind(&endpoint).unwrap();
+            let server = tokio::spawn(async move {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut bytes = [0; 4096];
+                let received = stream.read(&mut bytes).await.unwrap();
+                assert!(received > 0);
+                stream.write_all(format!("HTTP/1.1 {status} Test\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
+            });
+            let client = Client::new(Endpoint::Unix(endpoint), String::new());
+            assert_eq!(
+                client
+                    .node_delay("node", None, "https://example.test", 1000)
+                    .await,
+                expected
+            );
+            server.await.unwrap();
+        }
+        let root = tempfile::tempdir_in("/tmp").unwrap();
+        let endpoint = root.path().join("api.sock");
+        let listener = tokio::net::UnixListener::bind(&endpoint).unwrap();
+        let server = tokio::spawn(async move {
+            let (_stream, _) = listener.accept().await.unwrap();
+            std::future::pending::<()>().await;
+        });
+        let client = Client::new(Endpoint::Unix(endpoint), String::new());
+        assert_eq!(
+            client
+                .node_delay("node", None, "https://example.test", 100)
+                .await,
+            Err(MeasurementError::Timeout)
+        );
+        server.abort();
+        let _ = server.await;
+    }
+
+    #[test]
+    fn provider_exclusions_follow_pipe_delimited_types_when_resolving_duplicates() {
+        let config = serde_yaml_ng::from_str(
+            "proxy-groups:\n- name: g\n  use: [a, b, c]\n  exclude-type: ss|trojan\n",
+        )
+        .unwrap();
+        let client = Client::new(Endpoint::Unix("/unused.sock".into()), String::new())
+            .with_proxy_config(&config);
+        let mut proxies = crate::proxies::runtime::Proxies::parse(
+            br#"{"proxies":{"g":{"name":"g","type":"Selector","all":["n"]}}}"#,
+            &[],
+        )
+        .unwrap();
+        proxies.scopes = client.scopes;
+        proxies.include_providers(br#"{"providers":{"a":{"proxies":[{"name":"n","type":"ss"}]},"b":{"proxies":[{"name":"n","type":"Trojan"}]},"c":{"proxies":[{"name":"n","type":"Socks5"}]}}}"#).unwrap();
+        assert_eq!(
+            proxies
+                .member_proxy(&proxies.members["g"][0])
+                .unwrap()
+                .provider
+                .as_deref(),
+            Some("c")
+        );
+    }
 
     async fn respond(
         status: u16,

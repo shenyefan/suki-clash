@@ -89,6 +89,7 @@ impl Actor {
         Ok(())
     }
     pub(super) async fn overrides(&mut self, change: Change) -> Result<(), String> {
+        self.snapshot.operation_committed = false;
         let (expected, old) = repository::read(&self.paths)?;
         self.snapshot
             .settings
@@ -115,6 +116,10 @@ impl Actor {
                     restored.push(document.id);
                     document.token.clone_from(&entry.credentials.0);
                     document.age_key = entry.credentials.1;
+                    document.credentials = crate::profiles::CredentialEdits::from_inputs(
+                        &document.token,
+                        &document.age_key,
+                    );
                     documents.insert(entry.position.min(documents.len()), document);
                 }
                 documents
@@ -165,12 +170,15 @@ impl Actor {
         };
         let vault = crate::profiles::CredentialStore::overrides(&self.paths);
         let mut secrets = std::collections::BTreeMap::new();
+        let mut previous = std::collections::BTreeMap::new();
         for document in &mut desired {
-            if !document.token.is_empty() || !document.age_key.is_empty() {
-                secrets.insert(
-                    document.id,
-                    (document.token.clone(), document.age_key.clone()),
-                );
+            if document.credentials.changed() {
+                let saved = vault.read(document.id).await?;
+                let resolved = document.credentials.resolve(saved.clone());
+                document.token.clone_from(&resolved.0);
+                document.age_key.clone_from(&resolved.1);
+                previous.insert(document.id, saved);
+                secrets.insert(document.id, resolved);
             }
             if document.is_remote() && document.content.is_empty() {
                 self.fetch_profile(document, !old.iter().any(|old| old.id == document.id))
@@ -190,10 +198,6 @@ impl Actor {
                 credentials: vault.read(document.id).await?,
             });
         }
-        let mut previous = std::collections::BTreeMap::new();
-        for id in secrets.keys() {
-            previous.insert(*id, vault.read(*id).await?);
-        }
         for (id, (token, age)) in secrets {
             if let Err(error) = vault.write(id, &token, &age).await {
                 let recovery = vault.restore(previous).await;
@@ -209,6 +213,7 @@ impl Actor {
                 Err(other) => format!("{error}；{other}"),
             });
         }
+        self.snapshot.operation_committed = true;
         for entry in removed {
             self.deleted_overrides.insert(entry.document.id, entry);
         }

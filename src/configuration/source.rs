@@ -67,13 +67,19 @@ impl Source {
     }
 
     pub(crate) fn from_profile(paths: &AppPaths, id: u64) -> Result<Self, String> {
-        let store = Repository::open(paths.clone()).map_err(|_| "无法读取订阅存储")?;
-        let values = store
+        let repository = Repository::open(paths.clone()).map_err(|_| "无法读取订阅存储")?;
+        let mut values = repository
             .read_limited(
-                &Namespace::parse("profile-index").map_err(|_| "订阅存储无效")?,
+                &Namespace::parse("profile-index").map_err(|error| error.to_string())?,
                 super::INPUT_LIMIT,
             )
-            .map_err(|_| "订阅索引损坏或超过大小上限")?;
+            .map_err(|error| error.to_string())?;
+        if values.keys().any(|key| key.ends_with("/content")) {
+            return Err("文档索引不得包含正文；正文只保存在文档文件".into());
+        }
+        let content =
+            crate::profiles::store::read_body(&crate::profiles::repository::body_path(paths, id))?;
+        values.insert(format!("{id}/content"), content);
         Self::from_profile_values(&values, id)
     }
     pub(crate) fn from_profile_values(

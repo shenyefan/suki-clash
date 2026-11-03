@@ -4,9 +4,11 @@ mod editor;
 mod enhance;
 pub(crate) mod model;
 pub(crate) mod override_repository;
+mod proxy_uri;
 pub(crate) mod remote;
 pub(crate) mod repository;
-pub(crate) use credentials::CredentialStore;
+pub(crate) use credentials::SecretEdit;
+pub(crate) use credentials::{CredentialEdits, CredentialStore};
 mod organize;
 mod overrides;
 pub(crate) mod store;
@@ -88,9 +90,14 @@ impl ProfilesPage {
                         let completed = this.pending_profile.as_ref().is_some_and(|(id, _)| {
                             core.request_id().is_some_and(|request| request >= *id)
                         });
+                        let committed = core.operation_committed()
+                            && this
+                                .pending_profile
+                                .as_ref()
+                                .is_some_and(|(id, _)| core.request_id() == Some(*id));
                         if completed {
                             this.saving = false;
-                            this.rejected = core.error().is_some();
+                            this.rejected = core.error().is_some() && !committed;
                         }
                         if !this.rejected
                             && let Some(values) = core.settings(store::key(this.overrides))
@@ -117,7 +124,7 @@ impl ProfilesPage {
                         }
                         if completed
                             && let Some((_, complete)) = this.pending_profile.take()
-                            && core.error().is_none()
+                            && (core.error().is_none() || committed)
                         {
                             complete(this, window, cx);
                         }
@@ -282,12 +289,8 @@ impl ProfilesPage {
             DocumentKind::Profile
         };
         let mut document = Document::new(id, kind);
-        document.name = if self.overrides {
-            "远程覆写"
-        } else {
-            "远程订阅"
-        }
-        .into();
+        document.name.clear();
+        document.interval.clear();
         document.url = url;
         document.content.clear();
         document.self_proxy = crate::integration::read("settings", cx)
@@ -299,6 +302,7 @@ impl ProfilesPage {
         document.token = self.import_token.read(cx).value().to_string();
         document.user_agent = self.import_agent.read(cx).value().to_string();
         document.age_key = self.import_age.read(cx).value().to_string();
+        document.credentials = CredentialEdits::from_inputs(&document.token, &document.age_key);
         document
     }
     fn import_remote(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -318,6 +322,26 @@ impl ProfilesPage {
         let document = self.remote_document(cx);
         if let Err(error) = self.save_document(document, window, cx) {
             ui::show_error(error, window, cx);
+        }
+    }
+    pub(crate) fn import_uri(&mut self, uri: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if self.saving || self.session.read(cx).core_busy() {
+            ui::show_error("已有配置操作正在执行".into(), window, cx);
+            return;
+        }
+        match crate::desktop::instance::parse_uri(uri) {
+            Ok(import) => {
+                self.url
+                    .update(cx, |state, cx| state.set_value(import.url, window, cx));
+                let mut document = self.remote_document(cx);
+                if let Some(name) = import.name {
+                    document.name = name;
+                }
+                if let Err(error) = self.save_document(document, window, cx) {
+                    ui::show_error(error, window, cx);
+                }
+            }
+            Err(error) => ui::show_error(error, window, cx),
         }
     }
     fn import_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -483,14 +507,8 @@ impl ProfilesPage {
         match action {
             "分享二维码" => Self::share_qr(&document, window, cx),
             "复制链接" => cx.write_to_clipboard(ClipboardItem::new_string(document.url)),
-            "编辑规则" => {
+            "订阅增强" => {
                 enhance::open(document, 0, window, cx);
-            }
-            "编辑代理" => {
-                enhance::open(document, 1, window, cx);
-            }
-            "编辑代理组" => {
-                enhance::open(document, 2, window, cx);
             }
             "编辑信息" => self.open_editor(document, false, window, cx),
             "编辑文件" => self.open_editor(document, true, window, cx),

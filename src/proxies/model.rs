@@ -41,22 +41,14 @@ impl Filter {
     }
     fn matches(&self, node: &Node) -> bool {
         if let Some((operator, threshold, special)) = self.expression {
-            let value = node.delay.or_else(|| {
-                if node
-                    .failure
-                    .as_ref()
-                    .is_some_and(|failure| !failure.contains("超时"))
-                {
-                    Some(100000)
-                } else if node.tested {
-                    Some(3000)
+            if operator == '=' && special {
+                return if threshold == 3000 {
+                    node.timed_out
                 } else {
-                    None
-                }
-            });
-            return value.is_some_and(|value| match operator {
-                '=' if special && threshold == 3000 => (3000..100000).contains(&value),
-                '=' if special && threshold == 100000 => value >= 100000,
+                    node.tested && node.failure.is_some()
+                };
+            }
+            return node.delay.is_some_and(|value| match operator {
                 '=' => value == threshold,
                 '<' => value <= threshold,
                 _ => value >= threshold,
@@ -74,8 +66,12 @@ pub(super) struct Node {
     name: String,
     region: String,
     protocol: String,
+    current: Option<String>,
+    capabilities: String,
+    resolved: bool,
     delay: Option<u32>,
     tested: bool,
+    timed_out: bool,
     failure: Option<String>,
     testing: bool,
     sort_key: Option<(u8, Option<u32>)>,
@@ -91,11 +87,32 @@ impl Node {
     pub(super) fn region(&self) -> String {
         self.region.clone()
     }
-    pub(super) fn protocol(&self) -> String {
-        self.protocol.clone()
+    pub(super) fn display_name(&self) -> String {
+        self.current
+            .as_ref()
+            .map(|current| format!("{} · {current}", self.name))
+            .unwrap_or_else(|| self.name.clone())
+    }
+    pub(super) fn details(&self) -> String {
+        let kind = match self.protocol.as_str() {
+            "Selector" => "手动选择",
+            "URLTest" => "延迟优选",
+            "Fallback" => "故障转移",
+            "LoadBalance" => "负载均衡",
+            "Relay" => "链式代理",
+            _ => &self.protocol,
+        };
+        [kind, &self.capabilities]
+            .into_iter()
+            .filter(|value| !value.is_empty())
+            .collect::<Vec<_>>()
+            .join(" · ")
     }
     pub(super) fn delay(&self) -> Option<u32> {
-        self.delay
+        self.delay.filter(|_| !self.timed_out)
+    }
+    pub(super) fn timed_out(&self) -> bool {
+        self.timed_out
     }
 
     pub(super) fn testing(&self) -> bool {
@@ -108,7 +125,10 @@ impl Node {
         !matches!(
             self.name.as_str(),
             "DIRECT" | "REJECT" | "REJECT-DROP" | "PASS" | "COMPATIBLE"
-        ) && self.protocol != "未知"
+        ) && self.resolved
+    }
+    pub(super) fn resolved(&self) -> bool {
+        self.resolved
     }
     pub(super) fn tested(&self) -> bool {
         self.tested
@@ -118,16 +138,16 @@ impl Node {
             (
                 if self.testing {
                     3
-                } else if self.delay.is_some() {
+                } else if self.delay().is_some() {
                     0
-                } else if self.failure.is_some() {
+                } else if self.tested && self.failure.is_some() {
                     2
                 } else if self.tested {
                     1
                 } else {
                     4
                 },
-                self.delay,
+                self.delay(),
             )
         })
     }
@@ -210,6 +230,50 @@ impl ProxyGroup {
                             let name = &member.name;
                             let proxy = proxies.member_proxy(member);
                             let measurement_key = proxies.measurement_key(&group.name, member);
+                            let selected = proxy
+                                .filter(|proxy| proxy.all.is_some())
+                                .map(|_| proxies.selected_path(member));
+                            let current = selected
+                                .as_ref()
+                                .map(|path| match path {
+                                    Ok(path) => path
+                                        .iter()
+                                        .skip(1)
+                                        .map(|proxy| proxy.name.as_str())
+                                        .collect::<Vec<_>>()
+                                        .join(" → "),
+                                    Err(reason) => (*reason).to_owned(),
+                                })
+                                .filter(|text| !text.is_empty());
+                            let leaf = selected
+                                .as_ref()
+                                .and_then(|path| path.as_ref().ok())
+                                .and_then(|path| path.last())
+                                .copied();
+                            let details = proxy
+                                .map(|proxy| {
+                                    let mut flags = Vec::new();
+                                    if let Some(leaf) = leaf {
+                                        flags.push(leaf.kind.as_str());
+                                    }
+                                    if proxy.udp {
+                                        flags.push("UDP");
+                                    }
+                                    if proxy.xudp {
+                                        flags.push("XUDP");
+                                    }
+                                    if proxy.tfo {
+                                        flags.push("TFO");
+                                    }
+                                    if proxy.mptcp {
+                                        flags.push("MPTCP");
+                                    }
+                                    if proxy.smux {
+                                        flags.push("SMUX");
+                                    }
+                                    flags.join(" · ")
+                                })
+                                .unwrap_or_default();
                             Node {
                                 id: format!(
                                     "{}:{}",
@@ -221,16 +285,33 @@ impl ProxyGroup {
                                 protocol: proxy
                                     .map(|proxy| proxy.kind.clone())
                                     .unwrap_or_else(|| "未知".into()),
-                                delay: proxies
+                                current,
+                                capabilities: details,
+                                resolved: proxy.is_some(),
+                                delay: match proxies
                                     .measurements
                                     .get(&(group.name.clone(), measurement_key.clone()))
-                                    .map(|result| result.as_ref().copied().unwrap_or(0))
-                                    .or_else(|| {
-                                        proxy
-                                            .and_then(|proxy| proxy.history.last())
-                                            .map(|history| history.delay)
-                                    })
-                                    .filter(|delay| *delay > 0 && *delay < timeout),
+                                {
+                                    Some(result) => result.as_ref().ok().copied(),
+                                    None => proxy
+                                        .and_then(|proxy| proxy.history.last())
+                                        .map(|entry| entry.delay),
+                                },
+                                timed_out: match proxies
+                                    .measurements
+                                    .get(&(group.name.clone(), measurement_key.clone()))
+                                {
+                                    Some(Ok(delay)) => *delay == 0 || *delay >= timeout,
+                                    Some(Err(
+                                        crate::proxies::runtime::MeasurementError::Timeout,
+                                    )) => true,
+                                    Some(Err(_)) => false,
+                                    None => {
+                                        proxy.and_then(|proxy| proxy.history.last()).is_some_and(
+                                            |entry| entry.delay == 0 || entry.delay >= timeout,
+                                        )
+                                    }
+                                },
                                 sort_key: None,
                                 testing: proxies
                                     .testing
@@ -238,8 +319,12 @@ impl ProxyGroup {
                                 failure: proxies
                                     .measurements
                                     .get(&(group.name.clone(), measurement_key.clone()))
-                                    .and_then(|result| result.as_ref().err())
-                                    .cloned()
+                                    .and_then(|result| match result {
+                                        Err(crate::proxies::runtime::MeasurementError::Failed(
+                                            message,
+                                        )) => Some(message.clone()),
+                                        _ => None,
+                                    })
                                     .or_else(|| member.reason.map(str::to_owned)),
                                 tested: proxies
                                     .measurements
@@ -299,7 +384,7 @@ impl ProxyGroup {
             .nodes
             .iter()
             .filter(|node| {
-                (matches_group || node.matches(query)) && (!available || node.delay.is_some())
+                (matches_group || node.matches(query)) && (!available || node.delay().is_some())
             })
             .cloned()
             .collect();
@@ -374,8 +459,12 @@ pub(super) fn sample_groups() -> Vec<ProxyGroup> {
         name: name.into(),
         region: region.into(),
         protocol: protocol.into(),
+        current: None,
+        capabilities: String::new(),
+        resolved: true,
         delay,
         tested: true,
+        timed_out: false,
         failure: None,
         testing: false,
         sort_key: None,
@@ -414,6 +503,31 @@ pub(super) fn sample_groups() -> Vec<ProxyGroup> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn nested_groups_show_selected_path_protocol_and_observed_capabilities() {
+        let raw = br#"{"proxies":{"outer":{"name":"outer","type":"Selector","all":["inner"],"now":"inner"},"inner":{"name":"inner","type":"URLTest","all":["relay"],"now":"relay","udp":true,"xudp":true,"tfo":true,"mptcp":true,"smux":true},"relay":{"name":"relay","type":"Selector","all":["leaf"],"now":"leaf"},"leaf":{"name":"leaf","type":"Trojan"}}}"#;
+        let proxies = crate::proxies::runtime::Proxies::parse(
+            raw,
+            &["outer".into(), "inner".into(), "relay".into()],
+        )
+        .unwrap();
+        let groups = ProxyGroup::observed(&proxies, None, 5000);
+        let node = &groups[0].nodes[0];
+        assert_eq!(node.name(), "inner"); // selection keeps actual group identity
+        assert_eq!(node.display_name(), "inner · relay → leaf");
+        assert_eq!(
+            node.details(),
+            "延迟优选 · Trojan · UDP · XUDP · TFO · MPTCP · SMUX"
+        );
+        assert!(node.resolved());
+        let mut proxies = proxies;
+        proxies.entries.get_mut("relay").unwrap().now = Some("inner".into());
+        proxies.records.get_mut("c:5:relay").unwrap().now = Some("inner".into());
+        // The selected name must actually belong to this group; stale core data remains unknown.
+        let groups = ProxyGroup::observed(&proxies, None, 5000);
+        assert!(groups[0].nodes[0].display_name().contains("尚未解析"));
+        assert!(!groups[0].nodes[0].details().contains("Trojan"));
+    }
     #[test]
     fn latency_sort_keeps_unreachable_nodes_last_in_both_directions() {
         let groups = sample_groups();
@@ -524,13 +638,59 @@ mod advanced_search_tests {
             name: name.into(),
             region: String::new(),
             protocol: "Trojan".into(),
+            current: None,
+            capabilities: String::new(),
+            resolved: true,
             delay,
             tested: delay.is_some() || failure.is_some(),
+            timed_out: delay.is_some_and(|value| value >= 3000),
             failure: failure.map(str::to_owned),
             testing: false,
             sort_key: None,
         }
     }
+    #[test]
+    fn numeric_search_retains_raw_delay_after_display_timeout() {
+        use crate::proxies::runtime::{MeasurementError, Proxies};
+        let mut proxies = Proxies::parse(br#"{"proxies":{"g":{"name":"g","type":"Selector","all":["n"],"now":"n"},"n":{"name":"n","type":"Socks5","history":[{"delay":25}]}}}"#, &[]).unwrap();
+        let key = ("g".into(), "n".into());
+        proxies.measurements.insert(key.clone(), Ok(7000));
+        let groups = ProxyGroup::observed(&proxies, None, 5000);
+        let slow = &groups[0].nodes[0];
+        assert_eq!(slow.delay(), None);
+        assert!(slow.timed_out());
+        let mut filter = Filter::default();
+        filter.compile("delay=7000");
+        assert!(filter.matches(slow));
+        filter.compile("delay=timeout");
+        assert!(filter.matches(slow));
+        proxies.measurements.insert(
+            key.clone(),
+            Err(MeasurementError::Failed("普通错误包含超时二字".into())),
+        );
+        let groups = ProxyGroup::observed(&proxies, None, 5000);
+        let failed = &groups[0].nodes[0];
+        assert_eq!(
+            failed.delay(),
+            None,
+            "old successful history must not replace failure"
+        );
+        filter.compile("delay=error");
+        assert!(filter.matches(failed));
+        filter.compile("delay=timeout");
+        assert!(!filter.matches(failed));
+        filter.compile("delay=100000");
+        assert!(
+            !filter.matches(failed),
+            "errors are not synthetic numeric measurements"
+        );
+        proxies.measurements.insert(key, Ok(0));
+        let groups = ProxyGroup::observed(&proxies, None, 5000);
+        filter.compile("delay=0");
+        assert!(filter.matches(&groups[0].nodes[0]));
+        assert!(groups[0].nodes[0].timed_out());
+    }
+
     #[test]
     fn expressions_preserve_numeric_equality_timeout_ranges_and_invalid_regex() {
         let mut filter = Filter::default();

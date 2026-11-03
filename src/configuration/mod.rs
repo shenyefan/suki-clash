@@ -1,5 +1,6 @@
 //! Pure configuration composition. The lifecycle owner supplies an immutable
 //! source and one committed override index; this module performs no I/O or GPUI work.
+pub(crate) mod tun;
 use crate::storage::Values;
 use serde_yaml_ng::{Mapping, Value};
 use std::collections::BTreeSet;
@@ -10,7 +11,7 @@ pub(crate) mod resources;
 pub(crate) mod script;
 mod source;
 pub(crate) mod tunnels;
-pub(crate) use preferences::Preferences;
+pub(crate) use preferences::{Preferences, ensure_lan_bind_address};
 pub(crate) use source::initialize_selection;
 pub(crate) use source::{ProfileIdentity, Source, select_profile, selected_profile};
 

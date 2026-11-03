@@ -32,12 +32,14 @@ pub(crate) fn apply(
     if document.kind == super::model::DocumentKind::JavaScript {
         crate::configuration::script::validate(&content)?;
     } else {
-        crate::configuration::compose(
-            content.as_bytes(),
-            Some(document.id),
-            &crate::storage::Values::new(),
-        )
-        .map_err(|_| "下载内容不是有效 YAML 对象")?;
+        let mapping: serde_yaml_ng::Mapping =
+            serde_yaml_ng::from_str(&content).map_err(|_| "下载内容不是有效 YAML 对象")?;
+        if document.kind == super::model::DocumentKind::Profile
+            && !mapping.contains_key("proxies")
+            && !mapping.contains_key("proxy-providers")
+        {
+            return Err("远程订阅不含 proxies 或 proxy-providers".into());
+        }
     }
 
     let header = headers
@@ -50,15 +52,14 @@ pub(crate) fn apply(
         })
         .collect::<Result<BTreeMap<_, _>, String>>()?;
     if initial {
-        if document.name == "远程订阅" || document.name == "远程覆写" || document.name.is_empty()
-        {
+        if document.name.is_empty() {
             document.name = header
                 .get("content-disposition")
                 .and_then(|value| filename(value))
                 .or_else(|| name_from_url(&document.url))
                 .unwrap_or_else(|| "远程订阅".into());
         }
-        if (document.interval.is_empty() || document.interval == "1440")
+        if document.interval.is_empty()
             && let Some(minutes) = header
                 .get("profile-update-interval")
                 .and_then(|value| value.parse::<u64>().ok())
@@ -66,6 +67,9 @@ pub(crate) fn apply(
                 .filter(|minutes| *minutes > 0 && *minutes <= 525600)
         {
             document.interval = minutes.to_string();
+        }
+        if document.interval.is_empty() {
+            document.interval = "1440".into();
         }
     }
     document.home = header
@@ -195,11 +199,11 @@ mod tests {
             ("https://example.com/?token=private", "", "example.com"),
         ] {
             let mut document = Document::new(1, DocumentKind::Profile);
-            document.name = "远程订阅".into();
+            document.name.clear();
             document.url = url.into();
             apply(
                 &mut document,
-                b"rules: ['MATCH,DIRECT']\n",
+                b"proxies: []\nrules: ['MATCH,DIRECT']\n",
                 &headers(raw_headers.as_bytes()),
                 true,
             )
@@ -212,7 +216,7 @@ mod tests {
         document.url = "https://example.com/file.yaml".into();
         apply(
             &mut document,
-            b"rules: ['MATCH,DIRECT']\n",
+            b"proxies: []\nrules: ['MATCH,DIRECT']\n",
             &headers(b"Content-Disposition: attachment; filename=server.yaml\r\n"),
             true,
         )
@@ -222,7 +226,8 @@ mod tests {
     #[test]
     fn final_redirect_headers_drive_usage_title_interval_and_home() {
         let mut doc = Document::new(9, DocumentKind::Profile);
-        doc.name = "远程订阅".into();
+        doc.name.clear();
+        doc.interval.clear();
         let raw_headers=b"Content-Disposition: attachment; filename*=UTF-8''%E8%AE%A2%E9%98%85.yaml\r\nSubscription-Userinfo: upload=5; download=10; total=100; expire=1893456000\r\nprofile-update-interval: 6\r\nprofile-web-page-url: https://example.com/home\r\n\r\n";
         apply(
             &mut doc,
@@ -242,7 +247,7 @@ mod tests {
         doc.interval = "0".into();
         apply(
             &mut doc,
-            b"rules: ['MATCH,DIRECT']\n",
+            b"proxies: []\nrules: ['MATCH,DIRECT']\n",
             &headers(raw_headers),
             true,
         )
@@ -260,6 +265,41 @@ mod tests {
         assert_eq!(doc.content, before);
     }
     #[test]
+    fn explicit_defaults_and_names_are_not_header_sentinels() {
+        for interval in ["1440", "0", "360"] {
+            let mut document = Document::new(1, DocumentKind::Profile);
+            document.name = "远程订阅".into();
+            document.interval = interval.into();
+            apply(&mut document, b"proxies: []", &headers(b"profile-update-interval: 6\r\nContent-Disposition: attachment; filename=other.yaml\r\n"), true).unwrap();
+            assert_eq!(document.interval, interval);
+            assert_eq!(document.name, "远程订阅");
+        }
+        let mut document = Document::new(1, DocumentKind::Profile);
+        document.interval.clear();
+        apply(&mut document, b"proxies: []", &headers(b""), true).unwrap();
+        assert_eq!(document.interval, "1440");
+    }
+    #[test]
+    fn only_remote_profiles_require_node_or_provider_declarations() {
+        let mut profile = Document::new(1, DocumentKind::Profile);
+        let original = profile.content.clone();
+        for body in ["{}", "error: login", "rules: ['MATCH,DIRECT']"] {
+            assert!(apply(&mut profile, body.as_bytes(), &headers(b""), false).is_err());
+            assert_eq!(profile.content, original);
+        }
+        for body in ["proxies: []", "proxy-providers: {}"] {
+            apply(&mut profile, body.as_bytes(), &headers(b""), false).unwrap();
+        }
+        let mut override_document = Document::new(2, DocumentKind::Yaml);
+        apply(
+            &mut override_document,
+            b"rules: ['MATCH,DIRECT']",
+            &headers(b""),
+            false,
+        )
+        .unwrap();
+    }
+    #[test]
     fn encrypted_subscription_requires_matching_age_identity() {
         use age::secrecy::ExposeSecret as _;
         use std::io::Write as _;
@@ -270,7 +310,9 @@ mod tests {
         .unwrap();
         let mut bytes = Vec::new();
         let mut writer = encryptor.wrap_output(&mut bytes).unwrap();
-        writer.write_all(b"rules: ['MATCH,DIRECT']\n").unwrap();
+        writer
+            .write_all(b"proxies: []\nrules: ['MATCH,DIRECT']\n")
+            .unwrap();
         writer.finish().unwrap();
         let mut doc = Document::new(1, DocumentKind::Profile);
         doc.age_key = identity.to_string().expose_secret().to_string();

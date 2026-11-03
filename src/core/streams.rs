@@ -72,16 +72,23 @@ async fn run(
     sender: watch::Sender<State>,
 ) {
     let mut backoff = Duration::from_millis(250);
+    let mut failures = 0u8;
+    let mut scope = None;
     'supervisor: loop {
         if *shutdown.borrow() {
             break;
         }
-        sender.send_replace(State::default());
         let current = target.borrow().clone();
         let Some(current) = current else {
+            sender.send_replace(State::default());
             tokio::select! {biased;_=shutdown.changed()=>break,changed=target.changed()=>if changed.is_err(){break;}}
             continue;
         };
+        if scope != Some((current.generation, current.epoch)) {
+            sender.send_replace(State::default());
+            scope = Some((current.generation, current.epoch));
+            failures = 0;
+        }
         let connection = tokio::select! {biased;_=shutdown.changed()=>break,changed=target.changed()=>{if changed.is_err(){break;}backoff=Duration::from_millis(250);continue;},result=current.client.websocket(path)=>result};
         let result: Result<(), String> = match connection {
             Err(error) => Err(error),
@@ -128,6 +135,7 @@ async fn run(
                     last_data = Instant::now();
                     if connected_at.elapsed() >= Duration::from_secs(10) {
                         backoff = Duration::from_millis(250);
+                        failures = 0;
                     }
                     sender.send_replace(State {
                         generation: current.generation,
@@ -143,7 +151,13 @@ async fn run(
                 }
             }
         };
+        failures += 1;
         if let Err(error) = result {
+            let error = if failures >= 3 {
+                format!("{error}；已停止自动重连")
+            } else {
+                error
+            };
             sender.send_replace(State {
                 generation: current.generation,
                 epoch: current.epoch,
@@ -151,7 +165,13 @@ async fn run(
                 error: Some(error),
             });
         }
-        tokio::select! {biased;_=shutdown.changed()=>break,changed=target.changed()=>{if changed.is_err(){break;}backoff=Duration::from_millis(250);},_=tokio::time::sleep(backoff)=>{backoff=(backoff*2).min(Duration::from_secs(5));}}
+        if failures >= 3 {
+            tokio::select! {biased;_=shutdown.changed()=>break,changed=target.changed()=>if changed.is_err(){break;}}
+            failures = 0;
+            backoff = Duration::from_millis(250);
+            continue;
+        }
+        tokio::select! {biased;_=shutdown.changed()=>break,changed=target.changed()=>{if changed.is_err(){break;}backoff=Duration::from_millis(250);failures=0;},_=tokio::time::sleep(backoff)=>{backoff=(backoff*2).min(Duration::from_secs(5));}}
     }
 }
 
@@ -160,6 +180,57 @@ mod tests {
     use super::*;
     use crate::core::client::{Client, Endpoint};
     use tokio_tungstenite::{accept_hdr_async, tungstenite::Message};
+    #[tokio::test]
+    async fn repeated_handshake_failures_stop_after_three_attempts_until_target_changes() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("failed.sock");
+        let listener = tokio::net::UnixListener::bind(&path).unwrap();
+        let current = Target {
+            logs: None,
+            http: Default::default(),
+            client: Client::new(Endpoint::Unix(path), "secret".into()),
+            generation: 1,
+            epoch: 1,
+            order: vec![],
+            proxy_port: 0,
+            proxy_auth: None,
+            dns_mode: None,
+            proxy_error: None,
+        };
+        let (targets, receiver) = watch::channel(Some(current.clone()));
+        let (shutdown, cancel) = watch::channel(false);
+        let feed = Feed::start("/traffic", receiver, cancel);
+        for _ in 0..3 {
+            let (socket, _) = tokio::time::timeout(Duration::from_secs(3), listener.accept())
+                .await
+                .unwrap()
+                .unwrap();
+            drop(socket);
+        }
+        assert!(
+            tokio::time::timeout(Duration::from_millis(700), listener.accept())
+                .await
+                .is_err()
+        );
+        assert!(
+            feed.events
+                .borrow()
+                .error
+                .as_deref()
+                .unwrap()
+                .contains("已停止自动重连")
+        );
+        let mut next = current;
+        next.epoch += 1;
+        targets.send_replace(Some(next));
+        let (socket, _) = tokio::time::timeout(Duration::from_secs(2), listener.accept())
+            .await
+            .unwrap()
+            .unwrap();
+        drop(socket);
+        shutdown.send(true).unwrap();
+        feed.finish().await;
+    }
     #[tokio::test]
     async fn authenticates_reconnects_responds_to_ping_and_closes_on_generation_change() {
         let root = tempfile::tempdir().unwrap();
@@ -211,6 +282,7 @@ mod tests {
             }
         });
         let target = Target {
+            logs: None,
             http: crate::network::Http::default(),
             client: Client::new(Endpoint::Unix(path), "private-secret".into()),
             generation: 1,

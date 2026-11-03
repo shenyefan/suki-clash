@@ -54,7 +54,7 @@ impl Record {
             level,
             source: Source::Program,
             origin: module.into(),
-            message: message.chars().take(8192).collect(),
+            message: super::redact(message).chars().take(8192).collect(),
         }
     }
     pub(crate) fn line(&self) -> String {

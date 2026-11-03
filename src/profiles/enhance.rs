@@ -11,6 +11,8 @@ use gpui_kit::{
         button::{Button, ButtonVariants},
         h_flex,
         input::{Editor, EditorState, Input, InputState},
+        menu::DropdownMenu,
+        searchable_list::SearchableListItem,
         select::{Select, SelectState},
         switch::Switch,
         tab::{Tab, TabBar},
@@ -26,6 +28,68 @@ const LABELS: [&str; 3] = ["规则", "代理", "代理组"];
 const PARTS: [&str; 3] = ["prepend", "append", "delete"];
 const LIST_PARTS: [&str; 4] = ["original", "prepend", "delete", "append"];
 const PART_LABELS: [&str; 4] = ["原始", "前置", "已排除", "追加"];
+
+fn saved_enhancement_text(saved: &crate::storage::Values) -> String {
+    PROPERTIES
+        .iter()
+        .map(|key| {
+            let source = saved.get(*key).map(String::as_str).unwrap_or("{}");
+            // Valid fragments can contain document markers or root indentation;
+            // normalize only those, and retain invalid fragment text for repair.
+            let text = serde_yaml_ng::from_str::<Value>(source)
+                .and_then(|value| serde_yaml_ng::to_string(&value))
+                .unwrap_or_else(|_| source.to_owned());
+            let indented = text
+                .lines()
+                .map(|line| format!("  {line}\n"))
+                .collect::<String>();
+            format!("{key}:\n{indented}")
+        })
+        .collect()
+}
+
+fn parse_enhancement(text: &str) -> Result<[Value; 3], String> {
+    let value: Value = serde_yaml_ng::from_str(text).map_err(|error| match error.location() {
+        Some(location) => format!(
+            "增强 YAML 格式无效（第 {} 行，第 {} 列）",
+            location.line(),
+            location.column()
+        ),
+        None => "增强 YAML 格式无效".into(),
+    })?;
+    let root = value.as_mapping().ok_or("增强顶层需为对象")?;
+    if root
+        .keys()
+        .any(|key| key.as_str().is_none_or(|key| !PROPERTIES.contains(&key)))
+    {
+        return Err("增强仅支持 rules、proxies 和 proxy-groups".into());
+    }
+    let mut drafts = std::array::from_fn(|_| Value::Mapping(Mapping::new()));
+    for (index, property) in PROPERTIES.iter().enumerate() {
+        let Some(value) = root.get(Value::String((*property).into())) else {
+            continue;
+        };
+        let map = value
+            .as_mapping()
+            .ok_or_else(|| format!("{property} 需为对象"))?;
+        if map
+            .keys()
+            .any(|key| key.as_str().is_none_or(|key| !PARTS.contains(&key)))
+        {
+            return Err(format!("{property} 仅支持 prepend、append 和 delete"));
+        }
+        for part in PARTS {
+            if map
+                .get(Value::String(part.into()))
+                .is_some_and(|value| !value.is_sequence())
+            {
+                return Err(format!("{property}.{part} 必须是列表"));
+            }
+        }
+        drafts[index] = value.clone();
+    }
+    Ok(drafts)
+}
 
 pub(super) fn open(
     document: Document,
@@ -70,6 +134,8 @@ pub(super) struct EnhancementEditor {
     code: Entity<EditorState>,
     query: Entity<InputState>,
     _subscriptions: Vec<Subscription>,
+    importing: bool,
+    import_task: Option<Task<()>>,
 }
 impl EnhancementEditor {
     fn new(
@@ -79,13 +145,18 @@ impl EnhancementEditor {
         cx: &mut Context<Self>,
     ) -> Self {
         let saved = storage::read(&format!("profile-enhance-{}", document.id), cx);
-        let drafts = std::array::from_fn(|index| {
-            saved
-                .get(PROPERTIES[index])
-                .and_then(|source| serde_yaml_ng::from_str(source).ok())
-                .unwrap_or_else(|| Value::Mapping(Mapping::new()))
-        });
-        let code = cx.new(|cx| ui::editor::state("yaml", "", true, window, cx));
+        let text = saved_enhancement_text(&saved);
+        let (drafts, raw) = match parse_enhancement(&text) {
+            Ok(drafts) => (drafts, false),
+            Err(error) => {
+                ui::show_error(error, window, cx);
+                (
+                    std::array::from_fn(|_| Value::Mapping(Mapping::new())),
+                    true,
+                )
+            }
+        };
+        let code = cx.new(|cx| ui::editor::state("yaml", text, true, window, cx));
         let query = cx.new(|cx| InputState::new(window, cx).placeholder("搜索名称或规则"));
         let subscriptions = vec![cx.subscribe(
             &query,
@@ -99,7 +170,7 @@ impl EnhancementEditor {
         Self {
             profile_id: document.id,
             property,
-            raw: false,
+            raw,
             part: 1,
             saving: false,
             saved: false,
@@ -113,42 +184,12 @@ impl EnhancementEditor {
             code,
             query,
             _subscriptions: subscriptions,
+            importing: false,
+            import_task: None,
         }
     }
     fn read_code(&mut self, cx: &App) -> Result<(), String> {
-        let value: Value = serde_yaml_ng::from_str(self.code.read(cx).value().as_ref())
-            .map_err(|_| "增强 YAML 格式无效")?;
-        let root = value.as_mapping().ok_or("增强顶层需为对象")?;
-        if root
-            .keys()
-            .any(|key| key.as_str().is_none_or(|key| !PROPERTIES.contains(&key)))
-        {
-            return Err("增强仅支持 rules、proxies 和 proxy-groups".into());
-        }
-        let mut drafts = std::array::from_fn(|_| Value::Mapping(Mapping::new()));
-        for (index, property) in PROPERTIES.iter().enumerate() {
-            let Some(value) = root.get(Value::String((*property).into())) else {
-                continue;
-            };
-            let map = value
-                .as_mapping()
-                .ok_or_else(|| format!("{property} 需为对象"))?;
-            if map
-                .keys()
-                .any(|key| key.as_str().is_none_or(|key| !PARTS.contains(&key)))
-            {
-                return Err(format!("{property} 仅支持 prepend、append 和 delete"));
-            }
-            for part in PARTS {
-                if let Some(value) = map.get(Value::String(part.into()))
-                    && !value.is_sequence()
-                {
-                    return Err(format!("{property}.{part} 必须是列表"));
-                }
-            }
-            drafts[index] = value.clone();
-        }
-        self.drafts = drafts;
+        self.drafts = parse_enhancement(self.code.read(cx).value().as_ref())?;
         Ok(())
     }
     fn mode(&mut self, raw: bool, window: &mut Window, cx: &mut Context<Self>) {
@@ -273,6 +314,126 @@ impl EnhancementEditor {
             .or_else(|| value.get("name").and_then(Value::as_str).map(str::to_owned))
             .unwrap_or_else(|| serde_yaml_ng::to_string(value).unwrap_or_default())
     }
+    fn import_proxies(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let text = cx.new(|cx| ui::editor::state("text", String::new(), false, window, cx));
+        let owner = cx.weak_entity();
+        window.open_dialog(cx, move |dialog, window, cx| {
+            let code = text.clone();
+            let buttons = [("prepend", "前置导入"), ("append", "追加导入")]
+                .into_iter()
+                .map(|(part, label)| {
+                    let owner = owner.clone();
+                    let text = text.clone();
+                    Button::new(SharedString::from(format!("import-{part}")))
+                        .label(label)
+                        .with_size(control::STANDARD)
+                        .on_click(move |_, window, cx| {
+                            let input = text.read(cx).value().to_string();
+                            let owner = owner.clone();
+                            let _ = owner.update(cx, |this, cx| {
+                                if this.importing {
+                                    return;
+                                }
+                                this.importing = true;
+                                this.import_task =
+                                    Some(cx.spawn_in(window, async move |owner, cx| {
+                                        let result = cx
+                                            .background_spawn(async move {
+                                                super::proxy_uri::parse_batch(&input)
+                                            })
+                                            .await;
+                                        let _ = owner.update_in(cx, |this, window, cx| {
+                                            this.importing = false;
+                                            match result {
+                                                Ok(values) => {
+                                                    let map = this.drafts[1].as_mapping_mut();
+                                                    if let Some(map) = map {
+                                                        let entry = map
+                                                            .entry(Value::String(part.into()))
+                                                            .or_insert_with(|| {
+                                                                Value::Sequence(Vec::new())
+                                                            });
+                                                        if let Some(items) = entry.as_sequence_mut()
+                                                        {
+                                                            items.extend(values);
+                                                        }
+                                                    }
+                                                    this.property = 1;
+                                                    this.part =
+                                                        if part == "prepend" { 1 } else { 3 };
+                                                    window.close_dialog(cx);
+                                                }
+                                                Err(error) => ui::show_error(error, window, cx),
+                                            }
+                                            cx.notify();
+                                        });
+                                    }));
+                                cx.notify();
+                            });
+                        })
+                });
+            let dismissed = owner.clone();
+            ui::modal(
+                dialog,
+                "批量导入代理",
+                layout::EDITOR_DIALOG_WIDTH,
+                window,
+                cx,
+            )
+            .on_close(move |_, _, cx| {
+                let _ = dismissed.update(cx, |this, cx| {
+                    this.import_task = None;
+                    this.importing = false;
+                    cx.notify();
+                });
+            })
+            .content(ui::modal_content(
+                "proxy-import-content",
+                layout::FORM_MAX_HEIGHT,
+                move |_, _| {
+                    ui::field_label(
+                        "代理链接（每行一个，或 Base64）",
+                        Editor::new(&code)
+                            .w_full()
+                            .h(layout::EDITOR_HEIGHT)
+                            .aria_label("批量代理链接"),
+                    )
+                    .into_any_element()
+                },
+            ))
+            .footer(
+                ui::modal_footer()
+                    .child(
+                        Button::new("proxy-import-cancel")
+                            .label("取消")
+                            .with_size(control::STANDARD)
+                            .on_click({
+                                let owner = owner.clone();
+                                move |_, window, cx| {
+                                    let _ = owner.update(cx, |this, cx| {
+                                        this.import_task = None;
+                                        this.importing = false;
+                                        cx.notify();
+                                    });
+                                    window.close_dialog(cx);
+                                }
+                            }),
+                    )
+                    .children(buttons),
+            )
+        });
+    }
+    #[cfg(test)]
+    fn source_candidates(&self, cx: &App) -> Result<(Vec<String>, Vec<String>), String> {
+        source_candidates(
+            self.source.clone(),
+            self.drafts.clone(),
+            self.profile_id,
+            super::store::load(true, cx)
+                .map(|(docs, _)| docs)
+                .unwrap_or_default(),
+        )
+    }
     fn edit_item(
         &mut self,
         part: &'static str,
@@ -281,7 +442,41 @@ impl EnhancementEditor {
         cx: &mut Context<Self>,
     ) {
         let value = index.and_then(|index| self.items(part).get(index).cloned());
+        if self.property == 0
+            && let Some(value) = &value
+        {
+            let parsed = value
+                .as_str()
+                .ok_or("此规则请使用 YAML 编辑")
+                .and_then(rule_parts);
+            if let Err(error) = parsed {
+                ui::show_error(error.into(), window, cx);
+                return;
+            }
+        }
+        let source = self.source.clone();
+        let drafts = self.drafts.clone();
+        let profile_id = self.profile_id;
+        let documents = super::store::load(true, cx)
+            .map(|(docs, _)| docs)
+            .unwrap_or_default();
         let entry = cx.new(|cx| EntryEditor::new(self.property, value, window, cx));
+        entry.update(cx, |this, cx| {
+            this.sources_task = Some(cx.spawn_in(window, async move |owner, cx| {
+                let result = cx
+                    .background_spawn(async move {
+                        source_candidates(source, drafts, profile_id, documents)
+                    })
+                    .await;
+                let _ = owner.update_in(cx, |this, window, cx| {
+                    match result {
+                        Ok(candidates) => this.candidates = candidates,
+                        Err(error) => ui::show_error(error, window, cx),
+                    }
+                    cx.notify();
+                });
+            }));
+        });
         let owner = cx.entity();
         let property = self.property;
         window.open_dialog(cx, move |dialog, window, cx| {
@@ -589,10 +784,8 @@ impl Render for EnhancementFooter {
         let saving = state.saving;
         let raw = state.raw;
         let mode_owner = editor.clone();
-        h_flex()
+        ui::modal_footer()
             .w_full()
-            .justify_end()
-            .gap(space::SM)
             .child(
                 Button::new("enhance-mode")
                     .icon(IconName::FileCode)
@@ -604,6 +797,7 @@ impl Render for EnhancementFooter {
                         mode_owner.update(cx, |this, cx| this.mode(!this.raw, window, cx))
                     }),
             )
+            .child(div().flex_1())
             .child(ui::dialog_footer_pending("保存", saving))
     }
 }
@@ -705,6 +899,18 @@ impl Render for EnhancementEditor {
                                 })),
                         )
                         .child(div().flex_1())
+                        .when(self.property == 1, |row| {
+                            row.child(
+                                Button::new("enhancement-import")
+                                    .outline()
+                                    .with_size(control::STANDARD)
+                                    .label("批量导入…")
+                                    .disabled(self.saving || self.importing)
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.import_proxies(window, cx)
+                                    })),
+                            )
+                        })
                         .child(
                             Button::new("enhancement-add")
                                 .outline()
@@ -765,12 +971,242 @@ impl Render for EnhancementEditor {
             .child(viewport)
     }
 }
+fn rule_parts(rule: &str) -> Result<Vec<&str>, &'static str> {
+    let mut parts = Vec::new();
+    let mut depth = 0usize;
+    let mut start = 0;
+    let mut escaped = false;
+    let mut quote = None;
+    for (index, character) in rule.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if character == '\\' {
+            escaped = true;
+            continue;
+        }
+        if let Some(delimiter) = quote {
+            if character == delimiter {
+                quote = None;
+            }
+            continue;
+        }
+        match character {
+            '\'' | '"' => quote = Some(character),
+            '(' => depth += 1,
+            ')' => depth = depth.checked_sub(1).ok_or("此规则请使用 YAML 编辑")?,
+            ',' if depth == 0 => {
+                parts.push(&rule[start..index]);
+                start = index + 1;
+            }
+            _ => {}
+        }
+    }
+    if depth != 0 || quote.is_some() {
+        return Err("此规则请使用 YAML 编辑");
+    }
+    parts.push(&rule[start..]);
+    let required = if parts.first() == Some(&"MATCH") {
+        2
+    } else {
+        3
+    };
+    if parts.len() < required {
+        return Err("此规则请使用 YAML 编辑");
+    }
+    Ok(parts)
+}
+
+#[derive(Clone)]
+struct EntryType {
+    value: SharedString,
+    label: SharedString,
+}
+impl SearchableListItem for EntryType {
+    type Value = SharedString;
+    fn title(&self) -> SharedString {
+        self.label.clone()
+    }
+    fn value(&self) -> &Self::Value {
+        &self.value
+    }
+}
+fn type_label(value: &str) -> &str {
+    match value {
+        "select" => "手动选择",
+        "url-test" => "自动测速",
+        "fallback" => "故障转移",
+        "load-balance" => "负载均衡",
+        "relay" => "链式代理",
+        "ss" => "影梭（SS）",
+        "ssr" => "影梭 R（SSR）",
+        "vmess" => "VMess 代理",
+        "vless" => "VLESS 代理",
+        "trojan" => "Trojan 代理",
+        "hysteria2" => "Hysteria 2 代理",
+        "tuic" => "TUIC 代理",
+        "socks5" => "SOCKS 代理",
+        "http" => "HTTP 代理",
+        "wireguard" => "WireGuard 代理",
+        "ssh" => "SSH 代理",
+        "direct" => "直连",
+        "DOMAIN" => "域名",
+        "DOMAIN-SUFFIX" => "域名后缀",
+        "DOMAIN-KEYWORD" => "域名关键词",
+        "DOMAIN-REGEX" => "域名正则",
+        "GEOSITE" => "站点集合",
+        "SRC-GEOIP" => "来源 IP 地区",
+        "IP-ASN" => "IP 自治系统",
+        "SRC-IP-ASN" => "来源 IP 自治系统",
+        "IP-SUFFIX" => "IP 后缀",
+        "SRC-IP-SUFFIX" => "来源 IP 后缀",
+        "IN-PORT" => "入站端口",
+        "DSCP" => "差分服务标记",
+        "PROCESS-NAME-REGEX" => "进程名称正则",
+        "PROCESS-PATH-REGEX" => "进程路径正则",
+        "UID" => "用户标识",
+        "IN-TYPE" => "入站类型",
+        "IN-USER" => "入站用户",
+        "IN-NAME" => "入站名称",
+        "SUB-RULE" => "子规则",
+        "GEOIP" => "IP 地区",
+        "IP-CIDR" => "IPv4 网段",
+        "IP-CIDR6" => "IPv6 网段",
+        "SRC-IP-CIDR" => "来源网段",
+        "DST-PORT" => "目标端口",
+        "SRC-PORT" => "来源端口",
+        "PROCESS-NAME" => "进程名称",
+        "PROCESS-PATH" => "进程路径",
+        "RULE-SET" => "规则集合",
+        "NETWORK" => "网络类型",
+        "MATCH" => "最终匹配",
+        "AND" => "全部满足",
+        "OR" => "任一满足",
+        "NOT" => "取反",
+        _ => value,
+    }
+}
+fn source_candidates(
+    source: Value,
+    drafts: [Value; 3],
+    profile_id: u64,
+    documents: Vec<Document>,
+) -> Result<(Vec<String>, Vec<String>), String> {
+    let mut nodes = ["DIRECT", "REJECT", "REJECT-DROP", "PASS"]
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    for (property, draft) in [("proxies", &drafts[1]), ("proxy-groups", &drafts[2])] {
+        let excluded = draft
+            .get("delete")
+            .and_then(Value::as_sequence)
+            .into_iter()
+            .flatten()
+            .map(EnhancementEditor::item_name)
+            .collect::<Vec<_>>();
+        for value in source
+            .get(property)
+            .and_then(Value::as_sequence)
+            .into_iter()
+            .flatten()
+            .chain(["prepend", "append"].into_iter().flat_map(|part| {
+                draft
+                    .get(part)
+                    .and_then(Value::as_sequence)
+                    .into_iter()
+                    .flatten()
+            }))
+        {
+            if let Some(name) = value.get("name").and_then(Value::as_str)
+                && !excluded.iter().any(|removed| removed == name)
+                && !nodes.iter().any(|node| node == name)
+            {
+                nodes.push(name.into());
+            }
+        }
+    }
+    let mut providers = source
+        .get("proxy-providers")
+        .and_then(Value::as_mapping)
+        .into_iter()
+        .flat_map(|providers| providers.keys())
+        .filter_map(Value::as_str)
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    {
+        for document in documents.into_iter().filter(|document| {
+            document.enabled
+                && document.kind == super::model::DocumentKind::Yaml
+                && document.scope_profile.is_none_or(|id| id == profile_id)
+        }) {
+            let value: Value = serde_yaml_ng::from_str(&document.content)
+                .map_err(|_| format!("覆写“{}”格式无效，无法读取来源候选", document.name))?;
+            for key in value
+                .get("proxy-providers")
+                .and_then(Value::as_mapping)
+                .into_iter()
+                .flat_map(|map| map.keys())
+                .filter_map(Value::as_str)
+            {
+                if !providers.iter().any(|name| name == key) {
+                    providers.push(key.into());
+                }
+            }
+            for name in ["proxies", "proxy-groups"]
+                .into_iter()
+                .flat_map(|key| {
+                    value
+                        .get(key)
+                        .and_then(Value::as_sequence)
+                        .into_iter()
+                        .flatten()
+                })
+                .filter_map(|value| value.get("name").and_then(Value::as_str))
+            {
+                if !nodes.iter().any(|node| node == name) {
+                    nodes.push(name.into());
+                }
+            }
+        }
+    }
+    Ok((nodes, providers))
+}
+
+const GROUP_FIELDS: &[(&str, &str)] = &[
+    ("name", ""),
+    ("type", "select"),
+    ("icon", ""),
+    ("url", ""),
+    ("expected-status", ""),
+    ("interval", ""),
+    ("timeout", ""),
+    ("max-failed-times", ""),
+    ("interface-name", ""),
+    ("routing-mark", ""),
+    ("filter", ""),
+    ("exclude-filter", ""),
+    ("exclude-type", ""),
+];
+const GROUP_SWITCHES: &[(&str, &str)] = &[
+    ("include-all", "包含全部来源"),
+    ("include-all-proxies", "包含全部代理"),
+    ("include-all-providers", "包含全部代理集合"),
+    ("lazy", "惰性测速"),
+    ("disable-udp", "禁用 UDP"),
+    ("hidden", "隐藏代理组"),
+];
 struct EntryEditor {
     property: usize,
     original: Value,
     fields: BTreeMap<&'static str, Entity<InputState>>,
-    types: Entity<SelectState<Vec<SharedString>>>,
+    types: Entity<SelectState<Vec<EntryType>>>,
+    switches: BTreeMap<&'static str, bool>,
+    providers: Entity<EditorState>,
+    candidates: (Vec<String>, Vec<String>),
+    sources_task: Option<Task<()>>,
     no_resolve: bool,
+    rule_suffix: Vec<String>,
     members: Entity<EditorState>,
     _types: Subscription,
 }
@@ -782,11 +1218,8 @@ impl EntryEditor {
         cx: &mut Context<Self>,
     ) -> Self {
         let original = value.unwrap_or_default();
-        let rule: Vec<_> = original
-            .as_str()
-            .unwrap_or("DOMAIN-SUFFIX,,DIRECT")
-            .split(',')
-            .collect();
+        let rule = rule_parts(original.as_str().unwrap_or("DOMAIN-SUFFIX,,DIRECT"))
+            .unwrap_or_else(|_| vec!["DOMAIN-SUFFIX", "", "DIRECT"]);
         let specs: &[(&str, &str)] = match property {
             0 => &[
                 ("type", "DOMAIN-SUFFIX"),
@@ -801,7 +1234,7 @@ impl EntryEditor {
                 ("cipher", "aes-128-gcm"),
                 ("password", ""),
             ],
-            _ => &[("name", ""), ("type", "select")],
+            _ => GROUP_FIELDS,
         };
         let fields: BTreeMap<_, _> = specs
             .iter()
@@ -869,8 +1302,18 @@ impl EntryEditor {
             .iter()
             .position(|choice| choice.as_ref() == current)
             .unwrap_or(0);
+        let choices = choices
+            .into_iter()
+            .map(|value| EntryType {
+                label: type_label(&value).to_owned().into(),
+                value,
+            })
+            .collect::<Vec<_>>();
         let types = cx.new(|cx| SelectState::new(choices, Some(IndexPath::new(index)), window, cx));
-        let no_resolve = rule.contains(&"no-resolve");
+        let suffix_start = if rule.first() == Some(&"MATCH") { 2 } else { 3 };
+        let suffix = rule.get(suffix_start..).unwrap_or_default();
+        let no_resolve = suffix.iter().any(|part| part.trim() == "no-resolve");
+        let rule_suffix = suffix.iter().map(|value| (*value).to_owned()).collect();
         let text = original
             .get("proxies")
             .and_then(Value::as_sequence)
@@ -883,13 +1326,39 @@ impl EntryEditor {
             })
             .unwrap_or_default();
         let members = cx.new(|cx| ui::editor::state("text", text, false, window, cx));
+        let provider_text = original
+            .get("use")
+            .and_then(Value::as_sequence)
+            .map(|values| {
+                values
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            })
+            .unwrap_or_default();
+        let providers = cx.new(|cx| ui::editor::state("text", provider_text, false, window, cx));
+        let switches = GROUP_SWITCHES
+            .iter()
+            .map(|(key, _)| {
+                (
+                    *key,
+                    original.get(*key).and_then(Value::as_bool).unwrap_or(false),
+                )
+            })
+            .collect();
         let subscription = cx.observe(&types, |_, _, cx| cx.notify());
         Self {
             property,
             original,
             fields,
             types,
+            switches,
+            providers,
+            candidates: Default::default(),
+            sources_task: None,
             no_resolve,
+            rule_suffix,
             members,
             _types: subscription,
         }
@@ -904,7 +1373,12 @@ impl EntryEditor {
                     .unwrap_or_default()
                     .to_string()
             } else {
-                self.fields[key].read(cx).value().trim().to_owned()
+                let value = self.fields[key].read(cx).value();
+                if key == "password" {
+                    value.to_string()
+                } else {
+                    value.trim().to_owned()
+                }
             }
         };
         if self.property == 0 {
@@ -914,14 +1388,38 @@ impl EntryEditor {
             if kind.is_empty() || policy.is_empty() || kind != "MATCH" && payload.is_empty() {
                 return Err("填写规则类型、匹配内容和策略".into());
             }
-            return Ok(Value::String(if kind == "MATCH" {
-                format!("MATCH,{policy}")
+            let mut parts = if kind == "MATCH" {
+                vec![kind, policy]
             } else {
-                format!(
-                    "{kind},{payload},{policy}{}",
-                    if self.no_resolve { ",no-resolve" } else { "" }
-                )
-            }));
+                vec![kind, payload, policy]
+            };
+            parts.extend(
+                self.rule_suffix
+                    .iter()
+                    .filter(|part| part.trim() != "no-resolve" || self.no_resolve)
+                    .cloned(),
+            );
+            if self.no_resolve
+                && !self
+                    .rule_suffix
+                    .iter()
+                    .any(|part| part.trim() == "no-resolve")
+            {
+                parts.push("no-resolve".into());
+            }
+            let text = parts.join(",");
+            // Preserve the original text when the form did not change its meaning.
+            if let Some(original) = self.original.as_str()
+                && rule_parts(original).is_ok_and(|original| {
+                    original
+                        .iter()
+                        .map(|part| part.trim())
+                        .eq(parts.iter().map(String::as_str))
+                })
+            {
+                return Ok(self.original.clone());
+            }
+            return Ok(Value::String(text));
         }
         if get("name").is_empty() || get("type").is_empty() {
             return Err("填写名称和类型".into());
@@ -929,7 +1427,21 @@ impl EntryEditor {
         let mut map = self.original.as_mapping().cloned().unwrap_or_default();
         for key in self.fields.keys() {
             let text = get(key);
-            let value = if *key == "port" {
+            if self.property == 2 && text.is_empty() && !matches!(*key, "name" | "type") {
+                map.remove(Value::String((*key).into()));
+                continue;
+            }
+            let value = if self.property == 2
+                && matches!(
+                    *key,
+                    "interval" | "timeout" | "max-failed-times" | "routing-mark"
+                ) {
+                Value::Number(
+                    text.parse::<u32>()
+                        .map_err(|_| format!("{}需为非负整数", group_field_label(key)))?
+                        .into(),
+                )
+            } else if *key == "port" {
                 Value::Number(
                     text.parse::<u16>()
                         .ok()
@@ -943,21 +1455,132 @@ impl EntryEditor {
             map.insert(Value::String((*key).into()), value);
         }
         if self.property == 2 {
-            map.insert(
-                Value::String("proxies".into()),
-                Value::Sequence(
-                    self.members
-                        .read(cx)
-                        .value()
-                        .lines()
-                        .map(str::trim)
-                        .filter(|v| !v.is_empty())
-                        .map(|v| Value::String(v.into()))
-                        .collect(),
-                ),
-            );
+            for (key, editor) in [("proxies", &self.members), ("use", &self.providers)] {
+                let values = editor
+                    .read(cx)
+                    .value()
+                    .lines()
+                    .map(str::trim)
+                    .filter(|v| !v.is_empty())
+                    .map(|v| Value::String(v.into()))
+                    .collect::<Vec<_>>();
+                if values.is_empty() && !map.contains_key(Value::String(key.into())) {
+                    continue;
+                }
+                map.insert(Value::String(key.into()), Value::Sequence(values));
+            }
+            for (key, value) in &self.switches {
+                if *value || map.contains_key(Value::String((*key).into())) {
+                    map.insert(Value::String((*key).into()), Value::Bool(*value));
+                }
+            }
+            let url = get("url");
+            if !url.is_empty() && !super::model::valid_remote_url(&url) {
+                return Err("健康检查地址需为 HTTP 或 HTTPS 地址".into());
+            }
         }
         Ok(Value::Mapping(map))
+    }
+}
+fn group_field_label(key: &str) -> &'static str {
+    match key {
+        "icon" => "图标地址",
+        "url" => "健康检查地址",
+        "expected-status" => "预期状态码",
+        "interval" => "检查间隔（秒）",
+        "timeout" => "检查超时（毫秒）",
+        "max-failed-times" => "最大失败次数",
+        "interface-name" => "网络接口",
+        "routing-mark" => "路由标记",
+        "filter" => "名称筛选",
+        "exclude-filter" => "排除名称",
+        "exclude-type" => "排除类型（以 | 分隔）",
+        _ => "字段",
+    }
+}
+impl EntryEditor {
+    fn source_editor(&self, provider: bool, cx: &mut Context<Self>) -> impl IntoElement {
+        let state = if provider {
+            self.providers.clone()
+        } else {
+            self.members.clone()
+        };
+        let candidates = if provider {
+            self.candidates.1.clone()
+        } else {
+            self.candidates.0.clone()
+        };
+        let owner = cx.entity();
+        ui::field_label(
+            if provider {
+                "代理集合来源"
+            } else {
+                "代理组成员"
+            },
+            gpui_kit::component::v_flex()
+                .gap(space::SM)
+                .child(
+                    Button::new(if provider {
+                        "provider-candidates"
+                    } else {
+                        "member-candidates"
+                    })
+                    .outline()
+                    .label("选择来源…")
+                    .disabled(candidates.is_empty())
+                    .dropdown_menu(move |mut menu, _, cx| {
+                        let editor = owner.read(cx);
+                        let current = if provider {
+                            editor.providers.read(cx).value().to_string()
+                        } else {
+                            editor.members.read(cx).value().to_string()
+                        };
+                        for name in &candidates {
+                            let owner = owner.clone();
+                            let name = name.clone();
+                            let selected = current.lines().any(|value| value == name);
+                            menu = menu.item(
+                                ui::actions::menu(name.clone()).checked(selected).on_click(
+                                    move |_, window, cx| {
+                                        owner.update(cx, |this, cx| {
+                                            let state = if provider {
+                                                &this.providers
+                                            } else {
+                                                &this.members
+                                            };
+                                            let mut values = state
+                                                .read(cx)
+                                                .value()
+                                                .lines()
+                                                .map(str::to_owned)
+                                                .collect::<Vec<_>>();
+                                            if selected {
+                                                values.retain(|value| value != &name);
+                                            } else {
+                                                values.push(name.clone());
+                                            }
+                                            state.update(cx, |state, cx| {
+                                                state.set_value(values.join("\n"), window, cx)
+                                            });
+                                        });
+                                    },
+                                ),
+                            );
+                        }
+                        menu
+                    }),
+                )
+                .child(
+                    Editor::new(&state)
+                        .w_full()
+                        .h(layout::TEXTAREA_HEIGHT)
+                        .aria_label(if provider {
+                            "代理集合来源，每行一个"
+                        } else {
+                            "代理组成员，每行一个"
+                        }),
+                ),
+        )
     }
 }
 impl Render for EntryEditor {
@@ -1032,13 +1655,30 @@ impl Render for EntryEditor {
                     .child(field("password", "密码"));
             }
             _ => {
-                form = form.child(ui::field_label(
-                    "成员",
-                    Editor::new(&self.members)
-                        .w_full()
-                        .h(layout::TEXTAREA_HEIGHT)
-                        .aria_label("代理组成员，每行一个"),
-                ));
+                form = form
+                    .child(self.source_editor(false, cx))
+                    .child(self.source_editor(true, cx));
+                for (key, _) in GROUP_FIELDS
+                    .iter()
+                    .filter(|(key, _)| !matches!(*key, "name" | "type"))
+                {
+                    form = form.child(field(*key, group_field_label(key)));
+                }
+                for (key, label) in GROUP_SWITCHES {
+                    let key = *key;
+                    form = form.child(
+                        ui::form_row().justify_between().child(*label).child(
+                            Switch::new(SharedString::from(format!("enhance-{key}")))
+                                .with_size(control::STANDARD)
+                                .checked(self.switches[&key])
+                                .accessibility_label(*label)
+                                .on_change(cx.listener(move |this, value, _, cx| {
+                                    this.switches.insert(key, *value);
+                                    cx.notify();
+                                })),
+                        ),
+                    );
+                }
             }
         }
         let form = form.id("enhancement-entry-form");
@@ -1069,6 +1709,159 @@ mod ui_tests {
         }
     }
 
+    #[test]
+    fn broken_enhancement_keeps_source_and_rejects_serialization_until_repaired() {
+        let source = "prepend: [DOMAIN,private.example,DIRECT\n";
+        let saved = crate::storage::Values::from([
+            ("rules".into(), source.into()),
+            (
+                "proxies".into(),
+                "---\nappend: [{name: unchanged, type: direct}]\n".into(),
+            ),
+        ]);
+        let text = super::saved_enhancement_text(&saved);
+        assert!(text.contains("  prepend: [DOMAIN,private.example,DIRECT\n"));
+        assert!(super::parse_enhancement(&text).is_err());
+        let repaired = text.replace(
+            "prepend: [DOMAIN,private.example,DIRECT",
+            "prepend: ['DOMAIN,private.example,DIRECT']",
+        );
+        let drafts = super::parse_enhancement(&repaired).unwrap();
+        assert_eq!(drafts[1]["append"][0]["name"], "unchanged");
+    }
+
+    #[gpui_kit::test]
+    fn malformed_enhancement_opens_raw_and_cannot_be_saved_as_empty_form(cx: &mut TestAppContext) {
+        let root = tempfile::tempdir().unwrap();
+        let repository = crate::integration::Repository::open(
+            crate::integration::AppPaths::isolated(root.path()),
+        )
+        .unwrap();
+        let namespace = crate::storage::Namespace::parse("profile-enhance-90002").unwrap();
+        let bad = "prepend: [broken\n";
+        repository
+            .save(
+                &namespace,
+                &crate::storage::Values::from([("rules".into(), bad.into())]),
+            )
+            .unwrap();
+        let service = crate::integration::Service::start(repository).unwrap();
+        cx.update(|cx| {
+            crate::integration::init(service, None, cx);
+            gpui_kit::init(cx);
+        });
+        let (handle, _) = cx.update(|cx| {
+            gpui_kit::open_window(WindowOptions::default(), cx, |_, cx| cx.new(|_| Host)).unwrap()
+        });
+        cx.update_window(handle, |_, window, cx| {
+            let mut document = Document::new(90002, DocumentKind::Profile);
+            document.content = "rules: []".into();
+            let editor = open(document, 0, window, cx);
+            assert!(editor.read(cx).raw);
+            let raw = editor.read(cx).code.read(cx).value().to_string();
+            assert!(raw.contains("  prepend: [broken\n"));
+            editor.update(cx, |editor, cx| {
+                editor.mode(false, window, cx);
+                assert!(editor.raw);
+                assert!(!editor.save(window, cx));
+                assert!(!editor.saving);
+                assert_eq!(editor.code.read(cx).value().as_ref(), raw);
+            });
+        })
+        .unwrap();
+        crate::integration::finish_test_services(cx);
+    }
+
+    #[gpui_kit::test]
+    fn group_fields_preserve_unknown_values_and_use_stable_localized_types(
+        cx: &mut TestAppContext,
+    ) {
+        use gpui_kit::component::searchable_list::SearchableListItem as _;
+        cx.update(gpui_kit::init);
+        let (handle, _) = cx.update(|cx| {
+            gpui_kit::open_window(WindowOptions::default(), cx, |_, cx| cx.new(|_| Host)).unwrap()
+        });
+        cx.update_window(handle, |_,window,cx| {
+            let original = serde_yaml_ng::from_str("name: group\ntype: url-test\nuse: [provider]\nurl: https://example.test/check\ninterval: 300\ntimeout: 5000\ninclude-all-providers: true\nfilter: HK\nexclude-type: Direct|Reject\ncustom-field: {kept: true}\n").unwrap();
+            let editor = cx.new(|cx|super::EntryEditor::new(2,Some(original),window,cx));
+            let result=editor.read(cx).value(cx).unwrap();
+            assert_eq!(result["type"],"url-test");
+            assert_eq!(result["use"][0],"provider");
+            assert_eq!(result["interval"],300);
+            assert_eq!(result["include-all-providers"],true);
+            assert_eq!(result["custom-field"]["kept"],true);
+            assert!(result.get("proxies").is_none());
+            assert_eq!(super::EntryType {value:"url-test".into(),label:super::type_label("url-test").into()}.title().as_ref(),"自动测速");
+            editor.read(cx).fields["timeout"].clone().update(cx,|state,cx|state.set_value("bad",window,cx));
+            assert!(editor.read(cx).value(cx).is_err());
+            editor.read(cx).fields["timeout"].clone().update(cx,|state,cx|state.set_value("1200",window,cx));
+            editor.update(cx,|this,cx| { this.providers.update(cx,|state,cx|state.set_value("one\ntwo",window,cx));this.switches.insert("hidden",true); });
+            let result=editor.read(cx).value(cx).unwrap();assert_eq!(result["timeout"],1200);assert_eq!(result["use"][1],"two");assert_eq!(result["hidden"],true);
+        }).unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn source_candidates_include_original_and_draft_sources_without_excluded_names(
+        cx: &mut TestAppContext,
+    ) {
+        let root = tempfile::tempdir().unwrap();
+        let repository = crate::integration::Repository::open(
+            crate::integration::AppPaths::isolated(root.path()),
+        )
+        .unwrap();
+        let service = crate::integration::Service::start(repository).unwrap();
+        cx.update(|cx| {
+            crate::integration::init(service, None, cx);
+            gpui_kit::init(cx);
+        });
+        let (handle, _) = cx.update(|cx| {
+            gpui_kit::open_window(WindowOptions::default(), cx, |_, cx| cx.new(|_| Host)).unwrap()
+        });
+        cx.update_window(handle,|_,window,cx|{
+            let mut document=Document::new(99801,DocumentKind::Profile);
+            document.content="proxies: [{name: one, type: direct}, {name: removed, type: direct}]\nproxy-groups: [{name: group, type: select}]\nproxy-providers: {provider: {type: inline, payload: []}}".into();
+            let editor=open(document,2,window,cx);
+            editor.update(cx,|this,cx|{
+                this.drafts[1]=serde_yaml_ng::from_str("prepend: [{name: added, type: direct}]\ndelete: [removed]").unwrap();
+                let (nodes,providers)=this.source_candidates(cx).unwrap();
+                assert!(nodes.contains(&"DIRECT".into()));assert!(nodes.contains(&"one".into()));assert!(nodes.contains(&"group".into()));assert!(nodes.contains(&"added".into()));assert!(!nodes.contains(&"removed".into()));assert_eq!(providers,vec!["provider"]);
+            });
+        }).unwrap();
+        crate::integration::finish_test_services(cx);
+    }
+
+    #[gpui_kit::test]
+    fn composite_rule_and_secret_forms_keep_unedited_content(cx: &mut TestAppContext) {
+        cx.update(gpui_kit::init);
+        let (handle, _) = cx.update(|cx| {
+            gpui_kit::open_window(WindowOptions::default(), cx, |_, cx| cx.new(|_| Host)).unwrap()
+        });
+        cx.update_window(handle, |_, window, cx| {
+            for rule in [
+                "AND,((DOMAIN,example.com),(NETWORK,TCP)),DIRECT",
+                "OR,((DOMAIN,example.com),(NOT,((NETWORK,UDP)))),PROXY",
+                "NOT,((DOMAIN,example.com)),DIRECT,no-resolve",
+                "IP-CIDR,192.0.2.0/24,DIRECT,no-resolve,src",
+            ] {
+                let editor = cx.new(|cx| super::EntryEditor::new(0, Some(rule.into()), window, cx));
+                assert_eq!(editor.read(cx).value(cx).unwrap().as_str(), Some(rule));
+                editor.read(cx).fields["policy"].clone().update(cx, |input, cx| input.set_value("NEW", window, cx));
+                let changed = editor.read(cx).value(cx).unwrap();
+                let old = super::rule_parts(rule).unwrap();
+                let new = super::rule_parts(changed.as_str().unwrap()).unwrap();
+                assert_eq!(new[1], old[1]);
+                assert_eq!(new[2], "NEW");
+                assert_eq!(&new[3..], &old[3..]);
+            }
+            let original = serde_yaml_ng::from_str("name: node\ntype: ss\nserver: example.com\nport: 443\ncipher: aes-128-gcm\npassword: ' secret '\n").unwrap();
+            let editor = cx.new(|cx| super::EntryEditor::new(1, Some(original), window, cx));
+            editor.read(cx).fields["name"].clone().update(cx, |input, cx| input.set_value("renamed", window, cx));
+            let saved = editor.read(cx).value(cx).unwrap();
+            assert_eq!(saved["name"], "renamed");
+            assert_eq!(saved["password"], " secret ");
+        }).unwrap();
+    }
+
     #[gpui_kit::test]
     fn enhancement_scroll_keeps_toolbar_search_and_footer_fixed(cx: &mut TestAppContext) {
         check_fixed_chrome(cx, 100, 0);
@@ -1097,7 +1890,7 @@ mod ui_tests {
         )
         .unwrap();
         cx.update(|cx| {
-            crate::integration::init(service, cx);
+            crate::integration::init(service, None, cx);
             gpui_kit::init(cx);
             cx.set_reduce_motion(true);
         });
@@ -1138,7 +1931,7 @@ mod ui_tests {
             window.render_frame(cx);
             let mode = window.find("enhance-mode").bounds();
             let search = window.find("enhancement-search").bounds();
-            let footer = window.find("dialog-commit").bounds();
+            let footer = window.within("dialog-0").find("dialog-commit").bounds();
             let cancel = window.find("dialog-cancel").bounds();
             assert!(mode.right() <= cancel.left());
             assert!((mode.center().y - cancel.center().y).abs() < px(1.));
@@ -1152,6 +1945,9 @@ mod ui_tests {
             assert!(add.left() > tabs.right());
             assert!((add.center().y - tabs.center().y).abs() < px(1.));
             let viewport = window.find("enhancement-viewport").bounds();
+            assert!((mode.left() - viewport.left()).abs() <= px(1.));
+            assert!((footer.right() - viewport.right()).abs() <= px(1.));
+            assert!(footer.size.width < viewport.size.width / 3.);
             assert!(viewport.top() >= search.bottom());
             assert!(viewport.bottom() <= footer.top());
             let first=match property {0=>"remove-original-0-DOMAIN-SUFFIX,test0.example,DIRECT",1=>"remove-original-0-测试代理0",_=>"remove-original-0-测试组0"};
@@ -1170,7 +1966,7 @@ mod ui_tests {
             assert_eq!(window.find("enhancement-viewport").bounds(), viewport);
             assert_eq!(window.find("enhance-mode").bounds(), mode);
             assert_eq!(window.find("enhancement-search").bounds(), search);
-            assert_eq!(window.find("dialog-commit").bounds(), footer);
+            assert_eq!(window.within("dialog-0").find("dialog-commit").bounds(), footer);
             window.click("enhance-mode", cx);
             assert!(editor.read(cx).raw);
             assert!(!window.elements().iter().any(|element|element.path().contains(&gpui_kit::ElementId::from("enhance-property"))));
@@ -1197,7 +1993,15 @@ mod ui_tests {
             let add=window.find("enhancement-add").bounds();let property_tab=window.within("enhance-property").find(0usize).bounds();
             assert!(add.left()>=property_tab.right());assert!((add.center().y-property_tab.center().y).abs()<px(1.));
             window.click("enhancement-add", cx);
-            assert!(window.find("enhancement-entry-form").bounds().size.height < px(400.));
+            if property != 2 { assert!(window.find("enhancement-entry-form").bounds().size.height < px(400.)); }
+            else {
+                let footer = window.within("dialog-1").find("dialog-commit").bounds();
+                assert!(window.find("field-名称").visible());
+                window.scroll("field-名称", ScrollDelta::Pixels(point(px(0.), px(-3000.))), cx);
+                window.render_frame(cx);
+                assert_eq!(window.within("dialog-1").find("dialog-commit").bounds(), footer);
+                assert!(window.find("enhance-hidden").visible());
+            }
             if property==1 {
                 let server=window.find("field-服务器").bounds();let port=window.find("field-端口").bounds();
                 assert_eq!(server.top(),port.top());assert!(server.right()<=port.left());

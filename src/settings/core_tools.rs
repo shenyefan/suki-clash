@@ -641,10 +641,7 @@ impl Render for TunnelFooter {
             "添加"
         };
         let owner = self.editor.clone();
-        h_flex()
-            .w_full()
-            .justify_end()
-            .gap(space::SM)
+        ui::modal_footer()
             .child(
                 Button::new("cancel-tunnel")
                     .icon(gpui_kit::assets::IconName::X)

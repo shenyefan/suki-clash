@@ -4,8 +4,30 @@ use crate::{
     proxies::runtime::{Action, Selections},
     session::ProxyMode,
 };
+pub(super) struct SelectionRecovery {
+    generation: u64,
+    epoch: u64,
+    pending: std::collections::BTreeMap<String, String>,
+    pub(super) expires: std::time::Instant,
+}
 impl Actor {
+    pub(super) async fn restore_all_selections(&mut self) -> Result<(), String> {
+        let mut failures = Vec::new();
+        if let Err(error) = self.restore_proxy_selections().await {
+            failures.push(("节点选择", error));
+        }
+        if let Err(error) = self.restore_chain_selection().await {
+            failures.push(("代理链", error));
+        }
+        if failures.is_empty() {
+            Ok(())
+        } else {
+            Err(crate::failure::scoped(failures))
+        }
+    }
+
     pub(super) fn invalidate_monitor(&mut self) {
+        self.selection_recovery = None;
         self.snapshot.monitor_epoch = self.snapshot.monitor_epoch.saturating_add(1);
         self.monitor.send_replace(None);
     }
@@ -65,6 +87,14 @@ impl Actor {
                     .map(str::to_owned)
             });
         let target = Target {
+            logs: running
+                .log_settings
+                .as_ref()
+                .map(|settings| super::log_stream::Source {
+                    service: running.log_session(),
+                    settings: settings.subscribe(),
+                    pipe_suppressed: running.pipe_suppressed.clone(),
+                }),
             proxy_error: self
                 .snapshot
                 .preferences
@@ -112,6 +142,7 @@ impl Actor {
         Ok(())
     }
     pub(super) async fn restore_proxy_selections(&mut self) -> Result<(), String> {
+        self.selection_recovery = None;
         let running = self.running.as_ref().ok_or("内核尚未运行")?;
         if super::Preferences::load(&self.paths)?
             .values()
@@ -120,52 +151,89 @@ impl Actor {
         {
             return Ok(());
         }
-        let saved = Selections::load(&self.paths)?
+        let pending = Selections::load(&self.paths)?
             .for_profile(running.launch.source.profile().map(|profile| profile.id()));
-        if saved.is_empty() {
+        if pending.is_empty() {
             return Ok(());
         }
-        let mut pending = saved;
-        for attempt in 0..4 {
-            let proxies = running.launch.client.proxies(&[]).await?;
+        self.selection_recovery = Some(SelectionRecovery {
+            generation: self.snapshot.generation,
+            epoch: self.snapshot.monitor_epoch,
+            pending,
+            expires: std::time::Instant::now() + std::time::Duration::from_secs(30),
+        });
+        self.settle_proxy_selections().await
+    }
+    pub(super) async fn settle_proxy_selections(&mut self) -> Result<(), String> {
+        let Some(mut recovery) = self.selection_recovery.take() else {
+            return Ok(());
+        };
+        if (recovery.generation, recovery.epoch)
+            != (self.snapshot.generation, self.snapshot.monitor_epoch)
+        {
+            return Ok(());
+        }
+        let client = self
+            .running
+            .as_ref()
+            .ok_or("内核尚未运行")?
+            .launch
+            .client
+            .clone();
+        let remaining = recovery
+            .expires
+            .saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() {
+            return Err(format!(
+                "节点选择恢复已停止：{} 个组或节点在30秒内未就绪",
+                recovery.pending.len()
+            ));
+        }
+        let restored = tokio::time::timeout(remaining, async {
+            let proxies = client.proxies(&[]).await?;
             let mut restored = Vec::new();
-            for (group, node) in &pending {
-                let Some(proxy) = proxies.entries.get(group) else {
-                    restored.push(group.clone());
-                    continue;
-                };
-                if !proxy.all.as_ref().is_some_and(|nodes| nodes.contains(node)) {
+            for (group, node) in &recovery.pending {
+                // A cold provider may not have published the group or member yet.
+                if !proxies.selectable(group, node) {
                     continue;
                 }
                 if !proxies.confirms_selection(group, node) {
-                    running
-                        .launch
-                        .client
-                        .select_proxy(group, Some(node))
-                        .await?;
-                    if !running
-                        .launch
-                        .client
-                        .proxies(&[])
-                        .await?
-                        .confirms_selection(group, node)
-                    {
-                        return Err("内核未确认保存的节点选择".into());
+                    client.select_proxy(group, Some(node)).await?;
+                    if !client.proxies(&[]).await?.confirms_selection(group, node) {
+                        return Err("内核未确认保存的节点选择，已停止本次恢复".into());
                     }
                 }
                 restored.push(group.clone());
             }
-            for group in restored {
-                pending.remove(&group);
-            }
-            if pending.is_empty() {
-                return Ok(());
-            }
-            if attempt < 3 {
-                tokio::time::sleep(std::time::Duration::from_millis(250)).await;
-            }
+            Ok::<_, String>(restored)
+        })
+        .await
+        .map_err(|_| "节点选择恢复已达到30秒时限，已停止".to_owned())??;
+        for group in restored {
+            recovery.pending.remove(&group);
         }
-        Err(format!("{} 个保存的节点不在当前代理组中", pending.len()))
+        if recovery.pending.is_empty() {
+            return Ok(());
+        }
+        if std::time::Instant::now() >= recovery.expires {
+            return Err(format!(
+                "节点选择恢复已停止：{} 个组或节点在30秒内未就绪",
+                recovery.pending.len()
+            ));
+        }
+        self.selection_recovery = Some(recovery);
+        Ok(())
+    }
+    fn invalidate_selection_monitor(&mut self, group: Option<&str>) {
+        let mut recovery = self.selection_recovery.take();
+        self.invalidate_monitor();
+        if let Some(recovery) = &mut recovery {
+            if let Some(group) = group {
+                recovery.pending.remove(group);
+            }
+            recovery.epoch = self.snapshot.monitor_epoch;
+        }
+        self.selection_recovery = recovery.filter(|recovery| !recovery.pending.is_empty());
     }
     pub(super) async fn proxy_action(&mut self, action: Action) -> Result<(), String> {
         self.snapshot.operation_module = Some("proxies");
@@ -195,16 +263,10 @@ impl Actor {
                 }
                 let before = client.proxies(&[]).await?;
                 let previous_node = before.selected(&group).map(str::to_owned);
-                let proxy = before.entries.get(&group).ok_or("代理组不存在")?;
-                if !matches!(proxy.kind.as_str(), "Selector" | "URLTest" | "Fallback")
-                    || !proxy
-                        .all
-                        .as_ref()
-                        .is_some_and(|nodes| nodes.contains(&node))
-                {
+                if !before.selectable(&group, &node) {
                     return Err("代理组不支持此节点选择".into());
                 }
-                self.invalidate_monitor();
+                self.invalidate_selection_monitor(Some(&group));
                 client.select_proxy(&group, Some(&node)).await?;
                 let actual = client.proxies(&[]).await?;
                 if !actual.confirms_selection(&group, &node) {
@@ -246,7 +308,7 @@ impl Actor {
                 if !matches!(proxy.kind.as_str(), "URLTest" | "Fallback") {
                     return Err("此代理组不支持自动选择".into());
                 }
-                self.invalidate_monitor();
+                self.invalidate_selection_monitor(Some(&group));
                 client.select_proxy(&group, None).await?;
                 let actual = client.proxies(&[]).await?;
                 if actual
@@ -270,7 +332,7 @@ impl Actor {
                 self.snapshot.information = Some("已恢复自动选择".into());
             }
         }
-        self.invalidate_monitor();
+        self.invalidate_selection_monitor(None);
         self.publish(Phase::Ready, None);
         Ok(())
     }
@@ -326,6 +388,9 @@ impl Actor {
             ));
         }
         self.snapshot.preferences = Some(desired);
+        self.snapshot.operation_committed = true;
+        self.publish(Phase::Ready, None);
+        self.cleanup_all_after_commit("出站模式已切换").await?;
         self.completed("出站模式已切换".into());
         Ok(())
     }

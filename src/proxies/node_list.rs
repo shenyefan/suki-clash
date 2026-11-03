@@ -107,6 +107,7 @@ impl ProxiesPage {
                         .label("清除筛选")
                         .on_click(cx.listener(|this, _, window, cx| {
                             this.only_available = false;
+                            this.group_filter.clear();
                             this.query.update(cx, |query, cx| {
                                 query.set_value("", window, cx);
                                 query.focus_handle(cx).focus(window, cx);
@@ -151,8 +152,42 @@ impl ProxiesPage {
             }
         }
         let searching = !query.is_empty();
+        let offset = -self.list_scroll.offset().y;
+        let mut origin = px(0.);
+        let mut pinned = None;
+        let mut next_header = None;
+        for ((group, nodes), height) in rows.iter().zip(&heights) {
+            if nodes.is_none() {
+                if origin <= offset {
+                    pinned = Some(group.clone());
+                } else if pinned.is_some() {
+                    next_header = Some(origin);
+                    break;
+                }
+            }
+            origin += *height;
+        }
+        let sticky = pinned.map(|group| {
+            let y = next_header
+                .map(|next| (next - offset - node_height - gap).min(px(0.)))
+                .unwrap_or(px(0.));
+            div()
+                .id("proxy-sticky-header")
+                .absolute()
+                .top(y + list::INSET_Y.to_pixels(window.rem_size()))
+                .left(list::INSET_X)
+                .right(list::INSET_X)
+                .h(height)
+                .rounded(cx.theme().radius)
+                .bg(cx.theme().muted)
+                .child(self.group_header(group, searching, true, window, cx))
+        });
         let rows = std::rc::Rc::new(rows);
         div()
+            .id("proxy-sticky-list")
+            .relative()
+            .overflow_hidden()
+            .on_scroll(cx.listener(|_, _, _, cx| cx.notify()))
             .size_full()
             .min_w(space::NONE)
             .py(list::INSET_Y)
@@ -167,7 +202,7 @@ impl ProxiesPage {
                         div()
                             .h(height + proxy_card::GAP)
                             .pb(proxy_card::GAP)
-                            .px(list::INSET_X)
+                            .px(list::INSET_X + proxy_card::GROUP_INSET_X)
                             .grid()
                             .grid_cols(this.columns as u16)
                             .gap(proxy_card::GAP)
@@ -185,20 +220,27 @@ impl ProxiesPage {
                             .h(height + proxy_card::GAP)
                             .pb(proxy_card::GAP)
                             .px(list::INSET_X)
-                            .child(this.group_header(group.clone(), searching, window, cx))
+                            .child(this.group_header(group.clone(), searching, false, window, cx))
                             .into_any_element()
                     }
                 },
             ))
+            .children(sticky)
             .into_any_element()
     }
     fn group_header(
         &self,
         group: GroupInfo,
         searching: bool,
+        sticky: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let view_id = if sticky {
+            format!("sticky-{}", group.id)
+        } else {
+            group.id.clone()
+        };
         let open = self.is_expanded(&group.id, searching);
         let motion = cx.theme().motion_tokens();
         let angle = gpui_kit::base::motion::transition(
@@ -259,7 +301,9 @@ impl ProxiesPage {
             .is_some_and(|position| position == "左侧");
         let drag_target = group.id.clone();
         let header = h_flex()
-            .id(SharedString::from(format!("group-drag-{}", group.id)))
+            .bg(cx.theme().muted)
+            .rounded(cx.theme().radius)
+            .id(SharedString::from(format!("group-drag-{}", view_id)))
             .on_drag(GroupDrag(group.id.clone()), |drag, _, _, cx| {
                 cx.new(|_| drag.clone())
             })
@@ -292,7 +336,7 @@ impl ProxiesPage {
             })
             .gap(space::SM)
             .child(
-                Button::new(SharedString::from(format!("proxy-group-{}", group.id)))
+                Button::new(SharedString::from(format!("proxy-group-{}", view_id)))
                     .ghost()
                     .with_size(control::STANDARD)
                     .flex_1()
@@ -362,7 +406,7 @@ impl ProxiesPage {
             )
             .child(
                 ui::icon_button(
-                    SharedString::from(format!("proxy-group-locate-{}", group.id)),
+                    SharedString::from(format!("proxy-group-locate-{}", view_id)),
                     IconName::LocateFixed,
                     "定位当前节点",
                 )
@@ -372,7 +416,7 @@ impl ProxiesPage {
             )
             .child(
                 ui::icon_button(
-                    SharedString::from(format!("proxy-group-test-{}", group.id)),
+                    SharedString::from(format!("proxy-group-test-{}", view_id)),
                     IconName::Gauge,
                     "测试代理组延迟",
                 )
@@ -393,7 +437,7 @@ impl ProxiesPage {
             )
             .child(
                 ui::icon_button(
-                    SharedString::from(format!("proxy-group-sort-{}", group.id)),
+                    SharedString::from(format!("proxy-group-sort-{}", view_id)),
                     match sort {
                         super::model::SortOrder::Default => IconName::ArrowDownWideNarrow,
                         super::model::SortOrder::Latency => IconName::Clock,
@@ -415,7 +459,7 @@ impl ProxiesPage {
             )
             .child(
                 ui::icon_button(
-                    SharedString::from(format!("group-url-{}", group.id)),
+                    SharedString::from(format!("group-url-{}", view_id)),
                     IconName::Link,
                     "编辑测速地址",
                 )
@@ -429,7 +473,7 @@ impl ProxiesPage {
             .when(fixed, |row| {
                 row.child(
                     ui::icon_button(
-                        SharedString::from(format!("proxy-group-unfix-{}", group.id)),
+                        SharedString::from(format!("proxy-group-unfix-{}", view_id)),
                         IconName::PinOff,
                         "恢复自动选择",
                     )
@@ -538,19 +582,19 @@ impl ProxiesPage {
             node.id()
         )))
         .ghost()
-        .disabled(matches!(
-            group.kind,
-            GroupKind::LoadBalance | GroupKind::Relay
-        ))
+        .disabled(
+            !node.resolved() || matches!(group.kind, GroupKind::LoadBalance | GroupKind::Relay),
+        )
         .with_size(control::STANDARD)
         .track_focus(&focus)
         .tab_stop(open)
         .accessibility_label(format!(
             "{}：{}{}",
             group.name,
-            node.name(),
+            node.display_name(),
             if active { "，当前使用" } else { "" }
         ))
+        .tooltip(format!("{}\n{}", node.display_name(), node.details()))
         .size_full()
         .line_height(relative(text::LINE_HEIGHT))
         .min_w(space::NONE)
@@ -559,6 +603,11 @@ impl ProxiesPage {
         .gap(space::XS)
         .rounded(cx.theme().radius)
         .map(|card| ui::selectable_card(card, active, cx))
+        .bg(if active {
+            cx.theme().muted.blend(ui::theme::selection_tint(cx))
+        } else {
+            cx.theme().muted
+        })
         .on_click(move |_, window, cx| {
             cx.stop_propagation();
             crate::core::request(
@@ -584,7 +633,7 @@ impl ProxiesPage {
                             .min_w(space::NONE)
                             .truncate()
                             .font_weight(text::EMPHASIS)
-                            .child(node.name()),
+                            .child(node.display_name()),
                     ),
                 )
                 .child(
@@ -593,9 +642,9 @@ impl ProxiesPage {
                         .child(
                             ui::muted(
                                 if node.region().is_empty() {
-                                    node.protocol()
+                                    node.details()
                                 } else {
-                                    format!("{} · {}", node.region(), node.protocol())
+                                    format!("{} · {}", node.region(), node.details())
                                 },
                                 cx,
                             )
@@ -650,7 +699,14 @@ impl ProxiesPage {
                                 cx.theme().muted_foreground
                             })
                             .accessibility_label(format!("测试{}的{}延迟", group.name, node.name()))
-                            .tooltip(node.failure().unwrap_or("测试此节点延迟").to_owned())
+                            .tooltip(
+                                if node.timed_out() {
+                                    "测速超时"
+                                } else {
+                                    node.failure().unwrap_or("测试此节点延迟")
+                                }
+                                .to_owned(),
+                            )
                             .on_click(move |_, window, cx| {
                                 cx.stop_propagation();
                                 crate::core::test_delay(
@@ -679,6 +735,126 @@ mod motion_tests {
     use gpui_kit::{AppContext, Bounds, TestAppContext, WindowBounds, WindowOptions, px, size};
     use std::time::Duration;
     #[gpui_kit::test]
+    fn unresolved_member_card_is_disabled_while_direct_remains_selectable(cx: &mut TestAppContext) {
+        let root = tempfile::tempdir().unwrap();
+        let paths = crate::storage::AppPaths::isolated(root.path());
+        let service =
+            crate::integration::Service::start(crate::storage::Repository::open(paths).unwrap())
+                .unwrap();
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            crate::integration::init(service, None, cx);
+        });
+        let (handle, session) = cx.update(|cx| {
+            let session = cx.new(|_| Session::default());
+            let state = session.clone();
+            let (handle, _) = gpui_kit::open_window(WindowOptions {
+                window_bounds: Some(WindowBounds::Windowed(Bounds::new(Default::default(), size(px(1100.), px(900.))))),
+                ..Default::default()
+            }, cx, |window, cx| {
+                cx.new(|cx| {
+                    let mut page = ProxiesPage::new(state, window, cx);
+                    let proxies = crate::proxies::runtime::Proxies::parse(br#"{"proxies":{"g":{"name":"g","type":"Selector","all":["DIRECT","missing"]},"DIRECT":{"name":"DIRECT","type":"Direct"}}}"#, &[]).unwrap();
+                    page.groups = crate::proxies::model::ProxyGroup::observed(&proxies, None, 5000);
+                    page.card_focus = page.groups.iter().flat_map(|group| group.visible_nodes("", false, crate::proxies::model::SortOrder::Default, false).into_iter().map(|node| ((group.id(), node.id()), cx.focus_handle())).collect::<Vec<_>>()).collect();
+                    page.expanded.insert("g".into());
+                    page.refresh_list(window, cx);
+                    page
+                })
+            }).unwrap();
+            (handle, session)
+        });
+        cx.run_until_parked();
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            assert_eq!(window.find("node-card-g-missing:0").disabled(), Some(true));
+            assert_ne!(
+                window.find("node-card-g-c:6:DIRECT:0").disabled(),
+                Some(true)
+            );
+            assert_eq!(
+                window.find("node-delay-g-c:6:DIRECT:0").disabled(),
+                Some(true)
+            );
+            window.click("node-card-g-missing:0", cx);
+            assert_eq!(session.read(cx).core().request_id(), None);
+        })
+        .unwrap();
+        crate::integration::finish_test_services(cx);
+    }
+    #[gpui_kit::test]
+    fn changed_groups_prune_stale_filters_and_clear_action_restores_nodes(cx: &mut TestAppContext) {
+        let root = tempfile::tempdir().unwrap();
+        let paths = crate::storage::AppPaths::isolated(root.path());
+        let service =
+            crate::integration::Service::start(crate::storage::Repository::open(paths).unwrap())
+                .unwrap();
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            crate::integration::init(service, None, cx);
+        });
+        let (handle, session, page) = cx.update(|cx| {
+            let session = cx.new(|_| Session::default());
+            let state = session.clone();
+            let (handle, page) = gpui_kit::open_window(
+                WindowOptions {
+                    window_bounds: Some(WindowBounds::Windowed(Bounds::new(
+                        Default::default(),
+                        size(px(1100.), px(900.)),
+                    ))),
+                    ..Default::default()
+                },
+                cx,
+                |window, cx| cx.new(|cx| ProxiesPage::new(state, window, cx)),
+            )
+            .unwrap();
+            (handle, session, page)
+        });
+        cx.update_window(handle, |_, _, cx| {
+            page.update(cx, |page, _| {
+                page.group_filter.insert("removed".into());
+                page.group_filter.insert("current".into());
+            })
+        })
+        .unwrap();
+        cx.update(|cx| session.update(cx, |session, cx| {
+            let proxies = crate::proxies::runtime::Proxies::parse(br#"{"proxies":{"current":{"name":"current","type":"Selector","all":["DIRECT"]},"DIRECT":{"name":"DIRECT","type":"Direct"}}}"#, &[]).unwrap();
+            let snapshot = crate::core::Snapshot::ready_with_providers(crate::core::ProviderKind::Proxies, br#"{"providers":{}}"#).unwrap();
+            *session = Session::fixture(snapshot, crate::core::Runtime { connected: true, proxies, ..Default::default() });
+            cx.notify();
+        }));
+        cx.run_until_parked();
+        cx.update_window(handle, |_, window, cx| {
+            page.update(cx, |page, cx| {
+                assert_eq!(page.group_filter, ["current".to_owned()].into());
+                page.group_filter.insert("hidden".into());
+                page.group_filter.remove("current");
+                page.only_available = true;
+                page.query
+                    .update(cx, |input, cx| input.set_value("absent", window, cx));
+                page.refresh_list(window, cx);
+                cx.notify();
+            })
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.click("clear-proxy-filters", cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.update_window(handle, |_, _, cx| {
+            page.update(cx, |page, cx| {
+                assert!(page.group_filter.is_empty());
+                assert!(!page.only_available);
+                assert!(page.query.read(cx).value().is_empty());
+            })
+        })
+        .unwrap();
+        crate::integration::finish_test_services(cx);
+    }
+    #[gpui_kit::test]
     fn group_body_and_following_header_move_continuously_on_reversal(cx: &mut TestAppContext) {
         let root = tempfile::tempdir().unwrap();
         let paths = crate::storage::AppPaths::isolated(root.path());
@@ -687,7 +863,7 @@ mod motion_tests {
                 .unwrap();
         cx.update(|cx| {
             gpui_kit::init(cx);
-            crate::integration::init(service, cx);
+            crate::integration::init(service, None, cx);
             cx.set_reduce_motion(false);
         });
         let (handle, _) = cx.update(|cx| {

@@ -1,6 +1,10 @@
-# 设置来源核查清单（2026-10-29）
+# 设置来源核查清单（2026-10-29基线；2026-11-03更新）
 
-## 结论
+## 本批清理结果（2026-11-03）
+
+原155项为当时审计基线，以下逐项表保留来源证据，不代表当前仍有全部入口。S01已删除8项无消费者入口、默认值与依赖：AutoCheckUpdate、PriorityIndex、DiffWorkDir、UseHotReloadProfile、HotReloadProfileAutoCloseConnection、TestProfileOnStart、PauseSsidText、DisableDnsOnPauseSsid。AutoCloseConnection及绕过设置保留。Gist旧运行配置同步字段替换为完整备份管理入口；Token／Age私钥使用独立安全存储，备份配置保存于settings.json的backup分组，未增加明文凭据入口。WebDAV／自动备份等明确暂缓范围不因保留字段而宣称已实现。
+
+## 原始结论
 
 删除 2 项：
 
@@ -44,15 +48,15 @@
 | 热重载订阅、热重载前关闭连接 | ClashSuki | 工作流按契约热应用，未读取这两个开关 |
 | 启动前检查配置 | ClashSuki | 工作流固定校验，开关没有控制作用 |
 | 指定 Wi-Fi 直连、直连时使用系统 DNS | ClashSuki | 无 SSID 监听和网络切换执行 |
-| 切换代理后关闭连接 | CV `auto_close_connection`／ClashSuki | 未接入切换后的关闭连接策略 |
+| 切换代理后关闭连接 | CV `auto_close_connection`／ClashSuki | 已接切换后关闭经过原节点的连接，回读确认 |
 | 自动检测延迟、检测间隔 | CV | 缺周期调度；手动测速已经接入 |
 | 自动检查更新／应用更新 | CV | 缺完整应用升级执行链；内核更新属于另一路径 |
 
 | 定时备份、备份间隔、配置变更备份、历史备份与完整恢复 | CV | 缺完整归档／恢复及调度 |
 | WebDAV 连接、上传、获取、远程历史 | CV；用户要求先保留同步 | 缺远程执行 |
-| Gist 同步、Token、Gist ID、Age 加密与密钥 | ClashSuki；项目约定先保留同步 | 缺 Gist／Age 执行 |
+| Gist备份／安全凭据／Age加密 | ClashSuki同步能力与用户完整备份要求 | 已改为完整Gist备份执行与独立安全存储，旧运行配置同步字段不再有入口 |
 | 后台服务安装／修复／停止、防火墙重建 | CV／ClashSuki | 缺平台执行，不能宣称成功 |
-| 打开开发工具、导出诊断信息 | CV 同类入口 | 当前动作未接入 GPUI 工具或诊断导出 |
+| 打开开发工具、导出诊断信息 | CV 同类入口 | 诊断 ZIP 已接；GPUI 开发工具不属于诊断导出 |
 | TUN 启用及参数 | Mihomo／ClashSuki | 尚未打通 TUN 权限与配置运行链；不能把表单保存当成网卡启用 |
 
 订阅超时、User-Agent、订阅下载代理、测速并发／超时有执行消费者，没有按名称猜测为无效项。DNS、嗅探、内核和 Geo 字段需按配置工作流判断，不能因为不在 CV 的 IVerge 中就认定是自行添加。
@@ -271,6 +275,8 @@
 
 2026-10-29：按用户要求移除所有页面／集合的重置入口，只保留具有程序默认值的设置多行文本恢复默认；用户订阅／覆写源码无恢复默认；全局重置现位于设置维护，并实现停止后台写入后删除配置及退出。
 
-2026-10-29 核查更正：应用日志按天清理已有 `integration::service::program_policy` → `logging::configure_program/cleanup` 消费链，不应列为未接入。“绕过校验”和“使用默认绕过”是 CV 已有功能，此前助手未经用户确认移除，不能归因于用户要求；目前待恢复，详见 CV 差距 C02。
+2026-10-29 核查更正：应用日志按天清理已有 `integration::service::program_policy` → `logging::configure_program/cleanup` 消费链，不应列为未接入。“绕过校验”和“使用默认绕过”是 CV 已有功能，此前助手未经用户确认移除，不能归因于用户要求；现已恢复两项开关及校验／默认合并行为，详见 CV 差距 C02。
 
 2026-10-29 最新界面修正：移除代理组侧边快速跳转及关联悬停设置。订阅信息开关置于末尾；代理链沿用覆写式行，仅拖动排序，类型靠右且删除最右，不显示延迟或上下箭头；完整链 YAML 与可视化双向同步。
+
+2026-10-31：内核维护新增 Windows 专属 UWP 应用代理入口，参考 CV 入口位置、ClashSuki 的 FirewallAPI／服务写入方案。服务动作集中到管理菜单，新增卸载与转子进程；不是新增持久化偏好。

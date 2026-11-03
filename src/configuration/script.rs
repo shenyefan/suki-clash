@@ -137,9 +137,7 @@ fn run_with_budget(
         for secret in &secrets {
             *line = line.replace(secret, "<redacted>");
         }
-        if line.contains("://") {
-            *line = "日志包含地址，正文已省略".into();
-        }
+        *line = crate::logging::redact(line);
     }
     let report = Report {
         id,

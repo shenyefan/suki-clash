@@ -21,7 +21,7 @@ fn command(name: &str, args: &[&str]) -> Result<String, String> {
         ));
     }
     String::from_utf8(output.stdout)
-        .map(|s| s.trim().to_owned())
+        .map(|s| s.trim_end_matches(['\r', '\n']).to_owned())
         .map_err(|_| format!("{name} 返回了无效文本"))
 }
 fn kde_tool(write: bool) -> Result<&'static str, String> {
@@ -294,6 +294,16 @@ pub(super) fn write(target: &Target) -> Result<(), String> {
         }
     }
     if target.auto.enable {
+        if is_kde {
+            set("NoProxyFor", &target.system.bypass)?;
+        } else {
+            let bypass = super::super::entries(&target.system.bypass)
+                .into_iter()
+                .map(quote)
+                .collect::<Vec<_>>()
+                .join(",");
+            set("ignore-hosts", &format!("[{bypass}]"))?;
+        }
         set(
             if is_kde {
                 "Proxy Config Script"
@@ -319,8 +329,37 @@ pub(super) fn write(target: &Target) -> Result<(), String> {
     set(if is_kde { "ProxyType" } else { "mode" }, mode)
 }
 
+const KDE_KEYS: [&str; 6] = [
+    "httpProxy",
+    "httpsProxy",
+    "socksProxy",
+    "NoProxyFor",
+    "Proxy Config Script",
+    "ProxyType",
+];
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct KdeCheckpoint([String; 6]);
+impl KdeCheckpoint {
+    fn capture() -> Result<Self, String> {
+        let values = KDE_KEYS
+            .map(get)
+            .into_iter()
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(Self(values.try_into().map_err(|_| "KDE 代理字段数量无效")?))
+    }
+    fn restore_with(
+        &self,
+        mut write: impl FnMut(&str, &str) -> Result<(), String>,
+    ) -> Result<(), String> {
+        for (key, value) in KDE_KEYS.into_iter().zip(&self.0) {
+            write(key, value)?;
+        }
+        Ok(())
+    }
+}
 pub(in crate::system_proxy) struct Checkpoint {
     snapshot: OsSnapshot,
+    kde: Option<KdeCheckpoint>,
     same_proxy: String,
     authentication: String,
 }
@@ -344,84 +383,82 @@ pub(super) fn capture() -> Result<(OsSnapshot, Checkpoint), String> {
         snapshot.clone(),
         Checkpoint {
             snapshot,
+            kde: if kde() {
+                Some(KdeCheckpoint::capture()?)
+            } else {
+                None
+            },
             same_proxy,
             authentication,
         },
     ))
 }
-pub(super) fn restore(checkpoint: &Checkpoint) -> Result<(), String> {
-    let snapshot = &checkpoint.snapshot;
-    if !kde() {
-        command(
-            "gsettings",
-            &[
-                "set",
-                "org.gnome.system.proxy",
-                "use-same-proxy",
-                &checkpoint.same_proxy,
-            ],
-        )?;
-        command(
-            "gsettings",
-            &[
-                "set",
-                "org.gnome.system.proxy.http",
-                "use-authentication",
-                &checkpoint.authentication,
-            ],
-        )?;
+pub(super) fn checkpoint_matches(checkpoint: &Checkpoint) -> Result<bool, String> {
+    if let Some(raw) = &checkpoint.kde {
+        return Ok(raw == &KdeCheckpoint::capture()?);
     }
-    let is_kde = kde();
+    Ok(suki_service::proxy_owner::equivalent(
+        &checkpoint.snapshot,
+        &read()?,
+    ))
+}
+pub(super) fn restore(checkpoint: &Checkpoint) -> Result<(), String> {
+    if let Some(raw) = &checkpoint.kde {
+        raw.restore_with(set)?;
+        if raw != &KdeCheckpoint::capture()? {
+            return Err("KDE 代理恢复后原始字段回读不一致".into());
+        }
+        return Ok(());
+    }
+    let snapshot = &checkpoint.snapshot;
+    command(
+        "gsettings",
+        &[
+            "set",
+            "org.gnome.system.proxy",
+            "use-same-proxy",
+            &checkpoint.same_proxy,
+        ],
+    )?;
+    command(
+        "gsettings",
+        &[
+            "set",
+            "org.gnome.system.proxy.http",
+            "use-authentication",
+            &checkpoint.authentication,
+        ],
+    )?;
     for (endpoint, protocol) in [
         (&snapshot.http, "http"),
         (&snapshot.https, "https"),
         (&snapshot.socks, "socks"),
     ] {
-        if is_kde {
-            let address = if endpoint.host.is_empty() {
-                String::new()
-            } else {
-                format!(
-                    "{}://{}",
-                    if protocol == "socks" { "socks" } else { "http" },
-                    authority(&endpoint.host, endpoint.port)
-                )
-            };
-            set(&format!("{protocol}Proxy"), &address)?;
-        } else {
-            let schema = format!("org.gnome.system.proxy.{protocol}");
-            command(
-                "gsettings",
-                &["set", &schema, "host", &quote(&endpoint.host)],
-            )?;
-            command(
-                "gsettings",
-                &["set", &schema, "port", &endpoint.port.to_string()],
-            )?;
-        }
+        let schema = format!("org.gnome.system.proxy.{protocol}");
+        command(
+            "gsettings",
+            &["set", &schema, "host", &quote(&endpoint.host)],
+        )?;
+        command(
+            "gsettings",
+            &["set", &schema, "port", &endpoint.port.to_string()],
+        )?;
     }
-    if is_kde {
-        set("NoProxyFor", &snapshot.bypass)?;
-        set("Proxy Config Script", &snapshot.auto.url)?;
-    } else {
-        let bypass = super::super::entries(&snapshot.bypass)
-            .into_iter()
-            .map(quote)
-            .collect::<Vec<_>>()
-            .join(",");
-        set("ignore-hosts", &format!("[{bypass}]"))?;
-        set("autoconfig-url", &quote(&snapshot.auto.url))?;
-    }
+    let bypass = super::super::entries(&snapshot.bypass)
+        .into_iter()
+        .map(quote)
+        .collect::<Vec<_>>()
+        .join(",");
+    set("ignore-hosts", &format!("[{bypass}]"))?;
+    set("autoconfig-url", &quote(&snapshot.auto.url))?;
     let manual =
         snapshot.http.switched_on || snapshot.https.switched_on || snapshot.socks.switched_on;
     set(
-        if is_kde { "ProxyType" } else { "mode" },
+        "mode",
         if snapshot.auto_switched_on {
-            if is_kde { "2" } else { "'auto'" }
+            "'auto'"
         } else if manual {
-            if is_kde { "1" } else { "'manual'" }
-        } else if is_kde {
-            "0"
+            "'manual'"
         } else {
             "'none'"
         },
@@ -431,6 +468,37 @@ pub(super) fn restore(checkpoint: &Checkpoint) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn kde_checkpoint_restores_the_values_it_read_without_uri_reconstruction() {
+        let raw = KdeCheckpoint([
+            "http://user:secret@proxy.example:8080".into(),
+            "https://proxy.example:8443".into(),
+            "socks5://[::1]:1080".into(),
+            "localhost,.example".into(),
+            "http://pac.example/config.pac".into(),
+            "2".into(),
+        ]);
+        let mut writes = Vec::new();
+        raw.restore_with(|key, value| {
+            writes.push((key.to_owned(), value.to_owned()));
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(
+            writes
+                .iter()
+                .map(|(key, _)| key.as_str())
+                .collect::<Vec<_>>(),
+            KDE_KEYS
+        );
+        assert_eq!(
+            writes
+                .iter()
+                .map(|(_, value)| value.clone())
+                .collect::<Vec<_>>(),
+            raw.0
+        );
+    }
     #[test]
     fn gvariant_strings_keep_quoting_and_empty_arrays() {
         assert_eq!(string(&quote("a'b\\c")).unwrap(), "a'b\\c");

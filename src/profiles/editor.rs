@@ -11,6 +11,7 @@ use gpui_kit::{
         button::{Button, ButtonVariants},
         h_flex,
         input::{Editor, EditorState, Input, InputState, MaskPattern},
+        searchable_list::SearchableListItem,
         select::{Select, SelectState},
         switch::Switch,
         v_flex,
@@ -30,12 +31,26 @@ pub(super) struct ImportInputs {
     pub(super) agent: Entity<InputState>,
     pub(super) age: Entity<InputState>,
 }
+#[derive(Clone)]
+struct ScopeChoice {
+    id: Option<u64>,
+    name: String,
+}
+impl SearchableListItem for ScopeChoice {
+    type Value = Option<u64>;
+    fn value(&self) -> &Self::Value {
+        &self.id
+    }
+    fn title(&self) -> SharedString {
+        self.name.clone().into()
+    }
+}
 pub(super) struct DocumentEditor {
     owner: WeakEntity<ProfilesPage>,
     document: Document,
     mode: EditorMode,
-    scope: Entity<SelectState<Vec<SharedString>>>,
-    scopes: Vec<(Option<u64>, String)>,
+    scope: Entity<SelectState<Vec<ScopeChoice>>>,
+    scopes: Vec<ScopeChoice>,
     name: Entity<InputState>,
     url: Entity<InputState>,
     token: Entity<InputState>,
@@ -47,6 +62,8 @@ pub(super) struct DocumentEditor {
     with_proxy: bool,
     self_proxy: bool,
     accept_invalid_certs: bool,
+    cleared_token: Option<String>,
+    cleared_age: Option<String>,
 }
 impl DocumentEditor {
     pub(super) fn new(
@@ -57,34 +74,34 @@ impl DocumentEditor {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let mut scopes = vec![(None, "所有订阅（全局）".to_owned())];
+        let mut scopes = vec![ScopeChoice {
+            id: None,
+            name: "所有订阅（全局）".to_owned(),
+        }];
         scopes.extend(
             super::store::load(false, cx)
                 .map(|(docs, _)| docs)
                 .unwrap_or_default()
                 .into_iter()
-                .map(|doc| (Some(doc.id), doc.name)),
+                .map(|doc| ScopeChoice {
+                    id: Some(doc.id),
+                    name: doc.name,
+                }),
         );
         if let Some(id) = document.scope_profile
-            && !scopes.iter().any(|scope| scope.0 == Some(id))
+            && !scopes.iter().any(|scope| scope.id == Some(id))
         {
-            scopes.push((Some(id), document.scope_name.clone()));
+            scopes.push(ScopeChoice {
+                id: Some(id),
+                name: document.scope_name.clone(),
+            });
         }
         let index = scopes
             .iter()
-            .position(|scope| scope.0 == document.scope_profile)
+            .position(|scope| scope.id == document.scope_profile)
             .unwrap_or(0);
-        let scope = cx.new(|cx| {
-            SelectState::new(
-                scopes
-                    .iter()
-                    .map(|scope| SharedString::from(scope.1.clone()))
-                    .collect(),
-                Some(IndexPath::new(index)),
-                window,
-                cx,
-            )
-        });
+        let scope =
+            cx.new(|cx| SelectState::new(scopes.clone(), Some(IndexPath::new(index)), window, cx));
         let importing = mode == EditorMode::Import;
 
         let name = cx.new(|cx| {
@@ -146,6 +163,7 @@ impl DocumentEditor {
             InputState::new(window, cx)
                 .mask_pattern(MaskPattern::number(None))
                 .default_value(document.interval.clone())
+                .placeholder("自动获取")
         });
         let timeout = cx.new(|cx| {
             InputState::new(window, cx)
@@ -166,9 +184,11 @@ impl DocumentEditor {
             )
         });
         Self {
-            with_proxy: document.with_proxy,
+            with_proxy: document.with_proxy && !document.self_proxy,
             self_proxy: document.self_proxy,
             accept_invalid_certs: document.accept_invalid_certs,
+            cleared_token: None,
+            cleared_age: None,
             owner,
             document,
             mode,
@@ -186,6 +206,9 @@ impl DocumentEditor {
     }
     pub(super) fn revision(&self, cx: &App) -> Vec<String> {
         vec![
+            self.document.enabled.to_string(),
+            self.cleared_token.is_some().to_string(),
+            self.cleared_age.is_some().to_string(),
             self.with_proxy.to_string(),
             self.self_proxy.to_string(),
             self.accept_invalid_certs.to_string(),
@@ -200,7 +223,10 @@ impl DocumentEditor {
             self.scope
                 .read(cx)
                 .selected_value()
-                .map(ToString::to_string)
+                .map(|id| {
+                    id.map(|id| id.to_string())
+                        .unwrap_or_else(|| "global".into())
+                })
                 .unwrap_or_default(),
         ]
     }
@@ -216,29 +242,28 @@ impl DocumentEditor {
         document.with_proxy = self.with_proxy;
         document.self_proxy = self.self_proxy;
         document.accept_invalid_certs = self.accept_invalid_certs;
+        document.credentials = super::credentials::CredentialEdits::from_inputs(
+            self.token.read(cx).value().as_ref(),
+            self.age.read(cx).value().as_ref(),
+        );
+        if self.token.read(cx).value().is_empty() && self.cleared_token.is_some() {
+            document.credentials.token = super::credentials::SecretEdit::Clear;
+        }
+        if self.age.read(cx).value().is_empty() && self.cleared_age.is_some() {
+            document.credentials.age = super::credentials::SecretEdit::Clear;
+        }
         if self.mode == EditorMode::Content {
             document.content = self.content.read(cx).value().to_string();
         } else {
-            let label = self.scope.read(cx).selected_value().cloned();
-            if let Some(scope) = self
-                .scopes
-                .iter()
-                .find(|scope| Some(scope.1.as_str()) == label.as_deref())
+            if let Some(id) = self.scope.read(cx).selected_value()
+                && let Some(scope) = self.scopes.iter().find(|scope| &scope.id == id)
             {
-                document.scope_profile = scope.0;
-                document.scope_name = scope.1.clone();
+                document.scope_profile = scope.id;
+                document.scope_name = scope.name.clone();
             }
             document.name = self.name.read(cx).value().to_string().trim().to_owned();
             document.url = self.url.read(cx).value().to_string().trim().to_owned();
-            if document.name.is_empty() && self.mode == EditorMode::Import {
-                document.name = if document.kind == DocumentKind::Profile {
-                    "远程订阅"
-                } else {
-                    "远程覆写"
-                }
-                .into();
-            }
-            if document.name.is_empty() {
+            if document.name.is_empty() && self.mode != EditorMode::Import {
                 ui::show_error("填写配置名称".into(), window, cx);
                 cx.notify();
                 return false;
@@ -256,12 +281,13 @@ impl DocumentEditor {
             }
             document.interval = self.interval.read(cx).value().to_string();
             document.timeout = self.timeout.read(cx).value().to_string();
-            if document
-                .interval
-                .parse::<u32>()
-                .ok()
-                .filter(|value| *value <= 525600)
-                .is_none()
+            if !(self.mode == EditorMode::Import && document.interval.is_empty())
+                && document
+                    .interval
+                    .parse::<u32>()
+                    .ok()
+                    .filter(|value| *value <= 525600)
+                    .is_none()
             {
                 ui::show_error("更新间隔需为 0–525600 分钟".into(), window, cx);
                 return false;
@@ -417,6 +443,29 @@ impl Render for DocumentEditor {
                         .w_full()
                         .aria_label("访问令牌"),
                 ));
+            if self.mode == EditorMode::Information {
+                form = form.child(
+                    Button::new("clear-saved-token")
+                        .ghost()
+                        .with_size(control::STANDARD)
+                        .label(if self.cleared_token.is_some() {
+                            "撤销清除令牌"
+                        } else {
+                            "清除已保存令牌"
+                        })
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            let value = if let Some(previous) = this.cleared_token.take() {
+                                previous
+                            } else {
+                                this.cleared_token = Some(this.token.read(cx).value().to_string());
+                                String::new()
+                            };
+                            this.token
+                                .update(cx, |state, cx| state.set_value(value, window, cx));
+                            cx.notify();
+                        })),
+                );
+            }
             if self.document.kind == DocumentKind::Profile {
                 form = form.child(ui::field_label(
                     "Age 私钥",
@@ -427,6 +476,29 @@ impl Render for DocumentEditor {
                         .w_full()
                         .aria_label("Age 私钥"),
                 ));
+                if self.mode == EditorMode::Information {
+                    form = form.child(
+                        Button::new("clear-saved-age")
+                            .ghost()
+                            .with_size(control::STANDARD)
+                            .label(if self.cleared_age.is_some() {
+                                "撤销清除私钥"
+                            } else {
+                                "清除已保存私钥"
+                            })
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                let value = if let Some(previous) = this.cleared_age.take() {
+                                    previous
+                                } else {
+                                    this.cleared_age = Some(this.age.read(cx).value().to_string());
+                                    String::new()
+                                };
+                                this.age
+                                    .update(cx, |state, cx| state.set_value(value, window, cx));
+                                cx.notify();
+                            })),
+                    );
+                }
             }
         }
         if self.document.kind != DocumentKind::Profile {
@@ -465,8 +537,18 @@ impl Render for DocumentEditor {
                             .accessibility_label(label)
                             .on_change(cx.listener(move |this, checked, _, cx| {
                                 match key {
-                                    "with-proxy" => this.with_proxy = *checked,
-                                    "self-proxy" => this.self_proxy = *checked,
+                                    "with-proxy" => {
+                                        this.with_proxy = *checked;
+                                        if *checked {
+                                            this.self_proxy = false;
+                                        }
+                                    }
+                                    "self-proxy" => {
+                                        this.self_proxy = *checked;
+                                        if *checked {
+                                            this.with_proxy = false;
+                                        }
+                                    }
                                     _ => this.accept_invalid_certs = *checked,
                                 }
                                 cx.notify();
@@ -477,5 +559,49 @@ impl Render for DocumentEditor {
         }
         content = content.flex_none().child(form);
         content
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ScopeChoice;
+    use gpui_kit::component::{IndexPath, select::SelectState};
+    use gpui_kit::{AppContext, TestAppContext};
+
+    #[gpui_kit::test]
+    fn scope_values_distinguish_duplicate_names_and_global_label(cx: &mut TestAppContext) {
+        cx.update(gpui_kit::init);
+        let window = cx.add_empty_window();
+        window.update(|window, cx| {
+            let choices = vec![
+                ScopeChoice {
+                    id: None,
+                    name: "所有订阅（全局）".into(),
+                },
+                ScopeChoice {
+                    id: Some(1),
+                    name: "同名".into(),
+                },
+                ScopeChoice {
+                    id: Some(2),
+                    name: "同名".into(),
+                },
+                ScopeChoice {
+                    id: Some(3),
+                    name: "所有订阅（全局）".into(),
+                },
+            ];
+            let state =
+                cx.new(|cx| SelectState::new(choices.clone(), Some(IndexPath::new(2)), window, cx));
+            assert_eq!(state.read(cx).selected_value(), Some(&Some(2)));
+            state.update(cx, |state, cx| {
+                state.set_selected_index(Some(IndexPath::new(3)), window, cx)
+            });
+            assert_eq!(state.read(cx).selected_value(), Some(&Some(3)));
+            state.update(cx, |state, cx| {
+                state.set_selected_index(Some(IndexPath::new(0)), window, cx)
+            });
+            assert_eq!(state.read(cx).selected_value(), Some(&None));
+        });
     }
 }

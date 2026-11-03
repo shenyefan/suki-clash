@@ -350,7 +350,7 @@ mod tests {
         )
         .unwrap();
         cx.update(|cx| {
-            crate::integration::init(service, cx);
+            crate::integration::init(service, None, cx);
             gpui_kit::init(cx);
             cx.set_reduce_motion(true);
         });
@@ -403,7 +403,7 @@ mod drag_tests {
         )
         .unwrap();
         cx.update(|cx| {
-            crate::integration::init(service, cx);
+            crate::integration::init(service, None, cx);
             gpui_kit::init(cx);
             crate::ui::configure_theme(cx);
             cx.set_reduce_motion(true);

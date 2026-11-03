@@ -2,7 +2,6 @@ pub(crate) use crate::proxies::runtime::ProxyMode;
 /// Read-only projection of observed runtime state shared by the feature views.
 #[derive(Default)]
 pub(crate) struct Session {
-    tun: Option<bool>,
     core: crate::core::Snapshot,
     core_busy: bool,
     _core_subscription: Option<gpui_kit::Subscription>,
@@ -37,7 +36,6 @@ impl Session {
             core_busy,
             runtime,
             _core_subscription: Some(subscription),
-            ..Self::default()
         }
     }
     pub(crate) fn runtime(&self) -> std::sync::Arc<crate::core::Runtime> {
@@ -53,7 +51,7 @@ impl Session {
         self.core.system_proxy().enabled()
     }
     pub(crate) fn tun(&self) -> Option<bool> {
-        self.tun
+        self.core.tun()
     }
     pub(crate) fn is_running(&self) -> bool {
         self.core.phase() == crate::core::Phase::Ready

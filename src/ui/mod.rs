@@ -9,7 +9,7 @@ pub(crate) use download::DownloadToast;
 pub(crate) mod editor;
 mod modal;
 pub(crate) mod motion;
-pub(crate) use modal::{modal, modal_alert, modal_close, modal_content, modal_panel};
+pub(crate) use modal::{modal, modal_alert, modal_close, modal_content, modal_footer, modal_panel};
 pub(crate) mod theme;
 use gpui_kit::{
     assets::IconName,
@@ -202,6 +202,10 @@ pub(crate) fn show_error(message: String, window: &mut Window, cx: &mut App) {
 }
 
 pub(crate) fn request_command(action: &str, window: &mut Window, cx: &mut App) {
+    if action == "切换虚拟网卡" {
+        crate::core::request(crate::core::Command::ToggleTun, window, cx);
+        return;
+    }
     if action == "切换系统代理" {
         crate::core::request(crate::core::Command::ToggleSystemProxy, window, cx);
         return;
@@ -267,8 +271,8 @@ pub(crate) fn dialog_footer(commit: &str) -> impl IntoElement {
     dialog_footer_pending(commit, false)
 }
 pub(crate) fn dialog_footer_pending(commit: &str, pending: bool) -> impl IntoElement {
-    use gpui_kit::component::dialog::{DialogAction, DialogFooter};
-    DialogFooter::new()
+    use gpui_kit::component::dialog::DialogAction;
+    modal_footer()
         .child(
             Button::new("dialog-cancel")
                 .icon(gpui_kit::assets::IconName::X)
@@ -277,14 +281,17 @@ pub(crate) fn dialog_footer_pending(commit: &str, pending: bool) -> impl IntoEle
                 .on_click(|_, window, cx| window.close_dialog(cx)),
         )
         .child(
-            DialogAction::new().child(
-                Button::new("dialog-commit")
-                    .icon(gpui_kit::assets::IconName::Check)
-                    .with_size(control::STANDARD)
-                    .primary()
-                    .loading(pending)
-                    .disabled(pending)
-                    .label(commit.to_owned()),
+            // DialogAction fills its parent; keep that parent at the button's intrinsic width.
+            div().flex_none().child(
+                DialogAction::new().child(
+                    Button::new("dialog-commit")
+                        .icon(gpui_kit::assets::IconName::Check)
+                        .with_size(control::STANDARD)
+                        .primary()
+                        .loading(pending)
+                        .disabled(pending)
+                        .label(commit.to_owned()),
+                ),
             ),
         )
 }

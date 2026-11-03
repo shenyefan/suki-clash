@@ -1,8 +1,11 @@
+mod platform_access;
 use crate::ui::theme::opacity;
 mod app;
+mod backup;
 mod bootstrap;
 mod configuration;
 mod core;
+mod desktop;
 mod diagnostics;
 mod failure;
 mod integration;
@@ -19,6 +22,7 @@ mod settings;
 mod storage;
 mod system_proxy;
 mod traffic;
+mod tray;
 mod ui;
 
 use gpui_kit::{
@@ -28,7 +32,25 @@ use gpui_kit::{
 };
 
 fn main() {
+    let (instance, instance_error) = match integration::AppPaths::discover()
+        .map_err(|error| error.to_string())
+        .and_then(|paths| {
+            desktop::instance::Service::acquire(
+                &paths,
+                std::env::args().skip(1).find(|argument| {
+                    argument.starts_with("clash:") || argument.starts_with("suki-clash:")
+                }),
+            )
+        }) {
+        Ok(desktop::instance::Disposition::Secondary) => return,
+        Ok(desktop::instance::Disposition::Primary(service)) => (Some(service), None),
+        Err(error) => (None, Some(error)),
+    };
     let service = match integration::AppPaths::discover() {
+        Ok(paths) if instance_error.is_some() => integration::Service::unavailable(
+            Some(paths),
+            instance_error.clone().unwrap_or_default(),
+        ),
         Ok(paths) => match integration::Repository::open(paths.clone())
             .and_then(integration::Service::start)
         {
@@ -37,8 +59,18 @@ fn main() {
         },
         Err(error) => integration::Service::unavailable(None, error.to_string()),
     };
-    application().with_assets(assets::AllAssets).run(move |cx| {
-        integration::init(service, cx);
+    let url_sender = instance.as_ref().map(|instance| instance.sender.clone());
+    let application = application().with_assets(assets::AllAssets);
+    application.on_open_urls(move |urls| {
+        for uri in urls {
+            if let Some(sender) = &url_sender {
+                let _ = sender.try_send(desktop::instance::Activation { uri: Some(uri) });
+            }
+        }
+    });
+    application.on_reopen(desktop::reopen);
+    application.run(move |cx| {
+        integration::init(service, instance_error, cx);
         init(cx);
         gpui_kit::component::set_locale("zh-CN");
         match integration::read("settings", cx)
@@ -57,18 +89,70 @@ fn main() {
             "ctrl-q"
         };
         cx.bind_keys([KeyBinding::new(quit_shortcut, app::Quit, None)]);
-        cx.open_window(app::window::options(cx), |window, cx| {
-            window.on_window_should_close(cx, |_, cx| {
-                core::quit(cx);
-                false
-            });
-            let view = cx.new(|cx| app::SukiApp::new(window, cx));
-            let transparent = cx.theme().background.opacity(opacity::TRANSPARENT);
-            // Root normally paints an opaque component background. Override
-            // only this window surface, keeping menus and dialogs opaque.
-            cx.new(|cx| Root::new(view, window, cx).bg(transparent))
+        let captured = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let app_entity = captured.clone();
+        let silent = integration::read("settings", cx)
+            .get("SilentStart")
+            .is_some_and(|value| value == "true");
+        let mut options = app::window::options(cx);
+        options.show = !silent;
+        options.focus = !silent;
+        let main_window = cx
+            .open_window(options, |window, cx| {
+                window.on_window_should_close(cx, |_, cx| {
+                    if tray::close_to_tray(cx) {
+                        cx.hide();
+                        return false;
+                    }
+                    core::quit(cx);
+                    false
+                });
+                let view = cx.new(|cx| app::SukiApp::new(window, cx));
+                *app_entity.borrow_mut() = Some(view.clone());
+                let transparent = cx.theme().background.opacity(opacity::TRANSPARENT);
+                // Root normally paints an opaque component background. Override
+                // only this window surface, keeping menus and dialogs opaque.
+                cx.new(|cx| Root::new(view, window, cx).bg(transparent))
+            })
+            .expect("无法打开 Suki Clash 窗口");
+        let primary = instance.is_some();
+        if let (Some(instance), Some(app)) = (instance, captured.borrow_mut().take()) {
+            desktop::install(instance, main_window, app, cx);
+        }
+        cx.defer(move |cx| {
+            if primary {
+                tray::init(main_window.into(), cx);
+            }
+            if !silent || !tray::available(cx) {
+                desktop::show_main(main_window.into(), cx);
+            }
+        });
+        if !primary {
+            return;
+        }
+        cx.spawn(async move |cx| {
+            #[cfg(not(target_os = "macos"))]
+            if let Err(error) = cx
+                .background_spawn(async { desktop::scheme::register() })
+                .await
+            {
+                cx.update(|cx| integration::announce_module("WARNING", "desktop", error, cx));
+            }
+            #[cfg(target_os = "macos")]
+            for scheme in ["clash", "suki-clash"] {
+                let registration = cx.update(|cx| cx.register_url_scheme(scheme));
+                if let Err(error) = registration.await {
+                    cx.update(|cx| {
+                        integration::announce_module(
+                            "WARNING",
+                            "desktop",
+                            format!("无法注册订阅链接处理：{error}"),
+                            cx,
+                        )
+                    });
+                }
+            }
         })
-        .expect("无法打开 Suki Clash 窗口");
-        cx.activate(true);
+        .detach();
     });
 }

@@ -9,24 +9,16 @@ mod tests;
 use crate::storage::Values;
 use std::time::{Duration, Instant};
 mod types;
-use types::{ManualProxy, OsSnapshot, PacProxy};
+#[cfg(test)]
+use types::OsSnapshot;
+use types::{ManualProxy, PacProxy};
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(crate) struct Observation {
-    enabled: Option<bool>,
-}
-impl Observation {
-    pub(crate) fn enabled(&self) -> Option<bool> {
-        self.enabled
-    }
-    fn read(state: &OsSnapshot, target: Option<&Target>) -> Self {
-        Self {
-            enabled: Some(
-                !state.is_all_disabled() && target.is_some_and(|target| target.matches(state)),
-            ),
-        }
-    }
-}
+#[cfg(target_os = "linux")]
+use suki_service::proxy_owner::clear_current;
+#[cfg(any(test, target_os = "linux"))]
+use suki_service::proxy_owner::entries;
+use suki_service::proxy_owner::{Backend, Owner};
+pub(crate) use suki_service::proxy_owner::{Observation, Target};
 pub(super) fn authority(host: &str, port: u16) -> String {
     if host.contains(':') {
         format!("[{}]:{port}", host.trim_matches(['[', ']']))
@@ -34,221 +26,53 @@ pub(super) fn authority(host: &str, port: u16) -> String {
         format!("{host}:{port}")
     }
 }
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-struct Target {
-    system: ManualProxy,
-    auto: PacProxy,
-}
-impl Target {
-    fn from_values(values: &Values, port: u16, pac_url: &str) -> Self {
-        let enabled = values
-            .get("IsSystemProxyEnabled")
-            .is_some_and(|v| v == "true");
-        let auto = enabled
-            && values
-                .get("SystemProxyModeIndex")
-                .is_some_and(|v| v == "pac");
-        let bypass = values
-            .get("BypassList")
-            .map(String::as_str)
-            .unwrap_or_default();
-        Self {
-            system: ManualProxy {
-                enable: enabled && !auto,
-                host: values
-                    .get("SystemProxyHost")
-                    .cloned()
-                    .unwrap_or_default()
-                    .trim_matches(['[', ']'])
-                    .into(),
-                port,
-                bypass: crate::preferences::schema::split_entries(bypass)
-                    .collect::<Vec<_>>()
-                    .join(if cfg!(windows) { ";" } else { "," }),
-            },
-            auto: PacProxy {
-                enable: auto,
-                url: if auto { pac_url.into() } else { String::new() },
-            },
-        }
-    }
-    fn matches(&self, state: &OsSnapshot) -> bool {
-        if self.auto.enable {
-            state.matches_pac(&self.auto)
-        } else if self.system.enable {
-            let endpoint = |e: &types::Endpoint| {
-                e.switched_on && e.host == self.system.host && e.port == self.system.port
-            };
-            endpoint(&state.http)
-                && endpoint(&state.https)
-                && endpoint(&state.socks)
-                && !state.auto_switched_on
-                && !state.auto_detect
-                && entries(&state.bypass) == entries(&self.system.bypass)
-        } else {
-            state.is_all_disabled()
-        }
-    }
-    // Cleanup must never disable a proxy another application has installed.
-    fn owns(&self, state: &OsSnapshot) -> bool {
-        let mut found = false;
-        for e in [&state.http, &state.https, &state.socks] {
-            if e.switched_on {
-                if e.host != self.system.host || e.port != self.system.port {
-                    return false;
-                }
-                found = true;
-            }
-        }
-        if state.auto_switched_on {
-            if !self.auto.enable || state.auto.url != self.auto.url {
-                return false;
-            }
-            found = true;
-        }
-        found
-    }
-}
-fn entries(value: &str) -> std::collections::BTreeSet<&str> {
-    value
-        .split([',', ';'])
-        .map(str::trim)
-        .filter(|v| !v.is_empty())
-        .collect()
-}
-trait Backend: Send + 'static {
-    type Checkpoint;
-    fn capture(&mut self) -> Result<(OsSnapshot, Self::Checkpoint), String>;
-    fn read(&self) -> Result<OsSnapshot, String>;
-    fn write(&mut self, target: &Target) -> Result<(), String>;
-    fn restore(&mut self, checkpoint: &Self::Checkpoint) -> Result<(), String>;
-    fn clear(&mut self, target: &Target) -> Result<OsSnapshot, String> {
-        clear_current(self, target)
-    }
-}
-struct Owner<B: Backend> {
-    backend: B,
-    target: Option<Target>,
-    rollback: Option<(OsSnapshot, B::Checkpoint, Option<Target>)>,
-}
-impl<B: Backend> Owner<B> {
-    fn apply(&mut self, target: Target) -> Result<Observation, String> {
-        let (before, checkpoint) = self.backend.capture()?;
-        if target.matches(&before) {
-            let observed = Observation::read(&before, Some(&target));
-            let previous = self.target.replace(target);
-            self.rollback = Some((before, checkpoint, previous));
-            return Ok(observed);
-        }
-        let previous = self.target.replace(target.clone());
-        let result = self.backend.write(&target).and_then(|()| {
-            let state = self.backend.read()?;
-            if target.matches(&state) {
-                Ok(Observation::read(&state, Some(&target)))
-            } else {
-                Err("系统代理写入后回读不一致".into())
-            }
-        });
-        match result {
-            Ok(observed) => {
-                self.rollback = Some((before, checkpoint, previous));
-                Ok(observed)
-            }
-            Err(cause) => {
-                let unchanged = self
-                    .backend
-                    .read()
-                    .is_ok_and(|state| equivalent(&before, &state));
-                let recovery = (if unchanged {
-                    Ok(())
-                } else {
-                    self.backend.restore(&checkpoint)
-                })
-                .and_then(|()| {
-                    if equivalent(&before, &self.backend.read()?) {
-                        Ok(())
-                    } else {
-                        Err("恢复后的系统代理回读不一致".into())
-                    }
-                });
-                match recovery {
-                    Ok(()) => {
-                        self.target = previous;
-                        Err(format!(
-                            "{cause}；{}",
-                            if self.target.is_some() {
-                                "已恢复上次系统代理"
-                            } else {
-                                "已恢复操作前的系统代理"
-                            }
-                        ))
-                    }
-                    Err(error) => Err(format!(
-                        "{cause}；系统代理恢复失败：{error}；实际状态待确认"
-                    )),
-                }
-            }
-        }
-    }
-    fn observe(&self) -> Result<Observation, String> {
-        Ok(Observation::read(
-            &self.backend.read()?,
-            self.target.as_ref(),
-        ))
-    }
-    fn rollback(&mut self) -> Result<Observation, String> {
-        let Some((before, checkpoint, target)) = self.rollback.take() else {
-            return Err("没有待恢复的系统代理操作".into());
-        };
-        self.backend.restore(&checkpoint)?;
-        let observed = self.backend.read()?;
-        if !equivalent(&before, &observed) {
-            return Err("恢复后的系统代理回读不一致".into());
-        }
-        self.target = target;
-        Ok(Observation::read(&observed, self.target.as_ref()))
-    }
-    fn clear(&mut self) -> Result<Observation, String> {
-        self.rollback = None;
-        let Some(target) = &self.target else {
-            return Ok(Observation::default());
-        };
-        let observed = self.backend.clear(target)?;
-        self.target = None;
-        Ok(Observation::read(&observed, None))
-    }
-}
-fn clear_current<B: Backend + ?Sized>(
-    backend: &mut B,
-    target: &Target,
-) -> Result<OsSnapshot, String> {
-    let state = backend.read()?;
-    if target.owns(&state) {
-        let mut off = target.clone();
-        off.system.enable = false;
-        off.system.bypass = state.bypass;
-        off.auto.enable = false;
-        backend.write(&off)?;
-        if !backend.read()?.is_all_disabled() {
-            return Err("系统代理清理后回读不一致；实际状态待确认".into());
-        }
-    }
-    backend.read()
-}
-fn equivalent(a: &OsSnapshot, b: &OsSnapshot) -> bool {
-    let endpoint = |a: &types::Endpoint, b: &types::Endpoint| {
-        a.switched_on == b.switched_on && (!a.switched_on || (a.host == b.host && a.port == b.port))
+fn target_from_values(values: &Values, port: u16, pac_url: &str) -> Target {
+    let enabled = values
+        .get("IsSystemProxyEnabled")
+        .is_some_and(|v| v == "true");
+    let auto = enabled
+        && values
+            .get("SystemProxyModeIndex")
+            .is_some_and(|v| v == "pac");
+    let custom_bypass = values
+        .get("BypassList")
+        .map(String::as_str)
+        .unwrap_or_default();
+    let bypass = if custom_bypass.trim().is_empty() {
+        crate::preferences::schema::default_bypass().to_owned()
+    } else if values
+        .get("UseDefaultBypass")
+        .is_none_or(|value| value != "false")
+    {
+        format!(
+            "{}\n{custom_bypass}",
+            crate::preferences::schema::default_bypass()
+        )
+    } else {
+        custom_bypass.to_owned()
     };
-    endpoint(&a.http, &b.http)
-        && endpoint(&a.https, &b.https)
-        && endpoint(&a.socks, &b.socks)
-        && a.auto_detect == b.auto_detect
-        && a.auto_switched_on == b.auto_switched_on
-        && (!a.auto_switched_on || a.auto.url == b.auto.url)
-        && entries(&a.bypass) == entries(&b.bypass)
+    Target {
+        system: ManualProxy {
+            enable: enabled && !auto,
+            host: values
+                .get("SystemProxyHost")
+                .cloned()
+                .unwrap_or_default()
+                .trim_matches(['[', ']'])
+                .into(),
+            port,
+            bypass: crate::preferences::schema::split_entries(&bypass)
+                .collect::<Vec<_>>()
+                .join(if cfg!(windows) { ";" } else { "," }),
+        },
+        auto: PacProxy {
+            enable: auto,
+            url: if auto { pac_url.into() } else { String::new() },
+        },
+    }
 }
 enum Request {
-    Apply(Target),
+    Apply(Target, bool),
     Observe,
     Clear,
     Rollback,
@@ -262,30 +86,50 @@ struct Worker {
     thread: Option<std::thread::JoinHandle<()>>,
 }
 impl Worker {
-    fn new() -> Result<Self, String> {
+    fn new(paths: Option<crate::storage::AppPaths>) -> Result<Self, String> {
         let (sender, receiver) = async_channel::bounded::<Work>(2);
         let thread = std::thread::Builder::new()
             .name("suki-system-proxy".into())
             .spawn(move || {
                 #[cfg(not(test))]
-                let backend = native::Native::default();
+                let initialize = |interactive| native::Native::new(paths.as_ref(), interactive);
                 #[cfg(test)]
-                let backend = tests::Memory::default();
-                let mut owner = Owner {
-                    backend,
-                    target: None,
-                    rollback: None,
+                let initialize = |_: bool| {
+                    let _ = &paths;
+                    Ok::<_, String>(tests::Memory::default())
                 };
+                let initialize = |interactive| initialize(interactive).map(Owner::new);
+                let mut owner = None;
                 while let Ok(work) = receiver.recv_blocking() {
-                    let result = match work.request {
-                        Request::Apply(target) => owner.apply(target),
-                        Request::Observe => owner.observe(),
-                        Request::Clear => owner.clear(),
-                        Request::Rollback => owner.rollback(),
+                    let interactive = matches!(&work.request, Request::Apply(_, true));
+                    let initialized = owner.is_none()
+                        || (owner.as_ref().is_some_and(Result::is_err)
+                            && matches!(&work.request, Request::Apply(..) | Request::Observe));
+                    if initialized {
+                        owner = Some(initialize(interactive));
+                    }
+                    let result = match owner.as_mut() {
+                        Some(Ok(owner)) => match work.request {
+                            Request::Apply(target, interactive) => {
+                                if !initialized {
+                                    owner.backend_mut().allow_interaction(interactive);
+                                }
+                                let result = owner.apply(target);
+                                owner.backend_mut().allow_interaction(false);
+                                result
+                            }
+                            Request::Observe => owner.observe(),
+                            Request::Clear => owner.clear(),
+                            Request::Rollback => owner.rollback(),
+                        },
+                        Some(Err(error)) => Err(error.clone()),
+                        None => Err("系统代理执行端未初始化".into()),
                     };
                     let _ = work.reply.send(result);
                 }
-                if let Err(error) = owner.clear() {
+                if let Some(Ok(owner)) = &mut owner
+                    && let Err(error) = owner.clear()
+                {
                     eprintln!("系统代理退出清理失败：{error}");
                 }
             })
@@ -314,26 +158,102 @@ impl Drop for Worker {
 }
 #[derive(Default)]
 pub(crate) struct Controller {
+    #[cfg(target_os = "macos")]
+    service: Option<(
+        suki_service::OwnerCredentials,
+        suki_service::OwnerSessionProof,
+    )>,
     worker: Option<Worker>,
+    paths: Option<crate::storage::AppPaths>,
     pac: Option<pac::Server>,
     guard_at: Option<Instant>,
     target: Option<Target>,
     rollback: Option<(Option<Target>, Option<Instant>, Option<String>)>,
+    automatic_suspended: bool,
 }
 impl Controller {
+    pub(crate) fn new(paths: crate::storage::AppPaths) -> Self {
+        Self {
+            paths: Some(paths),
+            ..Default::default()
+        }
+    }
+    /// Switch execution only after the previous proxy owner has completed cleanup.
+    #[cfg(target_os = "macos")]
+    pub(crate) async fn service_session(
+        &mut self,
+        session: Option<(
+            suki_service::OwnerCredentials,
+            suki_service::OwnerSessionProof,
+        )>,
+    ) -> Result<(), String> {
+        if self.service == session {
+            return Ok(());
+        }
+        self.clear().await?;
+        self.worker = None;
+        self.service = session;
+        self.automatic_suspended = false;
+        Ok(())
+    }
+    /// Called after this controller was cleared and its service core was confirmed stopped.
+    #[cfg(target_os = "macos")]
+    pub(crate) fn detach_service_session(&mut self) {
+        self.service = None;
+        self.target = None;
+        self.rollback = None;
+        self.guard_at = None;
+        self.automatic_suspended = false;
+    }
     pub(crate) fn is_current(&self, values: &Values, port: u16) -> bool {
         let url = self.pac.as_ref().map(|s| s.url()).unwrap_or_default();
-        self.target.as_ref() == Some(&Target::from_values(values, port, &url))
+        self.target.as_ref() == Some(&target_from_values(values, port, &url))
     }
     async fn request(&mut self, request: Request) -> Result<Observation, String> {
-        if self.worker.is_none() {
-            self.worker = Some(Worker::new()?);
+        #[cfg(all(target_os = "macos", not(test)))]
+        if let Some((credentials, session)) = &self.service {
+            use suki_service::proxy_owner::Operation;
+            let operation = match request {
+                Request::Apply(target, _) => Operation::Apply(target),
+                Request::Observe => Operation::Observe,
+                Request::Rollback => Operation::Rollback,
+                Request::Clear => Operation::Clear,
+            };
+            let result =
+                match suki_service::set_system_proxy(credentials, session, &operation).await {
+                    Ok(reply) if reply.code == 0 => reply
+                        .data
+                        .ok_or_else(|| "后台服务未返回代理状态".to_owned()),
+                    Ok(reply) => Err(format!(
+                        "后台服务拒绝代理操作（{}）：{}",
+                        reply.code, reply.message
+                    )),
+                    Err(error) => Err(format!("系统代理服务请求未确认：{error}")),
+                };
+            if result.is_err() {
+                self.automatic_suspended = true;
+                self.guard_at = None;
+            }
+            return result;
         }
-        self.worker
+
+        if self.worker.is_none() {
+            self.worker = Some(Worker::new(self.paths.clone())?);
+        }
+        let result = self
+            .worker
             .as_ref()
             .ok_or("系统代理执行端不存在")?
             .request(request)
-            .await
+            .await;
+        if result.is_err() {
+            self.automatic_suspended = true;
+            self.guard_at = None;
+        }
+        result
+    }
+    pub(crate) fn automatic_suspended(&self) -> bool {
+        self.automatic_suspended
     }
     pub(crate) async fn observe(&mut self) -> Result<Observation, String> {
         self.request(Request::Observe).await
@@ -343,6 +263,22 @@ impl Controller {
         values: &Values,
         port: u16,
     ) -> Result<Observation, String> {
+        self.apply_with(values, port, true).await
+    }
+    pub(crate) async fn apply_automatic(
+        &mut self,
+        values: &Values,
+        port: u16,
+    ) -> Result<Observation, String> {
+        self.apply_with(values, port, false).await
+    }
+    async fn apply_with(
+        &mut self,
+        values: &Values,
+        port: u16,
+        interactive: bool,
+    ) -> Result<Observation, String> {
+        self.automatic_suspended = false;
         let auto = values
             .get("SystemProxyModeIndex")
             .is_some_and(|v| v == "pac")
@@ -353,7 +289,7 @@ impl Controller {
             self.pac = Some(pac::Server::start().await?);
         }
         let url = self.pac.as_ref().map(|s| s.url()).unwrap_or_default();
-        let target = Target::from_values(values, port, &url);
+        let target = target_from_values(values, port, &url);
         let previous_script = self.pac.as_ref().map(|s| s.contents());
         if auto {
             let host = authority(&target.system.host, port);
@@ -366,10 +302,12 @@ impl Controller {
             self.pac.as_ref().ok_or("PAC 服务未启动")?.set(script);
         }
         let previous_guard = self.guard_at.take();
-        let observed = match self.request(Request::Apply(target.clone())).await {
+        let observed = match self
+            .request(Request::Apply(target.clone(), interactive))
+            .await
+        {
             Ok(observed) => observed,
             Err(error) => {
-                self.guard_at = previous_guard;
                 if let (Some(server), Some(script)) = (&self.pac, previous_script) {
                     server.set(script);
                 }
@@ -399,10 +337,13 @@ impl Controller {
         Ok(observed)
     }
     pub(crate) async fn poll(&mut self, values: &Values) -> Result<Observation, String> {
+        if self.automatic_suspended {
+            return Ok(Observation::default());
+        }
         if self.guard_at.is_some_and(|at| Instant::now() >= at) {
             self.guard_at = Some(Instant::now() + guard_duration(values));
             if let Some(target) = self.target.clone() {
-                return self.request(Request::Apply(target)).await;
+                return self.request(Request::Apply(target, false)).await;
             }
         }
         self.observe().await
@@ -411,7 +352,11 @@ impl Controller {
         self.rollback = None;
         self.guard_at = None;
         self.target = None;
-        if self.worker.is_none() {
+        #[cfg(target_os = "macos")]
+        let remote = self.service.is_some();
+        #[cfg(not(target_os = "macos"))]
+        let remote = false;
+        if self.worker.is_none() && !remote {
             return Ok(Observation::default());
         }
         self.request(Request::Clear).await

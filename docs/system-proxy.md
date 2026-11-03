@@ -1,6 +1,6 @@
 # 系统代理
 
-系统代理由 `src/system_proxy` 的单一线程执行操作系统读写，内核生命周期执行端提交期望值。请求等待方取消不会终止已经开始的原生写入；清理排在该写入之后。守卫由生命周期执行端的定时检查触发，不创建独立的重复写入任务。
+系统代理由当前执行端的单一线程执行操作系统读写，内核生命周期执行端提交期望值。事务引擎位于 `platform-service/src/proxy_owner.rs`，macOS原生适配器位于 `platform-service/src/macos_proxy/`，应用本地模式与helper复用同一份实现；macOS服务模式通过鉴权会话委托helper，不回退GUI写入。请求等待方取消不会终止已经开始的原生写入；清理排在该写入之后。守卫由生命周期执行端的定时检查触发，不创建独立的重复写入任务。
 
 ## 已接入
 
@@ -15,11 +15,11 @@
 
 | 平台 | 执行方式与限制 |
 | --- | --- |
-| macOS | 应用内的 SystemConfiguration 回读和 networksetup 写入；写入权限或活动服务不可用时返回真实错误。按稳定网络服务 ID 绑定写入和失败恢复；记录本应用触及的服务并清理非活动旧服务。没有安装提权辅助服务。 |
-| Windows | 原生 WinINET 当前用户默认 LAN 连接，按实际 flags 回读手动/PAC；失败恢复保留原始 flags、分协议地址、绕过列表和 PAC URL。只影响使用 WinINET 系统设置的应用；不修改 WinHTTP、拨号/VPN 独立连接、浏览器策略或 UWP 回环。 |
-| Linux | GNOME GSettings 桌面和 KDE 5/6 的 kioslaverc；检查工具退出状态及实际字段，KDE 通过 zbus 发出 KIO 刷新信号。要求有效桌面会话、对应工具/配置和写入权限；其他桌面不能假定受支持。 |
+| macOS | SystemConfiguration 原生回读及同一字典提交；已就绪服务模式使用helper，应用本地模式支持系统 Authorization 授权；写入权限或活动服务不可用时返回真实错误。按稳定网络服务 ID 绑定写入和失败恢复；记录本应用触及的服务并清理非活动旧服务。服务模式共享检查点／归属事务，不再要求GUI每次获得网络设置写权限。 |
+| Windows | 原生 WinINET 当前用户默认连接及枚举到的RAS连接，逐连接按实际flags回读手动/PAC；失败恢复保留原始flags、分协议地址、绕过列表和PAC URL。清理只移除各连接上仍归本应用的端点；不修改WinHTTP、浏览器策略或UWP回环，非RAS的VPN自有策略不属于此范围。 |
+| Linux | GNOME GSettings 桌面和 KDE 5/6 的 kioslaverc；检查工具退出状态及实际字段，KDE 通过 zbus 发出 KIO 刷新信号；检查点保存六项原始配置并精确回读恢复，不通过host/port重新拼接URI。要求有效桌面会话、对应工具/配置和写入权限；其他桌面不能假定受支持。 |
 
-代理守卫开启时按周期重新核对和恢复当前活动服务。未开启守卫时尊重外部代理修改，只更新状态；没有另设网络变化自动接管任务。强制结束应用/操作系统崩溃后的代理恢复、完整提权服务和三平台真实网络验收仍未完成。
+代理守卫开启时按周期重新核对和恢复当前活动服务。未开启守卫时尊重外部代理修改，只更新状态；没有另设网络变化自动接管任务。已持久化本应用写入的端点和网络服务身份，重启首次访问清理仍归本应用的代理；不覆盖外部修改。服务代理分路已实现，三平台真实网络验收仍未完成。
 
 ## 验证
 
@@ -27,7 +27,9 @@
 
 当前已完成 macOS 主机构建/Clippy、隔离回归测试，以及 Windows 适配器独立交叉编译检查。Linux 适配器在独立检查程序中编译/测试；这些均不等于三平台实机系统代理或真实窗口验收。
 
-参考：本地 CV `core/sysopt.rs`、`utils/server.rs` 与 ClashSuki 的 `WindowsSystemProxyService.cs`；本地平台源码参考固定的 [sysproxy 源码](https://github.com/clash-verge-rev/sysproxy-rs/tree/c37a60e1fc9079cc0f074200e2296afd1705208c) 为准。KDE 刷新信号依据 [KIO Scheduler](https://invent.kde.org/frameworks/kio/-/blob/master/src/core/scheduler.cpp)。
+参考：本地 CV `core/sysopt.rs`、`utils/server.rs` 与 ClashSuki 的 `WindowsSystemProxyService.cs`；本项目原适配来源为 [sysproxy 源码](https://github.com/clash-verge-rev/sysproxy-rs/tree/c37a60e1fc9079cc0f074200e2296afd1705208c) 为准。KDE 刷新信号依据 [KIO Scheduler](https://invent.kde.org/frameworks/kio/-/blob/master/src/core/scheduler.cpp)。
+
+本轮复核以 CV Cargo.lock 当前锁定的 sysproxy `89ad876a0942c049ae72e1472f9fc3ed62023c5e` 对照；与原适配来源 c37a60e 之间仅 Windows 文件变化。详见逐文件复核 R40/R41。
 
 不再依赖 sysproxy crate。相关原生代码在 `src/system_proxy/` 内，来源版本为 `c37a60e1fc9079cc0f074200e2296afd1705208c`，MIT 许可保存在 `licenses/sysproxy-MIT.txt`。
 
@@ -35,4 +37,18 @@
 
 启用开关读取与标题栏相同的系统回读投影，不显示提交草稿。关闭失败并恢复上次代理后保持开启；启用失败保持关闭。实际状态未知时禁用开关并提示未知，不将未知认定为关闭。其他编辑字段继续保留失败草稿。启用命令按实际状态判定是否需要提交，避免外部修改后因持久化期望值相同而跳过执行。
 
-macOS 每次读取按服务 ID 重新取得 SCNetworkService，避免 networksetup 提交后仍使用旧 SCPreferences 会话的配置对象。回归覆盖失败关闭后的真实观察值和界面拒绝失败草稿；隔离真实窗口验证缺内核时启用失败仍为关闭。本轮没有修改本机系统代理，真实关闭／恢复场景尚未实机重现。
+macOS 每次读取按服务 ID 重新取得 SCNetworkService，避免提交后仍使用旧 SCPreferences 会话的配置对象。回归覆盖失败关闭后的真实观察值和界面拒绝失败草稿；隔离真实窗口验证缺内核时启用失败仍为关闭。本轮没有修改本机系统代理，真实关闭／恢复场景尚未实机重现。
+
+### 2026-10-30 失败诊断
+
+定时轮询只回读 OS 状态并执行已成功建立的守卫，不重新执行失败的启动应用；配置提交／内核生命周期仍显式应用保存设置。networksetup 失败保留脱敏后的 stdout/stderr，并识别进程退出码为 0、输出包含 AuthorizationCreate/SCPreferences failed 的失败。历史仅有 exit status 4 的日志不足以断言权限、参数或网络服务原因；本轮没有修改真实系统代理来复现该失败。
+
+### 2026-10-30 原生写入与停止重试
+
+macOS 不再执行 networksetup，手动、PAC、绕过和自动发现统一写入 SystemConfiguration Proxies 字典。未触及字段保留，空 PAC URL 删除键，锁等待两秒上限；提交后仍回读，权限不足保留原始原因并执行独立恢复。普通测试只验证字典及事务边界，未授权修改本机真实代理来复现。
+
+初始化恢复、OS 读写或守卫失败会暂停自动代理处理；后台轮询不再重复读取／清理／恢复，明确启用或重新应用时才重试。恢复记录位于 records/system-proxy-owner.json，损坏不覆盖；macOS 按服务 ID 保留所有未清理端点，Windows/Linux 保留本应用目标。崩溃清理是关闭失效的本应用端点，不是接管外部代理。
+
+第二批离线语义：macOS无活动网络服务时观察保持未知，仍允许清理已登记服务并保存关闭意图；未知不等于OS关闭已确认。未知且无已保存启用意图时，不据此反向开启代理。真实离线／网络切换验收尚未完成。
+
+第四批连接清理：成功关闭系统代理后，若AutoCloseConnection开启，按关闭时连接快照ID清理并回读；新建连接不被误关或误报。代理关闭已经提交与后续连接清理失败分别反馈，不把清理失败当作系统代理重新开启。模式切换使用同一清理边界。

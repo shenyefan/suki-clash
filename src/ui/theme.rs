@@ -105,6 +105,7 @@ pub(crate) mod proxy_card {
     pub(crate) const MIN_WIDTH: Rems = profile::MIN_WIDTH;
     pub(crate) const GAP: Rems = space::SM;
     pub(crate) const HEIGHT: Rems = rems(3.75);
+    pub(crate) const GROUP_INSET_X: Rems = space::SM;
     pub(crate) const COMPACT_HEIGHT: Rems = rems(3.25);
     pub(crate) const PADDING: Rems = space::MD;
     pub(crate) const MAX_COLUMNS: usize = 3;

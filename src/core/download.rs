@@ -44,7 +44,7 @@ impl Transfer {
                 url,
                 agent: "SukiClash/0.1",
                 authorization: "",
-                timeout: 180,
+                timeout: Duration::from_secs(180),
                 limit,
                 allow_empty: false,
             },
@@ -61,7 +61,7 @@ impl Transfer {
                 url,
                 agent: "SukiClash/0.1",
                 authorization: "",
-                timeout: 15,
+                timeout: Duration::from_secs(15),
                 limit: 2 * 1024 * 1024,
                 allow_empty: false,
             },
@@ -83,7 +83,7 @@ impl Transfer {
                 url,
                 agent: "SukiClash/0.1",
                 authorization: "",
-                timeout: 180,
+                timeout: Duration::from_secs(180),
                 limit,
                 allow_empty: false,
             },
@@ -99,7 +99,7 @@ impl Transfer {
         agent: &str,
         transport: &SubscriptionTransport,
     ) -> Result<Self, String> {
-        let timeout = document.timeout.parse().map_err(|_| "下载超时无效")?;
+        let timeout = Duration::from_secs(document.timeout.parse().map_err(|_| "下载超时无效")?);
         Self::request(
             http,
             paths,
@@ -124,7 +124,7 @@ impl Transfer {
         http: &Http,
         paths: &AppPaths,
         url: &str,
-        timeout: u64,
+        timeout: Duration,
         transport: &SubscriptionTransport,
     ) -> Result<Self, String> {
         Self::request(
@@ -154,8 +154,8 @@ impl Transfer {
         if !crate::profiles::model::valid_remote_url(request.url) {
             return Err("HTTP 请求地址无效".into());
         }
-        if !(1..=3600).contains(&request.timeout) {
-            return Err("HTTP 请求超时需为 1–3600 秒".into());
+        if !(Duration::from_millis(100)..=Duration::from_secs(3600)).contains(&request.timeout) {
+            return Err("HTTP 请求超时需为 100 毫秒–3600 秒".into());
         }
         if request.agent.len() > 8192 || request.authorization.len() > 8192 {
             return Err("HTTP 请求标头超过长度上限".into());
@@ -166,7 +166,7 @@ impl Transfer {
         } else {
             http.client(transport, https_only)?
         };
-        let timeout = Duration::from_secs(request.timeout);
+        let timeout = request.timeout;
         let mut builder = client
             .get(request.url)
             .header(reqwest::header::USER_AGENT, agent)
@@ -254,7 +254,7 @@ struct Request<'a> {
     url: &'a str,
     agent: &'a str,
     authorization: &'a str,
-    timeout: u64,
+    timeout: Duration,
     limit: u64,
     allow_empty: bool,
 }
@@ -301,7 +301,7 @@ mod tests {
                 url: &url,
                 agent: "SukiClash/0.1",
                 authorization: "",
-                timeout: 2,
+                timeout: Duration::from_secs(2),
                 limit: 6,
                 allow_empty: false,
             },
@@ -328,7 +328,7 @@ mod tests {
                 url: &url,
                 agent: "SukiClash/0.1",
                 authorization: "",
-                timeout: 2,
+                timeout: Duration::from_secs(2),
                 limit: 6,
                 allow_empty: false,
             },
@@ -364,7 +364,7 @@ mod tests {
                 url: &url,
                 agent: "SukiClash/0.1",
                 authorization: "Bearer secret",
-                timeout: 2,
+                timeout: Duration::from_secs(2),
                 limit: 1024,
                 allow_empty: false,
             },
@@ -409,7 +409,7 @@ mod tests {
                 url: &url,
                 agent: "SukiClash/0.1",
                 authorization: "Bearer secret",
-                timeout: 2,
+                timeout: Duration::from_secs(2),
                 limit: 1024,
                 allow_empty: false,
             },
@@ -431,7 +431,7 @@ mod tests {
                         url: "http://127.0.0.1/file",
                         agent,
                         authorization: "",
-                        timeout: 2,
+                        timeout: Duration::from_secs(2),
                         limit: 1024,
                         allow_empty: false
                     },
@@ -458,7 +458,7 @@ mod tests {
                 url: &url,
                 agent: "SukiClash/0.1",
                 authorization: "",
-                timeout: 2,
+                timeout: Duration::from_secs(2),
                 limit: 1024,
                 allow_empty: false,
             },

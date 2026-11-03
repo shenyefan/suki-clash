@@ -22,6 +22,8 @@ pub(crate) struct DocumentWrite {
 }
 
 pub(crate) enum Command {
+    /// Queue barrier: prior durable operations have returned before this replies.
+    Flush,
     Log {
         level: &'static str,
         module: &'static str,
@@ -42,6 +44,7 @@ pub(crate) enum Command {
 impl Command {
     pub(crate) fn label(&self) -> &'static str {
         match self {
+            Self::Flush => "等待存储任务",
             Self::Log { .. } => "写入程序日志",
             #[cfg(test)]
             Self::Save { .. } => "保存配置",
@@ -132,19 +135,14 @@ impl Service {
         let writer_logs = logs.clone();
         // Diagnostic logging remains available when its settings cannot be read.
         // This policy does not replace or persist the invalid user configuration.
-        let mut policy = program_policy(&repository).or_else(|_| {
-            policy_values(&crate::preferences::defaults(
-                crate::preferences::SettingsKind::General,
-            ))
-        })?;
-        let mut log =
-            crate::logging::Sink::new(&paths, crate::logging::Source::Program, policy.1, policy.2)?;
-        log.configure_program(policy.1, policy.2, policy.3)?;
+        let mut log = ProgramLog::new(&repository, &logs)?;
         if let Some(error) = &startup_error {
             let record =
                 crate::logging::Record::program(crate::logging::Level::Error, "storage", error);
             logs.publish(record.clone());
-            log.write(record.line().as_bytes())?;
+            if log.sink.is_some() {
+                let _ = log.write(&logs, &record);
+            }
         }
         let worker = thread::Builder::new()
             .name("suki-storage".into())
@@ -157,32 +155,15 @@ impl Service {
                     } = &request.command
                     {
                         let result = (|| -> Result<(), StorageError> {
-                            if let Ok(current) = program_policy(&repository) {
-                                policy = current;
-                            }
-                            let (minimum, days, size, count) = policy;
-                            log.configure_program(days, size, count)?;
+                            let configured = log.configure(&repository, &writer_logs);
+                            let minimum = if configured.is_ok() { log.policy.0 } else { crate::logging::Level::Trace };
                             let level = crate::logging::Level::parse(level);
-                            if level < minimum || minimum == crate::logging::Level::Silent {
-                                return Ok(());
-                            }
-                            let message = if message.contains("://") {
-                                "日志包含地址，正文已省略"
-                            } else {
-                                message.as_str()
-                            };
+                            if level < minimum || minimum == crate::logging::Level::Silent { return Ok(()); }
                             let record = crate::logging::Record::program(level, module, message);
                             writer_logs.publish(record.clone());
-                            log.write(record.line().as_bytes())?;
-                            Ok(())
+                            configured?;
+                            log.write(&writer_logs, &record)
                         })();
-                        if let Err(error) = &result {
-                            writer_logs.publish(crate::logging::Record::program(
-                                crate::logging::Level::Error,
-                                "logging",
-                                &format!("程序日志保存失败：{error}"),
-                            ));
-                        }
                         let _ = request
                             .reply
                             .try_send(result.map(|()| Outcome::Saved).map_err(ServiceError::from));
@@ -195,7 +176,7 @@ impl Service {
                     let mut result = execute(&repository, &writer_snapshot, request.command)
                         .map_err(ServiceError::from);
                     if result.is_ok() && log_settings_changed {
-                        let applied = program_policy(&repository).and_then(|(_, days, size, count)| log.configure_program(days, size, count).map_err(StorageError::from));
+                        let applied = log.configure(&repository, &writer_logs);
                         if let Err(error) = applied {
                             result = Err(StorageError::from(std::io::Error::other(format!("设置已保存，程序日志设置应用失败：{error}"))).into());
                         }
@@ -278,6 +259,12 @@ impl Service {
             reply: receiver,
         })
     }
+    pub(crate) fn flush(&mut self) -> Result<Option<Pending>, ServiceError> {
+        if self.worker.is_none() && self.startup_error.is_some() {
+            return Ok(None);
+        }
+        self.submit(Command::Flush).map(Some)
+    }
     pub(crate) fn shutdown(&mut self) -> Option<JoinHandle<()>> {
         self.sender.close();
         self.worker.take()
@@ -286,6 +273,85 @@ impl Service {
 impl Drop for Service {
     fn drop(&mut self) {
         self.sender.close();
+    }
+}
+
+/// The storage worker remains alive when only its optional file writer is broken.
+struct ProgramLog {
+    sink: Option<crate::logging::Sink>,
+    policy: (crate::logging::Level, u32, u64, usize),
+    failure: Option<String>,
+}
+impl ProgramLog {
+    fn new(repository: &Repository, feed: &crate::logging::Feed) -> Result<Self, StorageError> {
+        let mut writer = Self {
+            sink: None,
+            policy: policy_values(&crate::preferences::defaults(
+                crate::preferences::SettingsKind::General,
+            ))?,
+            failure: None,
+        };
+        let _ = writer.configure(repository, feed);
+        Ok(writer)
+    }
+    fn configure(
+        &mut self,
+        repository: &Repository,
+        feed: &crate::logging::Feed,
+    ) -> Result<(), StorageError> {
+        let result = (|| {
+            let policy = program_policy(repository)?;
+            let created = self.sink.is_none();
+            if created {
+                self.sink = Some(crate::logging::Sink::new(
+                    repository.paths(),
+                    crate::logging::Source::Program,
+                    policy.1,
+                    policy.2,
+                )?);
+            }
+            if let Some(sink) = &mut self.sink
+                && (created || self.policy != policy || self.failure.is_some())
+            {
+                sink.configure_program(policy.1, policy.2, policy.3)?;
+            }
+            self.policy = policy;
+            Ok(())
+        })();
+        if let Err(error) = &result {
+            self.fail(feed, error);
+        }
+        result
+    }
+    fn write(
+        &mut self,
+        feed: &crate::logging::Feed,
+        record: &crate::logging::Record,
+    ) -> Result<(), StorageError> {
+        let result = self
+            .sink
+            .as_mut()
+            .ok_or_else(|| StorageError::from(std::io::Error::other("程序日志文件不可用")))?
+            .write(record.line().as_bytes())
+            .map_err(StorageError::from);
+        if let Err(error) = &result {
+            self.fail(feed, error);
+        } else {
+            self.failure = None;
+        }
+        result
+    }
+    fn fail(&mut self, feed: &crate::logging::Feed, error: &StorageError) {
+        self.sink = None;
+        let error = format!("程序日志文件不可用；保留内存诊断：{error}");
+        if self.failure.as_ref() != Some(&error) {
+            feed.publish(crate::logging::Record::program(
+                crate::logging::Level::Error,
+                "logging",
+                &error,
+            ));
+            self.failure = Some(error);
+        }
     }
 }
 
@@ -333,6 +399,7 @@ fn execute(
     command: Command,
 ) -> Result<Outcome, StorageError> {
     match command {
+        Command::Flush => Ok(Outcome::Saved),
         Command::Log { .. } => Ok(Outcome::Saved),
         #[cfg(test)]
         Command::Save {
@@ -448,6 +515,39 @@ mod tests {
         Values::from([("theme".into(), value.into())])
     }
     #[test]
+    fn exit_barrier_finishes_prior_writes_without_destroying_storage() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = AppPaths::isolated(root.path());
+        let mut service = Service::start(Repository::open(paths.clone()).unwrap()).unwrap();
+        let namespace = Namespace::parse("dns").unwrap();
+        let first = crate::preferences::defaults(crate::preferences::SettingsKind::Dns);
+        let save = service
+            .submit(Command::Save {
+                namespace: namespace.clone(),
+                values: first.clone(),
+                documents: vec![],
+            })
+            .unwrap();
+        service
+            .flush()
+            .unwrap()
+            .unwrap()
+            .reply
+            .recv_blocking()
+            .unwrap()
+            .unwrap();
+        assert!(save.reply.recv_blocking().unwrap().is_ok());
+        assert_eq!(service.read(&namespace), first);
+        let directory = service
+            .submit(Command::OpenDirectory(DirectoryKind::Config))
+            .unwrap();
+        assert!(matches!(
+            directory.reply.recv_blocking().unwrap(),
+            Ok(Outcome::Directory(_))
+        ));
+        service.shutdown().unwrap().join().unwrap();
+    }
+    #[test]
     fn damaged_settings_keep_logging_and_unrelated_writes_available_and_recover_after_repair() {
         let root = tempfile::tempdir().unwrap();
         let paths = AppPaths::isolated(root.path());
@@ -465,7 +565,7 @@ mod tests {
                 message: "retry-error".into(),
             })
             .unwrap();
-        assert!(log.reply.recv_blocking().unwrap().is_ok());
+        assert!(log.reply.recv_blocking().unwrap().is_err());
         let save = service
             .submit(Command::Save {
                 namespace: Namespace::parse("dns").unwrap(),
@@ -496,6 +596,14 @@ mod tests {
             })
             .unwrap();
         assert!(saved.reply.recv_blocking().unwrap().is_ok());
+        let recovered = service
+            .submit(Command::Log {
+                level: "ERROR",
+                module: "core",
+                message: "recovered".into(),
+            })
+            .unwrap();
+        assert!(recovered.reply.recv_blocking().unwrap().is_ok());
         service.shutdown().unwrap().join().unwrap();
         let records = service.logs().since(0);
         assert!(
@@ -508,7 +616,60 @@ mod tests {
             .unwrap()
             .map(|entry| std::fs::read_to_string(entry.unwrap().path()).unwrap())
             .collect::<String>();
-        assert!(text.contains("settings.json") && text.contains("retry-error"));
+        assert!(text.contains("recovered"));
+        assert!(!text.contains("retry-error"));
+    }
+    #[test]
+    fn file_log_failure_keeps_commands_live_and_recovers_on_the_next_request() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = AppPaths::isolated(root.path());
+        let repository = Repository::open(paths.clone()).unwrap();
+        let log_dir = paths.directory(DirectoryKind::Logs);
+        std::fs::remove_dir(&log_dir).unwrap();
+        std::fs::write(&log_dir, b"blocked").unwrap();
+        let mut service = Service::start(repository).unwrap();
+        let feed = service.logs();
+        for message in ["first", "second"] {
+            let request = service
+                .submit(Command::Log {
+                    level: "ERROR",
+                    module: "core",
+                    message: message.into(),
+                })
+                .unwrap();
+            assert!(request.reply.recv_blocking().unwrap().is_err());
+        }
+        assert_eq!(
+            feed.since(0)
+                .iter()
+                .filter(|record| record.origin == "logging")
+                .count(),
+            1
+        );
+        for command in [
+            Command::OpenDirectory(DirectoryKind::Config),
+            Command::Diagnostics,
+        ] {
+            let request = service.submit(command).unwrap();
+            assert!(request.reply.recv_blocking().unwrap().is_ok());
+        }
+        std::fs::remove_file(&log_dir).unwrap();
+        std::fs::create_dir_all(&log_dir).unwrap();
+        let request = service
+            .submit(Command::Log {
+                level: "ERROR",
+                module: "core",
+                message: "recovered".into(),
+            })
+            .unwrap();
+        assert!(request.reply.recv_blocking().unwrap().is_ok());
+        service.shutdown().unwrap().join().unwrap();
+        let saved = std::fs::read_dir(log_dir)
+            .unwrap()
+            .map(|entry| std::fs::read_to_string(entry.unwrap().path()).unwrap())
+            .collect::<String>();
+        assert!(saved.contains("recovered"));
+        assert!(feed.since(0).iter().any(|record| record.message == "first"));
     }
     #[test]
     fn unavailable_storage_retains_healthy_settings_and_rejects_writes() {

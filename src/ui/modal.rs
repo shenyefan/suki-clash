@@ -59,13 +59,21 @@ pub(crate) fn modal_content(
 }
 
 pub(crate) fn modal_close(label: &str) -> DialogFooter {
-    DialogFooter::new().child(
+    modal_footer().child(
         Button::new("modal-close")
             .icon(gpui_kit::assets::IconName::X)
             .with_size(super::theme::control::STANDARD)
             .label(label.to_owned())
             .on_click(|_, window, cx| window.close_dialog(cx)),
     )
+}
+
+/// One trailing action row, with intrinsic-width buttons and shared spacing.
+pub(crate) fn modal_footer() -> DialogFooter {
+    DialogFooter::new()
+        .justify_end()
+        .flex_shrink_0()
+        .gap(space::SM)
 }
 
 pub(crate) fn modal_alert(dialog: AlertDialog, window: &Window, cx: &App) -> AlertDialog {
@@ -176,7 +184,7 @@ mod motion_tests {
                             .id(ElementId::from("modal-fit-footer"))
                             .w_full()
                             .test_support()
-                            .child(Button::new("modal-fit-submit").label("保存")),
+                            .child(crate::ui::dialog_footer("保存")),
                     )
                 });
                 window.render_frame(cx);
@@ -188,6 +196,13 @@ mod motion_tests {
                 let surface = window.find("surface").bounds();
                 let first = window.find("modal-fit-row-0").bounds();
                 let footer = window.find("modal-fit-footer").bounds();
+                let cancel = window.find("dialog-cancel").bounds();
+                let submit = window.find("dialog-commit").bounds();
+                assert!((submit.right() - footer.right()).abs() <= px(1.));
+                assert!((submit.origin.y - cancel.origin.y).abs() <= px(1.));
+                assert!(cancel.right() < submit.left());
+                assert!(submit.size.width < footer.size.width / 3.);
+                assert!(cancel.size.width < footer.size.width / 3.);
                 assert!(
                     (first.origin.x - footer.origin.x).abs() <= px(1.),
                     "left edges differ: {first:?} {footer:?}"
@@ -231,6 +246,89 @@ mod motion_tests {
             })
             .unwrap();
             cx.run_until_parked();
+        }
+    }
+
+    #[gpui_kit::test]
+    fn footer_keeps_actions_compact_and_preserves_confirmation_and_disabled_behavior(
+        cx: &mut TestAppContext,
+    ) {
+        use gpui_kit::{
+            Styled,
+            component::{Theme, ThemeMode},
+        };
+        use std::{cell::Cell, rc::Rc};
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            cx.set_reduce_motion(true);
+        });
+        let (handle, _) = cx.update(|cx| {
+            gpui_kit::open_window(WindowOptions::default(), cx, |_, cx| cx.new(|_| Host)).unwrap()
+        });
+        for mode in [ThemeMode::Light, ThemeMode::Dark] {
+            for pending in [false, true] {
+                let confirmations = Rc::new(Cell::new(0));
+                let result = confirmations.clone();
+                cx.update_window(handle, |_, window, cx| {
+                    Theme::change(mode, Some(window), cx);
+                    window.open_dialog(cx, move |dialog, window, cx| {
+                        let result = result.clone();
+                        super::modal(
+                            dialog,
+                            "编辑",
+                            crate::ui::theme::layout::DIALOG_WIDTH,
+                            window,
+                            cx,
+                        )
+                        .content(super::modal_content(
+                            "footer-body",
+                            crate::ui::theme::layout::DIALOG_FORM_HEIGHT,
+                            |_, _| {
+                                Button::new("footer-field")
+                                    .label("内容")
+                                    .w_full()
+                                    .into_any_element()
+                            },
+                        ))
+                        .footer(
+                            super::modal_footer()
+                                .w_full()
+                                .child(Button::new("footer-mode").label("YAML 编辑"))
+                                .child(div().flex_1())
+                                .child(crate::ui::dialog_footer_pending("保存", pending)),
+                        )
+                        .on_ok(move |_, _, _| {
+                            result.set(result.get() + 1);
+                            false
+                        })
+                    });
+                    window.render_frame(cx);
+                })
+                .unwrap();
+                cx.run_until_parked();
+                cx.update_window(handle, |_, window, cx| {
+                    window.render_frame(cx);
+                    let field = window.find("footer-field").bounds();
+                    let mode = window.find("footer-mode").bounds();
+                    let cancel = window.find("dialog-cancel").bounds();
+                    let submit = window.find("dialog-commit").bounds();
+                    assert!((mode.left() - field.left()).abs() <= gpui_kit::px(1.));
+                    assert!((submit.right() - field.right()).abs() <= gpui_kit::px(1.));
+                    assert!(mode.right() < cancel.left() && cancel.right() < submit.left());
+                    assert!((submit.center().y - mode.center().y).abs() <= gpui_kit::px(1.));
+                    assert!(submit.size.width < field.size.width / 3.);
+                    window.click("dialog-commit", cx);
+                    assert_eq!(confirmations.get(), usize::from(!pending));
+                    if !pending {
+                        window.press("enter", cx);
+                        assert_eq!(confirmations.get(), 2);
+                    }
+                    window.click("dialog-cancel", cx);
+                    assert!(!window.has_active_dialog(cx));
+                })
+                .unwrap();
+                cx.run_until_parked();
+            }
         }
     }
 

@@ -6,3 +6,5 @@
 /.codex/
 /.claude/
 .DS_Store
+
+/platform-service/target/

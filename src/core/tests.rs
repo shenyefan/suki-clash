@@ -1,5 +1,5 @@
 //! Child-process tests use private temporary directories and no system networking.
-use super::{Actor, Command, Running};
+use super::{Actor, Command, Process, Running};
 use crate::core::{Phase, Service, launch::Launch};
 use crate::storage::{AppPaths, DirectoryKind, Repository};
 use std::{path::Path, time::Duration};
@@ -34,6 +34,672 @@ fn actor(paths: AppPaths) -> Actor {
 }
 
 const SLEEPING_CORE: &str = "#!/bin/sh\nfor arg do\nif [ \"$arg\" = -t ]; then exit 0; fi\ndone\n: > child-started\nexec /bin/sleep 30\n";
+
+#[tokio::test]
+async fn late_provider_selection_settles_without_overwriting_new_choices_and_expires() {
+    use crate::proxies::runtime::{Action, Selections};
+    use std::sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+    };
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+    let (_root, paths) = fixture(Some(SLEEPING_CORE));
+    let mut launch = Launch::prepare(&paths).await.unwrap();
+    let socket = paths.data().join("selection.sock");
+    let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+    launch.client = super::super::client::Client::new(
+        super::super::client::Endpoint::Unix(socket),
+        String::new(),
+    );
+    let loaded = Arc::new(AtomicBool::new(false));
+    let requests = Arc::new(AtomicUsize::new(0));
+    let selected = Arc::new(Mutex::new(
+        std::collections::BTreeMap::<String, String>::new(),
+    ));
+    let server = tokio::spawn({
+        let loaded = loaded.clone();
+        let requests = requests.clone();
+        let selected = selected.clone();
+        async move {
+            loop {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut bytes = Vec::new();
+                let header_end = loop {
+                    let mut part = [0; 4096];
+                    let n = stream.read(&mut part).await.unwrap();
+                    assert!(n > 0);
+                    bytes.extend_from_slice(&part[..n]);
+                    if let Some(end) = bytes.windows(4).position(|p| p == b"\r\n\r\n") {
+                        break end + 4;
+                    }
+                };
+                let header = String::from_utf8(bytes[..header_end].to_vec()).unwrap();
+                let length = header
+                    .lines()
+                    .find_map(|line| {
+                        line.to_ascii_lowercase()
+                            .strip_prefix("content-length:")
+                            .map(|v| v.trim().parse::<usize>().unwrap())
+                    })
+                    .unwrap_or(0);
+                while bytes.len() < header_end + length {
+                    let mut part = [0; 4096];
+                    let n = stream.read(&mut part).await.unwrap();
+                    assert!(n > 0);
+                    bytes.extend_from_slice(&part[..n]);
+                }
+                requests.fetch_add(1, Ordering::SeqCst);
+                let route = header
+                    .lines()
+                    .next()
+                    .unwrap()
+                    .split_whitespace()
+                    .nth(1)
+                    .unwrap();
+                let body = if header.starts_with("PUT /proxies/") {
+                    let body: serde_json::Value =
+                        serde_json::from_slice(&bytes[header_end..]).unwrap();
+                    selected.lock().unwrap().insert(
+                        route.trim_start_matches("/proxies/").to_owned(),
+                        body["name"].as_str().unwrap().into(),
+                    );
+                    serde_json::json!({})
+                } else if route == "/proxies" {
+                    if loaded.load(Ordering::SeqCst) {
+                        let selected = selected.lock().unwrap();
+                        serde_json::json!({"proxies":{
+                            "g":{"name":"g","type":"Selector","all":["late","chosen"],"now":selected.get("g").map(String::as_str).unwrap_or("chosen")},
+                            "other":{"name":"other","type":"Selector","all":["later"],"now":selected.get("other").map(String::as_str).unwrap_or("DIRECT")},
+                            "late":{"name":"late","type":"Socks5"},"later":{"name":"later","type":"Socks5"},"chosen":{"name":"chosen","type":"Socks5"}
+                        }})
+                    } else {
+                        serde_json::json!({"proxies":{}})
+                    }
+                } else {
+                    serde_json::json!({"providers":{}})
+                };
+                let body = body.to_string();
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+            }
+        }
+    });
+    let mut saved = Selections::load(&paths).unwrap();
+    saved.update(None, "g", Some("late"));
+    saved.update(None, "other", Some("later"));
+    saved.save(&paths).unwrap();
+    let mut actor = actor(paths);
+    actor.running = Some(Running {
+        child: Process::Local(
+            tokio::process::Command::new("/bin/sleep")
+                .arg("30")
+                .spawn()
+                .unwrap(),
+        ),
+        pipe_suppressed: Default::default(),
+        launch,
+        output: None,
+        log_settings: None,
+        _lifetime: None,
+        _execution: None,
+    });
+    actor.publish(Phase::Ready, None);
+    actor.restore_proxy_selections().await.unwrap();
+    assert!(
+        actor.selection_recovery.is_some(),
+        "missing cold groups must remain pending"
+    );
+    loaded.store(true, Ordering::SeqCst);
+    actor
+        .proxy_action(Action::Select {
+            group: "g".into(),
+            node: "chosen".into(),
+            generation: actor.snapshot.generation,
+            epoch: actor.snapshot.monitor_epoch,
+        })
+        .await
+        .unwrap();
+    actor.settle_proxy_selections().await.unwrap();
+    assert_eq!(
+        selected.lock().unwrap().get("g").map(String::as_str),
+        Some("chosen")
+    );
+    assert_eq!(
+        selected.lock().unwrap().get("other").map(String::as_str),
+        Some("later")
+    );
+    assert!(actor.selection_recovery.is_none());
+    loaded.store(false, Ordering::SeqCst);
+    actor.restore_proxy_selections().await.unwrap();
+    actor.selection_recovery.as_mut().unwrap().expires = std::time::Instant::now();
+    assert!(
+        actor
+            .settle_proxy_selections()
+            .await
+            .unwrap_err()
+            .contains("30秒")
+    );
+    let count = requests.load(Ordering::SeqCst);
+    actor.settle_proxy_selections().await.unwrap();
+    assert_eq!(requests.load(Ordering::SeqCst), count);
+    actor.restore_proxy_selections().await.unwrap();
+    actor.snapshot.generation += 1;
+    let count = requests.load(Ordering::SeqCst);
+    actor.settle_proxy_selections().await.unwrap();
+    assert_eq!(requests.load(Ordering::SeqCst), count);
+    actor.stop().await.unwrap();
+    server.abort();
+}
+
+#[tokio::test]
+async fn provider_sync_is_queued_by_runtime_revision_and_stops_after_four_pending_attempts() {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+    let (_root, paths) = fixture(Some(SLEEPING_CORE));
+    let mut launch = Launch::prepare(&paths).await.unwrap();
+    launch.composed =
+        "proxy-providers: {p: {type: http, url: 'https://example.test/p', path: p.yaml}}\n".into();
+    let socket = paths.data().join("provider-sync.sock");
+    let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+    launch.client = super::super::client::Client::new(
+        super::super::client::Endpoint::Unix(socket),
+        String::new(),
+    );
+    let requests = Arc::new(AtomicUsize::new(0));
+    let server = tokio::spawn({
+        let requests = requests.clone();
+        async move {
+            loop {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut bytes = [0; 4096];
+                let n = stream.read(&mut bytes).await.unwrap();
+                assert!(n > 0);
+                requests.fetch_add(1, Ordering::SeqCst);
+                let body = if bytes[..n].starts_with(b"GET /providers/proxies ") {
+                    r#"{"providers":{"p":{"updatedAt":null}}}"#
+                } else {
+                    r#"{"providers":{}}"#
+                };
+                stream.write_all(format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).as_bytes()).await.unwrap();
+            }
+        }
+    });
+    let mut actor = actor(paths);
+    actor.running = Some(Running {
+        child: Process::Local(
+            tokio::process::Command::new("/bin/sleep")
+                .arg("30")
+                .spawn()
+                .unwrap(),
+        ),
+        pipe_suppressed: Default::default(),
+        launch,
+        output: None,
+        log_settings: None,
+        _lifetime: None,
+        _execution: None,
+    });
+    actor.publish(Phase::Ready, None);
+    assert_eq!(actor.provider_sync.as_ref().unwrap().remaining, 4);
+    for _ in 0..3 {
+        actor.sync_provider_cache().await.unwrap();
+        assert!(actor.provider_sync.is_some());
+    }
+    assert!(
+        actor
+            .sync_provider_cache()
+            .await
+            .unwrap_err()
+            .contains("同步已停止")
+    );
+    let count = requests.load(Ordering::SeqCst);
+    actor.publish(Phase::Ready, None);
+    actor.sync_provider_cache().await.unwrap();
+    assert_eq!(requests.load(Ordering::SeqCst), count);
+    actor.invalidate_monitor();
+    actor.publish(Phase::Ready, None);
+    assert_eq!(actor.provider_sync.as_ref().unwrap().remaining, 4);
+    actor.stop().await.unwrap();
+    server.abort();
+}
+
+#[tokio::test]
+async fn mode_and_system_proxy_disable_apply_auto_close_to_snapshot_connections() {
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+    let (_root, paths) = fixture(Some(SLEEPING_CORE));
+    let repository = Repository::open(paths.clone()).unwrap();
+    let settings = crate::preferences::defaults(crate::preferences::SettingsKind::General)
+        .into_iter()
+        .chain([("AutoCloseConnection".into(), "true".into())])
+        .collect();
+    repository
+        .save(
+            &crate::storage::Namespace::parse("settings").unwrap(),
+            &settings,
+        )
+        .unwrap();
+    let previous = crate::preferences::defaults(crate::preferences::SettingsKind::SysProxy)
+        .into_iter()
+        .chain([("IsSystemProxyEnabled".into(), "true".into())])
+        .collect();
+    repository
+        .save(
+            &crate::storage::Namespace::parse("sysproxy").unwrap(),
+            &previous,
+        )
+        .unwrap();
+    let mut launch = Launch::prepare(&paths).await.unwrap();
+    let socket = paths.data().join("auto-close.sock");
+    let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+    launch.client = super::super::client::Client::new(
+        super::super::client::Endpoint::Unix(socket),
+        String::new(),
+    );
+    let server = tokio::spawn(async move {
+        let old = r#"{"uploadTotal":0,"downloadTotal":0,"connections":[{"id":"old","upload":0,"download":0,"metadata":{}}]}"#;
+        let new = r#"{"uploadTotal":0,"downloadTotal":0,"connections":[{"id":"new","upload":0,"download":0,"metadata":{}}]}"#;
+        for (prefix, body) in [
+            ("GET /configs ", r#"{"mode":"rule"}"#),
+            ("PATCH /configs ", "{}"),
+            ("GET /configs ", r#"{"mode":"global"}"#),
+            ("GET /connections ", old),
+            ("DELETE /connections/old ", "{}"),
+            ("GET /connections ", new),
+            ("GET /connections ", old),
+            ("DELETE /connections/old ", "{}"),
+            ("GET /connections ", new),
+        ] {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut bytes = Vec::new();
+            loop {
+                let mut chunk = [0; 4096];
+                let n = stream.read(&mut chunk).await.unwrap();
+                assert!(n > 0);
+                bytes.extend_from_slice(&chunk[..n]);
+                if let Some(end) = bytes.windows(4).position(|p| p == b"\r\n\r\n") {
+                    let header = String::from_utf8_lossy(&bytes[..end + 4]);
+                    let len = header
+                        .lines()
+                        .find_map(|line| {
+                            line.to_ascii_lowercase()
+                                .strip_prefix("content-length:")
+                                .map(|v| v.trim().parse::<usize>().unwrap())
+                        })
+                        .unwrap_or(0);
+                    if bytes.len() >= end + 4 + len {
+                        break;
+                    }
+                }
+            }
+            assert!(String::from_utf8_lossy(&bytes).starts_with(prefix));
+            stream
+                .write_all(
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    )
+                    .as_bytes(),
+                )
+                .await
+                .unwrap();
+        }
+    });
+    let mut actor = actor(paths);
+    actor.running = Some(Running {
+        child: Process::Local(
+            tokio::process::Command::new("/bin/sleep")
+                .arg("30")
+                .spawn()
+                .unwrap(),
+        ),
+        pipe_suppressed: Default::default(),
+        launch,
+        output: None,
+        log_settings: None,
+        _lifetime: None,
+        _execution: None,
+    });
+    actor.publish(Phase::Ready, None);
+    actor
+        .proxy_action(crate::proxies::runtime::Action::Mode(
+            crate::session::ProxyMode::Global,
+        ))
+        .await
+        .unwrap();
+    actor
+        .save_system_proxy(
+            &repository,
+            &previous,
+            crate::storage::Values::from([("IsSystemProxyEnabled".into(), "false".into())]),
+        )
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(2), server)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(actor.snapshot.operation_committed());
+    assert_eq!(
+        actor.snapshot.preferences().unwrap().native()["mode"],
+        "global"
+    );
+    actor.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn partial_credentials_preserve_the_other_secret_and_committed_delete_remains_undoable() {
+    use crate::profiles::{
+        CredentialEdits, CredentialStore,
+        model::{Document, DocumentKind},
+        repository,
+    };
+    let (_root, paths) = fixture(None);
+    let mut actor = actor(paths.clone());
+    let vault = CredentialStore::new(&paths);
+    vault.write(1, "saved-token", "saved-age").await.unwrap();
+    let mut document = Document::new(1, DocumentKind::Profile);
+    document.credentials = CredentialEdits::from_inputs("new-token", "");
+    actor
+        .profiles(super::super::ProfileCommand::Save {
+            expected: repository::read(&paths).unwrap().0,
+            documents: vec![document],
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        vault.read(1).await.unwrap(),
+        ("new-token".into(), "saved-age".into())
+    );
+    let (expected, mut documents) = repository::read(&paths).unwrap();
+    documents[0].credentials.age = crate::profiles::SecretEdit::Clear;
+    actor
+        .profiles(super::super::ProfileCommand::Save {
+            expected,
+            documents,
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        vault.read(1).await.unwrap(),
+        ("new-token".into(), String::new())
+    );
+    vault.fail_next_delete(1);
+    let error = actor
+        .profiles(super::super::ProfileCommand::Save {
+            expected: repository::read(&paths).unwrap().0,
+            documents: vec![],
+        })
+        .await
+        .unwrap_err();
+    assert!(error.contains("凭据清理失败"));
+    assert!(actor.snapshot.operation_committed());
+    assert!(repository::read(&paths).unwrap().1.is_empty());
+    assert!(actor.deleted_profiles.contains_key(&1));
+    actor
+        .profiles(super::super::ProfileCommand::Restore { ids: vec![1] })
+        .await
+        .unwrap();
+    assert_eq!(repository::read(&paths).unwrap().1.len(), 1);
+    assert_eq!(
+        vault.read(1).await.unwrap(),
+        ("new-token".into(), String::new())
+    );
+}
+
+#[tokio::test]
+async fn first_subscription_becomes_current_but_later_imports_do_not_replace_it() {
+    use crate::profiles::{
+        model::{Document, DocumentKind},
+        repository,
+    };
+    let (_root, paths) = fixture(None);
+    let mut actor = actor(paths.clone());
+    for id in [1, 2] {
+        let (expected, mut documents) = repository::read(&paths).unwrap();
+        documents.push(Document::new(id, DocumentKind::Profile));
+        actor
+            .profiles(super::super::ProfileCommand::Save {
+                expected,
+                documents,
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            crate::configuration::selected_profile(&paths).unwrap(),
+            Some(1)
+        );
+    }
+}
+
+#[tokio::test]
+async fn override_credentials_and_partial_delete_use_the_same_commit_contract() {
+    use crate::profiles::{
+        CredentialEdits, CredentialStore,
+        model::{Document, DocumentKind},
+        override_repository,
+    };
+    let (_root, paths) = fixture(None);
+    let mut actor = actor(paths.clone());
+    let vault = CredentialStore::overrides(&paths);
+    vault.write(7, "saved-token", "saved-age").await.unwrap();
+    let mut document = Document::new(7, DocumentKind::Yaml);
+    document.credentials = CredentialEdits::from_inputs("", "new-age");
+    actor
+        .overrides(super::super::OverrideChange::Save {
+            expected: override_repository::read(&paths).unwrap().0,
+            documents: vec![document],
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        vault.read(7).await.unwrap(),
+        ("saved-token".into(), "new-age".into())
+    );
+    vault.fail_next_delete(7);
+    let error = actor
+        .overrides(super::super::OverrideChange::Save {
+            expected: override_repository::read(&paths).unwrap().0,
+            documents: vec![],
+        })
+        .await
+        .unwrap_err();
+    assert!(error.contains("凭据清理失败"));
+    assert!(actor.snapshot.operation_committed());
+    assert!(override_repository::read(&paths).unwrap().1.is_empty());
+    actor
+        .overrides(super::super::OverrideChange::Restore { ids: vec![7] })
+        .await
+        .unwrap();
+    assert_eq!(override_repository::read(&paths).unwrap().1.len(), 1);
+    assert_eq!(
+        vault.read(7).await.unwrap(),
+        ("saved-token".into(), "new-age".into())
+    );
+}
+
+#[tokio::test]
+async fn restored_core_is_ready_before_proxy_recovery_and_reports_its_independent_failure() {
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+    let (_root, paths) = fixture(Some(SLEEPING_CORE));
+    let repository = Repository::open(paths.clone()).unwrap();
+    let mut proxy = crate::preferences::defaults(crate::preferences::SettingsKind::SysProxy);
+    proxy.insert("IsSystemProxyEnabled".into(), "true".into());
+    repository
+        .save(
+            &crate::storage::Namespace::parse("sysproxy").unwrap(),
+            &proxy,
+        )
+        .unwrap();
+    let launch = Launch::prepare(&paths).await.unwrap();
+    let yaml: serde_yaml_ng::Value =
+        serde_yaml_ng::from_str(&launch.yaml().await.unwrap()).unwrap();
+    let socket = yaml["external-controller-unix"].as_str().unwrap();
+    let listener = tokio::net::UnixListener::bind(socket).unwrap();
+    let config = serde_json::to_string(&yaml).unwrap();
+    let server = tokio::spawn(async move {
+        loop {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = [0; 4096];
+            let count = stream.read(&mut request).await.unwrap();
+            let body = if request[..count].starts_with(b"GET /version ") {
+                r#"{"version":"restored"}"#
+            } else {
+                &config
+            };
+            let reply = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(reply.as_bytes()).await.unwrap();
+        }
+    });
+    let mut actor = actor(paths);
+    let error = actor.restore_running(launch).await.unwrap_err();
+    assert_eq!(actor.snapshot.phase(), Phase::Ready);
+    assert_eq!(actor.snapshot.version(), Some("restored"));
+    assert!(error.contains("内核已就绪；系统代理未应用"), "{error}");
+    assert!(error.contains("未启用 HTTP 或混合代理端口"), "{error}");
+    actor.stop().await.unwrap();
+    server.abort();
+}
+
+#[tokio::test]
+async fn preparing_exit_keeps_the_executor_available_until_final_shutdown() {
+    let (_root, paths) = fixture(None);
+    let mut service = Service::start(paths).unwrap();
+    let events = service.events();
+    let reply = service.prepare_exit().unwrap();
+    tokio::time::timeout(Duration::from_secs(5), reply.recv())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    // The acknowledgement is sent before the request reservation is released.
+    let id = loop {
+        match service.submit(Command::Start) {
+            Ok(id) => break id,
+            Err(super::ServiceError::Busy) => tokio::task::yield_now().await,
+            Err(error) => panic!("executor destroyed before final exit: {error}"),
+        }
+    };
+    let snapshot = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let snapshot = events.recv().await.unwrap();
+            if snapshot.request_id == Some(id) && !snapshot.operation_active {
+                break snapshot;
+            }
+        }
+    })
+    .await
+    .unwrap();
+    assert!(snapshot.error().unwrap().contains("未安装"));
+    let worker = service.shutdown().unwrap();
+    tokio::task::spawn_blocking(move || worker.join().unwrap().unwrap())
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn exit_preparation_retains_failed_recovery_for_a_second_attempt() {
+    let (_root, paths) = fixture(Some(SLEEPING_CORE));
+    let mut actor = actor(paths.clone());
+    actor.recovery = Some(super::super::install::Recovery::begin(&paths).unwrap());
+    let backup = paths
+        .directory(DirectoryKind::Core)
+        .join(".core-update-recovery/binary");
+    let bytes = std::fs::read(&backup).unwrap();
+    std::fs::write(&backup, b"damaged").unwrap();
+    assert!(actor.prepare_exit().await.is_err());
+    assert!(actor.recovery.is_some());
+    assert!(!actor.exit_prepared);
+    std::fs::write(&backup, bytes).unwrap();
+    actor.prepare_exit().await.unwrap();
+    assert!(actor.recovery.is_none());
+    assert!(actor.exit_prepared);
+}
+
+#[tokio::test]
+async fn owned_health_recovery_is_observed_and_stops_after_its_budget() {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+    };
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+    let (_root, paths) = fixture(Some(SLEEPING_CORE));
+    let socket = paths.data().join("health-test.sock");
+    let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+    let healthy = Arc::new(AtomicBool::new(false));
+    let requests = Arc::new(AtomicUsize::new(0));
+    let server = tokio::spawn({
+        let healthy = healthy.clone();
+        let requests = requests.clone();
+        async move {
+            loop {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut request = [0; 4096];
+                let count = stream.read(&mut request).await.unwrap();
+                requests.fetch_add(1, Ordering::SeqCst);
+                let (status, body) = if !healthy.load(Ordering::SeqCst) {
+                    (503, "{}")
+                } else if request[..count].starts_with(b"GET /version ") {
+                    (200, r#"{"version":"recovered"}"#)
+                } else {
+                    (200, r#"{"tun":{"enable":false}}"#)
+                };
+                let reply = format!(
+                    "HTTP/1.1 {status} test\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream.write_all(reply.as_bytes()).await.unwrap();
+            }
+        }
+    });
+    let mut launch = Launch::prepare(&paths).await.unwrap();
+    launch.client = super::super::client::Client::new(
+        super::super::client::Endpoint::Unix(socket),
+        String::new(),
+    );
+    let child = tokio::process::Command::new("/bin/sleep")
+        .arg("30")
+        .spawn()
+        .unwrap();
+    let mut actor = actor(paths);
+    actor.running = Some(Running {
+        child: Process::Local(child),
+        pipe_suppressed: Default::default(),
+        launch,
+        output: None,
+        log_settings: None,
+        _lifetime: None,
+        _execution: None,
+    });
+    actor.publish(Phase::Ready, None);
+    actor.observe_health().await;
+    assert_eq!(actor.snapshot.phase(), Phase::Failed);
+    assert_eq!(actor.health_recovery_remaining, 15);
+    healthy.store(true, Ordering::SeqCst);
+    actor.observe_health().await;
+    assert_eq!(actor.snapshot.phase(), Phase::Ready);
+    assert_eq!(actor.snapshot.version(), Some("recovered"));
+    assert_eq!(actor.health_recovery_remaining, 0);
+    healthy.store(false, Ordering::SeqCst);
+    for _ in 0..16 {
+        actor.observe_health().await;
+    }
+    assert_eq!(actor.health_recovery_remaining, 0);
+    let count = requests.load(Ordering::SeqCst);
+    actor.observe_health().await;
+    assert_eq!(requests.load(Ordering::SeqCst), count);
+    assert!(actor.snapshot.error().unwrap().contains("恢复观察已停止"));
+    actor.stop().await.unwrap();
+    server.abort();
+}
 
 #[tokio::test]
 async fn malformed_json_does_not_close_executor_and_corrected_files_are_reread() {
@@ -170,11 +836,13 @@ async fn failed_validation_preserves_the_old_process_and_source() {
     }
     let mut actor = actor(paths.clone());
     actor.running = Some(Running {
-        child,
+        child: Process::Local(child),
         launch,
         output: None,
         log_settings: None,
+        pipe_suppressed: Default::default(),
         _lifetime: None,
+        _execution: None,
     });
     actor.snapshot.phase = Phase::Ready;
     let binary = paths.directory(DirectoryKind::Core).join("mihomo");
@@ -242,11 +910,13 @@ async fn unexpected_child_exit_invalidates_readiness_and_version() {
     let child = launch.command(false).spawn().unwrap();
     let mut actor = actor(paths);
     actor.running = Some(Running {
-        child,
+        child: Process::Local(child),
         launch,
         output: None,
         log_settings: None,
+        pipe_suppressed: Default::default(),
         _lifetime: None,
+        _execution: None,
     });
     actor.snapshot.phase = Phase::Ready;
     actor.snapshot.version = Some("test-version".into());
@@ -332,6 +1002,10 @@ exec "$SUKI_TEST_MIHOMO" "$@"
 }
 
 fn save_override(paths: &AppPaths, kind: &str, content: &str) {
+    let directory = paths.data().join("overrides");
+    std::fs::create_dir_all(&directory).unwrap();
+    let extension = if kind == "JavaScript" { "js" } else { "yaml" };
+    std::fs::write(directory.join(format!("42.{extension}")), content).unwrap();
     let store = Repository::open(paths.clone()).unwrap();
     store
         .save(
@@ -340,7 +1014,7 @@ fn save_override(paths: &AppPaths, kind: &str, content: &str) {
                 ("format".into(), "1".into()),
                 ("ids".into(), "42".into()),
                 ("42/kind".into(), kind.into()),
-                ("42/content".into(), content.into()),
+                ("42/name".into(), "Test override".into()),
                 ("42/enabled".into(), "true".into()),
                 ("42/scope-profile".into(), "".into()),
             ]),
@@ -368,7 +1042,7 @@ async fn persisted_overrides_feed_private_candidate_without_mutating_source() {
     assert!(value.get("external-controller").is_none());
     assert!(!candidate.contains("untrusted"));
     assert_eq!(value["allow-lan"], false);
-    assert_eq!(value["bind-address"], "127.0.0.1");
+    assert_eq!(value["bind-address"], "*");
     assert_eq!(std::fs::read(source).unwrap(), before);
 }
 
@@ -382,17 +1056,18 @@ async fn composition_failures_preserve_running_child_and_its_candidate() {
     let pid = child.id();
     let mut actor = actor(paths.clone());
     actor.running = Some(Running {
-        child,
+        child: Process::Local(child),
         launch,
         output: None,
         log_settings: None,
+        pipe_suppressed: Default::default(),
         _lifetime: None,
+        _execution: None,
     });
     actor.snapshot.phase = Phase::Ready;
     for (kind, content, message) in [
         ("YAML", "mode: [invalid", "YAML"),
         ("JavaScript", "function main(c) { throw 1; }", "JavaScript"),
-        ("YAML", "tun: {enable: true}", "TUN"),
     ] {
         save_override(&paths, kind, content);
         assert!(actor.restart().await.unwrap_err().contains(message));
@@ -414,6 +1089,8 @@ async fn composition_failures_preserve_running_child_and_its_candidate() {
 }
 
 fn save_profile(paths: &AppPaths, id: u64, content: &str) {
+    std::fs::create_dir_all(paths.data().join("profiles")).unwrap();
+    std::fs::write(crate::profiles::repository::body_path(paths, id), content).unwrap();
     let store = Repository::open(paths.clone()).unwrap();
     let namespace = crate::storage::Namespace::parse("profile-index").unwrap();
     let mut values = store.read(&namespace).unwrap();
@@ -428,7 +1105,6 @@ fn save_profile(paths: &AppPaths, id: u64, content: &str) {
         ("format".into(), "1".into()),
         (format!("{id}/kind"), "配置".into()),
         (format!("{id}/name"), format!("Local {id}")),
-        (format!("{id}/content"), content.into()),
     ] {
         values.insert(key, value);
     }
@@ -1409,6 +2085,7 @@ async fn subscription_authorization_uses_typed_headers_and_logs_never_include_it
     let mut doc = Document::new(1, DocumentKind::Profile);
     doc.url = url;
     doc.token = "Bearer private-subscription-secret".into();
+    doc.credentials = crate::profiles::CredentialEdits::from_inputs(&doc.token, "");
     doc.user_agent = "Custom-Agent".into();
     let mut transfer = crate::core::download::Transfer::subscription(
         &crate::network::Http::default(),
@@ -1442,7 +2119,8 @@ async fn automatic_subscription_update_uses_updated_deadline_and_disabled_flag()
     };
     let (_root, paths) = fixture(None);
     let mut owner = actor(paths.clone());
-    let (url, server) = subscription_server("mode: direct\nrules: ['MATCH,DIRECT']\n", "").await;
+    let (url, server) =
+        subscription_server("proxies: []\nmode: direct\nrules: ['MATCH,DIRECT']\n", "").await;
     let mut doc = Document::new(1, DocumentKind::Profile);
     doc.url = url;
     doc.interval = "1".into();
@@ -1698,6 +2376,7 @@ async fn real_proxy_selection_modes_persistence_and_readback() {
             .is_none_or(str::is_empty)
     );
     let target = super::super::monitor::Target {
+        logs: None,
         client: client.clone(),
         http: crate::network::Http::default(),
         generation,
@@ -2055,13 +2734,18 @@ fn measurement_requests_do_not_reserve_the_lifecycle_lane() {
 #[tokio::test]
 #[ignore = "requires SUKI_TEST_MIHOMO"]
 async fn real_chain_save_applies_links_selects_exit_restores_on_restart_and_disconnects() {
+    for kind in ["select", "url-test"] {
+        chain_roundtrip(kind).await;
+    }
+}
+async fn chain_roundtrip(kind: &str) {
     use crate::proxies::chain_config::{Change, Config};
     use std::os::unix::fs::PermissionsExt as _;
     let (_root, paths) = fixture(None);
     let binary = paths.directory(DirectoryKind::Core).join("mihomo");
     std::fs::copy(std::env::var_os("SUKI_TEST_MIHOMO").unwrap(), &binary).unwrap();
     std::fs::set_permissions(binary, std::fs::Permissions::from_mode(0o700)).unwrap();
-    std::fs::write(paths.directory(DirectoryKind::Config).join("runtime-source.yaml"),"mixed-port: 0\nport: 0\nsocks-port: 0\nproxies:\n- {name: entry, type: socks5, server: 127.0.0.1, port: 10081}\n- {name: exit, type: socks5, server: 127.0.0.1, port: 10082}\nproxy-groups:\n- {name: select, type: select, proxies: [DIRECT, entry, exit]}\nrules: ['MATCH,select']\n").unwrap();
+    std::fs::write(paths.directory(DirectoryKind::Config).join("runtime-source.yaml"),"mixed-port: 0\nport: 0\nsocks-port: 0\nproxies:\n- {name: entry, type: socks5, server: 127.0.0.1, port: 10081}\n- {name: exit, type: socks5, server: 127.0.0.1, port: 10082}\nproxy-groups:\n- {name: select, type: GROUP_KIND, proxies: [DIRECT, entry, exit], url: 'http://127.0.0.1:9/health', interval: 300}\nrules: ['MATCH,select']\n".replace("GROUP_KIND",kind)).unwrap();
     let mut owner = actor(paths.clone());
     owner.start().await.unwrap();
     let pid = owner.running.as_ref().unwrap().child.id();
@@ -2071,6 +2755,7 @@ async fn real_chain_save_applies_links_selects_exit_restores_on_restart_and_disc
         group: "select".into(),
         nodes: vec!["entry".into(), "exit".into()],
         custom: String::new(),
+        sources: Default::default(),
     };
     owner
         .change_chain(Change {
@@ -2087,9 +2772,12 @@ async fn real_chain_save_applies_links_selects_exit_restores_on_restart_and_disc
         serde_yaml_ng::from_str(&owner.running.as_ref().unwrap().launch.composed).unwrap();
     assert_eq!(config["proxies"][1]["dialer-proxy"].as_str(), Some("entry"));
     let client = owner.running.as_ref().unwrap().launch.client.clone();
-    assert_eq!(
-        client.proxies(&[]).await.unwrap().selected("select"),
-        Some("exit")
+    assert!(
+        client
+            .proxies(&[])
+            .await
+            .unwrap()
+            .confirms_selection("select", "exit")
     );
     let invalid = Config {
         nodes: vec!["entry".into(), "missing".into()],
@@ -2109,9 +2797,12 @@ async fn real_chain_save_applies_links_selects_exit_restores_on_restart_and_disc
     assert_eq!(Config::load(&paths).unwrap(), desired);
     owner.restart().await.unwrap();
     let client = owner.running.as_ref().unwrap().launch.client.clone();
-    assert_eq!(
-        client.proxies(&[]).await.unwrap().selected("select"),
-        Some("exit")
+    assert!(
+        client
+            .proxies(&[])
+            .await
+            .unwrap()
+            .confirms_selection("select", "exit")
     );
     owner
         .change_chain(Change {
@@ -2128,9 +2819,12 @@ async fn real_chain_save_applies_links_selects_exit_restores_on_restart_and_disc
     let config: serde_yaml_ng::Value =
         serde_yaml_ng::from_str(&owner.running.as_ref().unwrap().launch.composed).unwrap();
     assert!(config["proxies"][1].get("dialer-proxy").is_none());
-    assert_eq!(
-        client.proxies(&[]).await.unwrap().selected("select"),
-        Some("DIRECT")
+    assert!(
+        client
+            .proxies(&[])
+            .await
+            .unwrap()
+            .confirms_selection("select", "DIRECT")
     );
     owner.stop().await.unwrap();
 }
@@ -2150,7 +2844,7 @@ async fn stopped_overrides_import_update_schedule_and_reject_stale_changes() {
     .await;
     let mut document = Document::new(71, DocumentKind::JavaScript);
     document.url = url;
-    document.name = "远程覆写".into();
+    document.name.clear();
     document.content.clear();
     document.interval = "0".into();
     owner
@@ -2508,4 +3202,219 @@ async fn stopped_system_proxy_edits_only_save_and_enabling_requires_readiness() 
         "false"
     );
     assert!(owner.running.is_none());
+}
+
+#[tokio::test]
+async fn proxy_observation_does_not_retry_failed_startup_intent() {
+    let (_root, paths) = fixture(None);
+    let repository = Repository::open(paths.clone()).unwrap();
+    crate::preferences::initialize(&repository).unwrap();
+    let namespace = crate::storage::Namespace::parse("sysproxy").unwrap();
+    let mut values =
+        crate::preferences::values(&repository, crate::preferences::SettingsKind::SysProxy)
+            .unwrap();
+    values.insert("IsSystemProxyEnabled".into(), "true".into());
+    values.insert("SystemProxyModeIndex".into(), "pac".into());
+    repository.save(&namespace, &values).unwrap();
+    let mut owner = actor(paths);
+    // Startup can leave the core ready and OS application failed. Poll must only
+    // observe; attempting to apply here would require a running child/API again.
+    owner.snapshot.phase = Phase::Ready;
+    for _ in 0..3 {
+        owner.poll_system_proxy().await.unwrap();
+    }
+    assert_eq!(owner.snapshot.phase, Phase::Ready);
+    assert_eq!(owner.snapshot.system_proxy.enabled(), Some(false));
+    assert_eq!(
+        crate::preferences::values(&repository, crate::preferences::SettingsKind::SysProxy)
+            .unwrap()
+            .get("IsSystemProxyEnabled")
+            .map(String::as_str),
+        Some("true")
+    );
+}
+
+#[tokio::test]
+async fn ip_auto_refresh_settings_publish_only_after_persistence() {
+    use crate::preferences::{self, SettingsKind};
+    let (_root, paths) = fixture(None);
+    let mut actor = actor(paths.clone());
+    let (controls, observed) =
+        tokio::sync::watch::channel(crate::core::monitor::ProbeControl::default());
+    actor.probe_controls = Some(controls);
+    actor
+        .save_settings(
+            SettingsKind::General,
+            crate::storage::Values::from([("IpAutoRefresh".into(), "false".into())]),
+        )
+        .await
+        .unwrap();
+    assert_eq!(observed.borrow().auto_refresh, Some(false));
+    let repository = Repository::open(paths).unwrap();
+    assert_eq!(
+        preferences::values(&repository, SettingsKind::General).unwrap()["IpAutoRefresh"],
+        "false"
+    );
+    assert!(
+        actor
+            .save_settings(
+                SettingsKind::General,
+                crate::storage::Values::from([("IpAutoRefresh".into(), "invalid".into())])
+            )
+            .await
+            .is_err()
+    );
+    assert_eq!(observed.borrow().auto_refresh, Some(false));
+    assert_eq!(
+        preferences::values(&repository, SettingsKind::General).unwrap()["IpAutoRefresh"],
+        "false"
+    );
+}
+
+#[tokio::test]
+async fn gui_login_registration_reconciles_startup_and_explicit_same_value_save() {
+    let (_root, paths) = fixture(None);
+    let mut owner = actor(paths.clone());
+    crate::desktop::autostart::apply(true).unwrap();
+    owner
+        .save_settings(
+            crate::preferences::SettingsKind::General,
+            crate::storage::Values::from([("AutoRun".into(), "false".into())]),
+        )
+        .await
+        .unwrap();
+    assert!(!crate::desktop::autostart::enabled().unwrap());
+    assert_eq!(owner.snapshot.autostart, Some(Ok(false)));
+    crate::desktop::autostart::apply(true).unwrap();
+    // Missing core must not prevent coordinating the independent GUI login entry.
+    assert!(owner.startup().await.is_err());
+    assert!(!crate::desktop::autostart::enabled().unwrap());
+    assert_eq!(owner.snapshot.autostart, Some(Ok(false)));
+}
+
+#[tokio::test]
+async fn gist_credentials_are_isolated_keep_individual_secrets_and_reject_stale_config() {
+    use crate::core::gist::{Command as Gist, Settings};
+    use crate::profiles::{CredentialEdits, CredentialStore, SecretEdit};
+    let (_root, paths) = fixture(None);
+    let mut owner = actor(paths.clone());
+    owner
+        .gist(Gist::Configure {
+            expected: Settings::default(),
+            settings: Settings::default(),
+            credentials: CredentialEdits {
+                token: SecretEdit::Replace("test-gist-token".into()),
+                age: SecretEdit::Keep,
+            },
+        })
+        .await
+        .unwrap();
+    assert!(owner.snapshot.gist.token_saved);
+    assert!(
+        CredentialStore::new(&paths)
+            .read(0)
+            .await
+            .unwrap()
+            .0
+            .is_empty()
+    );
+    let identity = age::x25519::Identity::generate();
+    use age::secrecy::ExposeSecret as _;
+    let settings = Settings {
+        encrypt: true,
+        recipient: identity.to_public().to_string(),
+    };
+    owner
+        .gist(Gist::Configure {
+            expected: Settings::default(),
+            settings: settings.clone(),
+            credentials: CredentialEdits {
+                token: SecretEdit::Keep,
+                age: SecretEdit::Replace(identity.to_string().expose_secret().to_owned()),
+            },
+        })
+        .await
+        .unwrap();
+    let vault = CredentialStore::gist(&paths);
+    assert_eq!(vault.read(0).await.unwrap().0, "test-gist-token");
+    assert!(
+        !std::fs::read_to_string(crate::preferences::app::path(&paths))
+            .unwrap()
+            .contains("test-gist-token")
+    );
+    assert!(
+        owner
+            .gist(Gist::Configure {
+                expected: Settings::default(),
+                settings: Settings::default(),
+                credentials: CredentialEdits {
+                    token: SecretEdit::Clear,
+                    age: SecretEdit::Keep
+                }
+            })
+            .await
+            .unwrap_err()
+            .contains("已变更")
+    );
+    assert_eq!(vault.read(0).await.unwrap().0, "test-gist-token");
+    owner
+        .gist(Gist::Configure {
+            expected: settings.clone(),
+            settings,
+            credentials: CredentialEdits {
+                token: SecretEdit::Clear,
+                age: SecretEdit::Keep,
+            },
+        })
+        .await
+        .unwrap();
+    assert!(vault.read(0).await.unwrap().0.is_empty());
+    assert!(!vault.read(0).await.unwrap().1.is_empty());
+}
+
+#[tokio::test]
+async fn gist_restore_rolls_back_files_and_credentials_on_cleanup_failure_and_stays_stopped() {
+    use crate::profiles::{
+        CredentialStore,
+        model::{Document, DocumentKind},
+        repository,
+    };
+    let (_root, paths) = fixture(None);
+    let mut owner = actor(paths.clone());
+    let mut doc = Document::new(77, DocumentKind::Profile);
+    doc.name = "备份来源".into();
+    doc.url = "https://backup.example/sub".into();
+    doc.content = "proxies: []\nproxy-groups: []\nrules: [MATCH,DIRECT]\n".into();
+    owner
+        .profiles(crate::core::ProfileCommand::Save {
+            expected: repository::read(&paths).unwrap().0,
+            documents: vec![doc.clone()],
+        })
+        .await
+        .unwrap();
+    let archive = crate::backup::Archive::capture(&paths).unwrap();
+    doc.url = "https://local.example/sub".into();
+    doc.name = "本机来源".into();
+    owner
+        .profiles(crate::core::ProfileCommand::Save {
+            expected: repository::read(&paths).unwrap().0,
+            documents: vec![doc.clone()],
+        })
+        .await
+        .unwrap();
+    let vault = CredentialStore::new(&paths);
+    vault.write(77, "local-token", "").await.unwrap();
+    vault.fail_next_delete(77);
+    assert!(owner.restore_gist_archive(archive.clone()).await.is_err());
+    assert_eq!(repository::read(&paths).unwrap().1[0].url, doc.url);
+    assert_eq!(vault.read(77).await.unwrap().0, "local-token");
+    owner.restore_gist_archive(archive).await.unwrap();
+    assert_eq!(
+        repository::read(&paths).unwrap().1[0].url,
+        "https://backup.example/sub"
+    );
+    assert!(vault.read(77).await.unwrap().0.is_empty());
+    assert!(owner.running.is_none());
+    assert_eq!(owner.snapshot.phase, Phase::Stopped);
+    assert!(owner.snapshot.operation_committed);
 }

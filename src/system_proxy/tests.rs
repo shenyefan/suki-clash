@@ -49,33 +49,107 @@ impl Backend for Memory {
 fn target() -> Target {
     let mut values = crate::preferences::defaults(crate::preferences::SettingsKind::SysProxy);
     values.insert("IsSystemProxyEnabled".into(), "true".into());
-    Target::from_values(&values, 7897, "")
+    target_from_values(&values, 7897, "")
+}
+#[test]
+fn default_bypass_combination_and_pac_readback_follow_saved_policy() {
+    let mut values = crate::preferences::defaults(crate::preferences::SettingsKind::SysProxy);
+    values.insert("IsSystemProxyEnabled".into(), "true".into());
+    values.insert("BypassList".into(), "custom.test".into());
+    let combined = target_from_values(&values, 7897, "");
+    assert!(entries(&combined.system.bypass).contains("custom.test"));
+    assert!(entries(&combined.system.bypass).len() > 1);
+    values.insert("UseDefaultBypass".into(), "false".into());
+    assert_eq!(
+        target_from_values(&values, 7897, "").system.bypass,
+        "custom.test"
+    );
+    values.insert("BypassList".into(), String::new());
+    assert!(
+        !target_from_values(&values, 7897, "")
+            .system
+            .bypass
+            .is_empty()
+    );
+    values.insert("SystemProxyModeIndex".into(), "pac".into());
+    let pac = target_from_values(&values, 7897, "http://127.0.0.1:1234/proxy.pac");
+    let mut backend = Memory::default();
+    backend.write(&pac).unwrap();
+    assert!(pac.matches(&backend.state));
+    backend.state.bypass = "wrong.test".into();
+    assert!(!pac.matches(&backend.state));
+}
+#[tokio::test]
+async fn failed_guard_stops_automatic_requests_until_an_explicit_apply() {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let observed = attempts.clone();
+    let (sender, receiver) = async_channel::bounded::<Work>(2);
+    let thread = std::thread::spawn(move || {
+        while let Ok(work) = receiver.recv_blocking() {
+            let index = observed.fetch_add(1, Ordering::SeqCst);
+            let result = if index == 0 {
+                Err("Permission denied（1003）".into())
+            } else {
+                let target = target();
+                let mut backend = Memory::default();
+                backend.write(&target).unwrap();
+                Ok(Observation::read(&backend.state, Some(&target)))
+            };
+            let _ = work.reply.send(result);
+        }
+    });
+    let mut controller = Controller {
+        worker: Some(Worker {
+            sender,
+            thread: Some(thread),
+        }),
+        target: Some(target()),
+        guard_at: Some(Instant::now()),
+        ..Default::default()
+    };
+    let mut values = crate::preferences::defaults(crate::preferences::SettingsKind::SysProxy);
+    values.insert("IsSystemProxyEnabled".into(), "true".into());
+    values.insert("EnableProxyGuard".into(), "true".into());
+    assert!(
+        controller
+            .poll(&values)
+            .await
+            .unwrap_err()
+            .contains("Permission denied")
+    );
+    for _ in 0..10 {
+        assert_eq!(controller.poll(&values).await.unwrap().enabled(), None);
+    }
+    assert_eq!(attempts.load(Ordering::SeqCst), 1);
+    assert!(controller.automatic_suspended());
+    assert_eq!(
+        controller.apply(&values, 7897).await.unwrap().enabled(),
+        Some(true)
+    );
+    assert!(!controller.automatic_suspended());
+    assert_eq!(attempts.load(Ordering::SeqCst), 2);
 }
 #[test]
 fn native_failure_restores_last_confirmed_target() {
-    let mut owner = Owner {
-        backend: Memory::default(),
-        target: None,
-        rollback: None,
-    };
+    let mut owner = Owner::new(Memory::default());
     let previous = target();
     owner.apply(previous.clone()).unwrap();
-    owner.backend.fail_next = true;
+    owner.backend_mut().fail_next = true;
     let mut next = previous.clone();
     next.system.port = 7899;
     assert!(owner.apply(next).unwrap_err().contains("permission denied"));
-    assert!(previous.matches(&owner.backend.state));
+    assert!(previous.matches(&owner.backend_mut().state));
     assert_eq!(owner.observe().unwrap().enabled(), Some(true));
 }
 #[test]
 fn failed_disable_restores_the_enabled_observation() {
-    let mut owner = Owner {
-        backend: Memory::default(),
-        target: None,
-        rollback: None,
-    };
+    let mut owner = Owner::new(Memory::default());
     owner.apply(target()).unwrap();
-    owner.backend.fail_next = true;
+    owner.backend_mut().fail_next = true;
     assert!(
         owner
             .apply(Target::default())
@@ -86,44 +160,32 @@ fn failed_disable_restores_the_enabled_observation() {
 }
 #[test]
 fn silent_setter_failure_is_detected_and_never_published_as_success() {
-    let mut owner = Owner {
-        backend: Memory {
-            ignore_next: true,
-            ..Default::default()
-        },
-        target: None,
-        rollback: None,
-    };
+    let mut owner = Owner::new(Memory {
+        ignore_next: true,
+        ..Default::default()
+    });
     assert!(owner.apply(target()).unwrap_err().contains("回读不一致"));
-    assert!(owner.backend.state.is_all_disabled());
+    assert!(owner.backend_mut().state.is_all_disabled());
     assert_eq!(owner.observe().unwrap().enabled(), Some(false));
 }
 #[test]
 fn cleanup_preserves_another_app_proxy_and_clears_our_partial_write() {
-    let mut owner = Owner {
-        backend: Memory::default(),
-        target: None,
-        rollback: None,
-    };
+    let mut owner = Owner::new(Memory::default());
     let own = target();
     owner.apply(own.clone()).unwrap();
     let mut other = own.clone();
     other.system.port = 8000;
-    owner.backend.write(&other).unwrap();
+    owner.backend_mut().write(&other).unwrap();
     owner.clear().unwrap();
-    assert!(other.matches(&owner.backend.state));
+    assert!(other.matches(&owner.backend_mut().state));
     owner.apply(own).unwrap();
-    owner.backend.state.https.switched_on = false;
+    owner.backend_mut().state.https.switched_on = false;
     owner.clear().unwrap();
-    assert!(owner.backend.state.is_all_disabled());
+    assert!(owner.backend_mut().state.is_all_disabled());
 }
 #[test]
 fn manual_pac_and_disabled_modes_require_exact_readback() {
-    let mut owner = Owner {
-        backend: Memory::default(),
-        target: None,
-        rollback: None,
-    };
+    let mut owner = Owner::new(Memory::default());
     let mut pac = target();
     pac.system.enable = false;
     pac.auto = PacProxy {
@@ -131,9 +193,9 @@ fn manual_pac_and_disabled_modes_require_exact_readback() {
         url: "http://127.0.0.1:1234/proxy.pac".into(),
     };
     owner.apply(pac.clone()).unwrap();
-    assert!(pac.matches(&owner.backend.state));
-    owner.backend.state.http.switched_on = true;
-    assert!(!pac.matches(&owner.backend.state));
+    assert!(pac.matches(&owner.backend_mut().state));
+    owner.backend_mut().state.http.switched_on = true;
+    assert!(!pac.matches(&owner.backend_mut().state));
     owner.apply(Target::default()).unwrap();
     assert_eq!(owner.observe().unwrap().enabled(), Some(false));
     assert_eq!(authority("::1", 7897), "[::1]:7897");
@@ -197,34 +259,26 @@ fn first_failure_restores_an_external_proxy_with_different_protocol_endpoints() 
     external.state.socks.switched_on = false;
     external.fail_next = true;
     let before = external.state.clone();
-    let mut owner = Owner {
-        backend: external,
-        target: None,
-        rollback: None,
-    };
+    let mut owner = Owner::new(external);
     assert!(owner.apply(target()).is_err());
-    assert_eq!(owner.backend.state, before);
+    assert_eq!(owner.backend_mut().state, before);
 }
 #[test]
 fn unchanged_target_uses_readback_without_rewriting_os_settings() {
-    let mut owner = Owner {
-        backend: Memory::default(),
-        target: None,
-        rollback: None,
-    };
+    let mut owner = Owner::new(Memory::default());
     owner.apply(target()).unwrap();
-    let writes = owner.backend.writes;
+    let writes = owner.backend_mut().writes;
     owner.apply(target()).unwrap();
-    assert_eq!(owner.backend.writes, writes);
+    assert_eq!(owner.backend_mut().writes, writes);
 }
 #[tokio::test]
 async fn cleanup_runs_after_a_request_whose_waiter_was_dropped() {
-    let worker = Worker::new().unwrap();
+    let worker = Worker::new(None).unwrap();
     let (reply, receiver) = tokio::sync::oneshot::channel();
     worker
         .sender
         .send(Work {
-            request: Request::Apply(target()),
+            request: Request::Apply(target(), false),
             reply,
         })
         .await
@@ -248,13 +302,9 @@ fn persistence_failure_can_restore_the_external_os_checkpoint_after_successful_a
     backend.state.https.port = 8002;
     backend.state.socks.switched_on = false;
     let external = backend.state.clone();
-    let mut owner = Owner {
-        backend,
-        target: None,
-        rollback: None,
-    };
+    let mut owner = Owner::new(backend);
     owner.apply(target()).unwrap();
     owner.rollback().unwrap();
-    assert_eq!(owner.backend.state, external);
-    assert!(owner.target.is_none());
+    assert_eq!(owner.backend_mut().state, external);
+    assert!(owner.target().is_none());
 }

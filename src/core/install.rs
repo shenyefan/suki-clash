@@ -138,7 +138,7 @@ impl Recovery {
         }
         Ok(())
     }
-    pub(super) fn restore(self) -> Result<(), String> {
+    pub(super) fn restore(&self) -> Result<(), String> {
         if self.manifest.version != 2 || self.manifest.files.len() != 3 {
             return Err("内核恢复记录版本或文件数量无效".into());
         }

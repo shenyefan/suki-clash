@@ -74,7 +74,7 @@ impl Controller {
         &self.snapshot
     }
     pub(crate) fn is_busy(&self) -> bool {
-        self.pending.is_some() || self.snapshot.is_busy()
+        self.quitting.is_some() || self.pending.is_some() || self.snapshot.is_busy()
     }
 }
 struct Handle(Entity<Controller>);
@@ -363,11 +363,20 @@ fn install(service: Option<Service>, snapshot: Snapshot, cx: &mut App) {
         }
         this._quit = Some(cx.on_app_quit(move |this, cx| {
             let worker = this.service.as_mut().and_then(Service::shutdown);
-            cx.background_spawn(async move {
-                if let Some(worker) = worker {
-                    let _ = worker.join();
-                }
-            })
+            // GPUI gives returned futures only 200 ms. A native termination is
+            // already irreversible, so wait here with a hard deadline for the
+            // existing actor (which never needs the foreground executor).
+            // Interactive quit performs its cancellable preparation asynchronously.
+            if let Some(worker) = worker
+                && let Err(error) = wait_session_cleanup(worker, std::time::Duration::from_secs(3))
+            {
+                crate::integration::logs(cx).publish(crate::logging::Record::program(
+                    crate::logging::Level::Error,
+                    "core",
+                    &format!("系统结束清理未完成：{error}"),
+                ));
+            }
+            std::future::ready(())
         }));
     });
     cx.set_global(Handle(owner));
@@ -382,6 +391,9 @@ pub(crate) fn request(command: Command, window: &mut Window, cx: &mut App) {
 pub(crate) fn submit(command: Command, window: &mut Window, cx: &mut App) -> Result<u64, String> {
     let owner = controller(cx);
     let result = owner.update(cx, |this, cx| {
+        if this.quitting.is_some() {
+            return Err(super::ServiceError::Busy);
+        }
         let service = this.service.as_mut().ok_or(super::ServiceError::Closed)?;
         let id = service.submit(command)?;
         this.pending = Some(id);
@@ -404,13 +416,6 @@ pub(crate) fn submit(command: Command, window: &mut Window, cx: &mut App) -> Res
     })
 }
 
-pub(crate) fn ip_auto_refresh(enabled: bool, cx: &mut App) {
-    controller(cx).update(cx, |this, _| {
-        if let Some(service) = &this.service {
-            service.ip_auto_refresh(enabled);
-        }
-    });
-}
 pub(crate) fn refresh_ip(window: &mut Window, cx: &mut App) {
     let available = controller(cx).update(cx, |this, _| {
         if this.snapshot.phase != Phase::Ready {
@@ -444,69 +449,188 @@ pub(crate) fn execute(
 /// Explicit quit waits before calling GPUI quit (whose fallback cleanup budget
 /// is only 200 ms). Window-close and all application quit commands use this path.
 pub(crate) fn quit(cx: &mut App) {
-    finish(None, cx);
+    finish(Exit::Quit, cx);
+}
+pub(crate) fn restart_program(cx: &mut App) {
+    finish(Exit::Restart, cx);
 }
 pub(crate) fn reset_program(window: &mut Window, cx: &mut App) {
     let Some(paths) = crate::integration::paths(cx) else {
         crate::ui::show_error("无法确定应用配置目录".into(), window, cx);
         return;
     };
-    finish(Some(paths), cx);
+    finish(Exit::Reset(paths), cx);
 }
-fn finish(reset: Option<AppPaths>, cx: &mut App) {
-    let storage_worker = crate::integration::shutdown(cx);
+enum Exit {
+    Quit,
+    Restart,
+    Reset(AppPaths),
+}
+fn finish(exit: Exit, cx: &mut App) {
     let owner = controller(cx);
     owner.update(cx, |this, cx| {
         if this.quitting.is_some() {
             return;
         }
-        let worker = this.service.as_mut().and_then(Service::shutdown);
+        let preparation = this.service.as_mut().map(Service::prepare_exit).transpose();
         this.quitting = Some(cx.spawn(async move |owner, cx| {
-            let joined = cx
-                .background_spawn(async move {
-                    let storage_failed =
-                        storage_worker.is_some_and(|worker| worker.join().is_err());
-                    let core_result = match worker {
-                        Some(worker) => worker
-                            .join()
-                            .unwrap_or_else(|_| Err("内核清理线程异常退出".into())),
-                        None => Ok(()),
-                    };
-                    if storage_failed {
-                        Err(format!(
-                            "存储清理线程异常退出；内核清理结果：{core_result:?}"
-                        ))
-                    } else {
-                        core_result?;
-                        if let Some(paths) = reset {
-                            paths.reset_configuration()?;
-                        }
-                        Ok(())
+            let joined = async {
+                if let Some(reply) = preparation.map_err(|error| error.to_string())? {
+                    reply.recv().await.map_err(|_| "内核退出准备应答中断")??;
+                }
+                if let Some(flush) = cx
+                    .update(crate::integration::flush)
+                    .map_err(|error| error.to_string())?
+                {
+                    flush.receive().await.map_err(|error| error.to_string())?;
+                }
+                if let Exit::Reset(paths) = &exit {
+                    let paths = paths.clone();
+                    cx.background_spawn(async move {
+                        crate::desktop::autostart::reset_configuration(&paths)
+                    })
+                    .await?;
+                }
+                if let Exit::Restart = exit {
+                    // Resolve the executable before giving up instance ownership.
+                    let executable = cx
+                        .background_spawn(async {
+                            std::env::current_exe()
+                                .map_err(|error| format!("无法定位程序：{error}"))
+                        })
+                        .await?;
+                    let paths = cx
+                        .update(|cx| crate::integration::paths(cx))
+                        .ok_or("无法确定实例控制目录")?;
+                    let desktop_worker = cx.update(crate::desktop::shutdown);
+                    let replacement = cx
+                        .background_spawn(async move {
+                            let stopped = desktop_worker.map_or(Ok(()), |worker| {
+                                worker
+                                    .join()
+                                    .map_err(|_| "实例控制服务清理失败".to_string())
+                            });
+                            let spawned = stopped.and_then(|()| {
+                                std::process::Command::new(executable)
+                                    .spawn()
+                                    .map(|_| ())
+                                    .map_err(|error| format!("无法重新启动程序：{error}"))
+                            });
+                            match spawned {
+                                Ok(()) => Ok(None),
+                                Err(message) => {
+                                    match crate::desktop::instance::Service::acquire(&paths, None) {
+                                        Ok(crate::desktop::instance::Disposition::Primary(
+                                            service,
+                                        )) => Ok(Some((service, message))),
+                                        Ok(crate::desktop::instance::Disposition::Secondary) => {
+                                            Err(format!("{message}；实例控制已由另一进程接管"))
+                                        }
+                                        Err(recovery) => {
+                                            Err(format!("{message}；实例控制恢复失败：{recovery}"))
+                                        }
+                                    }
+                                }
+                            }
+                        })
+                        .await?;
+                    if let Some((service, error)) = replacement {
+                        cx.update(|cx| crate::desktop::recover(service, cx));
+                        return Err(error);
                     }
-                })
-                .await;
+                }
+                Ok::<_, String>(())
+            }
+            .await;
             if let Err(error) = joined {
-                let _ = owner.update(cx, |this, cx| {
-                    this.snapshot.phase = Phase::Failed;
-                    this.snapshot.error = Some(format!("退出清理未完成：{error}"));
-                    if let Some(task) = this.quitting.take() {
-                        task.detach();
-                    }
-                    cx.notify();
-                });
+                let window = owner
+                    .update(cx, |this, cx| {
+                        if let Some(task) = this.quitting.take() {
+                            task.detach();
+                        }
+                        cx.notify();
+                        this.notification_window
+                    })
+                    .ok()
+                    .flatten();
                 cx.update(|cx| {
                     crate::integration::announce("ERROR", format!("退出清理未完成：{error}"), cx);
-                    if let Some(window) = cx.active_window() {
+                    if let Some(window) = window.or_else(|| cx.active_window()) {
                         let _ = window.update(cx, |_, window, cx| {
+                            window.activate_window();
+                            cx.activate(true);
                             crate::ui::show_error(format!("退出清理未完成：{error}"), window, cx)
                         });
                     }
                 });
                 return;
             }
+            // All fallible preparation completed. Only now destroy owners.
+            let (core_worker, storage_worker, desktop_worker) = cx.update(|cx| {
+                let core_worker = controller(cx).update(cx, |this, _| {
+                    this.service.as_mut().and_then(Service::shutdown)
+                });
+                (
+                    core_worker,
+                    crate::integration::shutdown(cx),
+                    crate::desktop::shutdown(cx),
+                )
+            });
+            let logs = cx.update(|cx| crate::integration::logs(cx));
+            cx.background_spawn(async move {
+                let mut errors = Vec::new();
+                if let Some(worker) = core_worker {
+                    match worker.join() {
+                        Ok(Ok(())) => {}
+                        Ok(Err(error)) => errors.push(error),
+                        Err(_) => errors.push("内核执行线程异常退出".into()),
+                    }
+                }
+                if let Some(worker) = storage_worker
+                    && worker.join().is_err()
+                {
+                    errors.push("存储执行线程异常退出".into());
+                }
+                if let Some(worker) = desktop_worker
+                    && worker.join().is_err()
+                {
+                    errors.push("实例控制线程异常退出".into());
+                }
+                for error in errors {
+                    logs.publish(crate::logging::Record::program(
+                        crate::logging::Level::Error,
+                        "core",
+                        &error,
+                    ));
+                    eprintln!("{error}");
+                }
+            })
+            .await;
             cx.update(|cx| cx.quit());
         }));
     });
+}
+
+fn wait_session_cleanup(
+    worker: std::thread::JoinHandle<Result<(), String>>,
+    deadline: std::time::Duration,
+) -> Result<(), String> {
+    let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+    std::thread::Builder::new()
+        .name("suki-session-ending".into())
+        .spawn(move || {
+            let result = worker
+                .join()
+                .unwrap_or_else(|_| Err("内核清理线程异常退出".into()));
+            let _ = sender.send(result);
+        })
+        .map_err(|error| format!("无法等待内核清理：{error}"))?;
+    receiver
+        .recv_timeout(deadline)
+        .map_err(|error| match error {
+            std::sync::mpsc::RecvTimeoutError::Timeout => "已达到系统结束清理时限".to_string(),
+            std::sync::mpsc::RecvTimeoutError::Disconnected => "系统结束清理应答中断".to_string(),
+        })?
 }
 
 #[cfg(test)]
@@ -520,6 +644,33 @@ impl Controller {
         self.snapshot.settings.insert(key.into(), values);
         self.snapshot.revision = self.snapshot.revision.saturating_add(1);
         cx.notify();
+    }
+}
+
+#[cfg(test)]
+mod exit_tests {
+    use super::wait_session_cleanup;
+    use std::time::Duration;
+
+    #[test]
+    fn session_ending_preserves_cleanup_error() {
+        let worker = std::thread::spawn(|| Err("代理恢复拒绝".into()));
+        assert_eq!(
+            wait_session_cleanup(worker, Duration::from_secs(1)),
+            Err("代理恢复拒绝".into())
+        );
+    }
+
+    #[test]
+    fn session_ending_deadline_does_not_wait_for_stalled_cleanup() {
+        let (release, blocked) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let _ = blocked.recv();
+            Ok(())
+        });
+        let result = wait_session_cleanup(worker, Duration::from_millis(5));
+        release.send(()).unwrap();
+        assert_eq!(result, Err("已达到系统结束清理时限".into()));
     }
 }
 
@@ -543,7 +694,7 @@ mod startup_notice_tests {
         )
         .unwrap();
         cx.update(|cx| {
-            crate::integration::init(service, cx);
+            crate::integration::init(service, None, cx);
             gpui_kit::init(cx);
             cx.set_reduce_motion(true);
             super::controller(cx).update(cx, |owner, _| {

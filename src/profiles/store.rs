@@ -11,7 +11,87 @@ pub(super) fn key(overrides: bool) -> &'static str {
     }
 }
 pub(super) fn load(overrides: bool, cx: &gpui_kit::App) -> Option<(Vec<Document>, Option<u64>)> {
-    load_values(storage::read(key(overrides), cx))
+    let values = storage::read(key(overrides), cx);
+    // Only the lifecycle snapshot includes body files. The generic storage
+    // cache contains metadata and must never become an empty editor draft.
+    if values
+        .get("ids")?
+        .split(',')
+        .filter(|id| !id.is_empty())
+        .any(|id| !values.contains_key(&format!("{id}/content")))
+    {
+        return None;
+    }
+    load_values(values)
+}
+
+/// Read current body files into an immutable operation snapshot. The stored
+/// index contains metadata only; missing files are errors, never inline fallbacks.
+pub(crate) fn hydrate(
+    paths: &crate::storage::AppPaths,
+    overrides: bool,
+    values: &mut crate::storage::Values,
+) -> Result<(), String> {
+    if values.is_empty() {
+        return Ok(());
+    }
+    if values.keys().any(|key| key.ends_with("/content")) {
+        return Err("文档索引不得包含正文；正文只保存在文档文件".into());
+    }
+    let ids = values.get("ids").ok_or("文档索引缺少列表")?.clone();
+    for id in ids.split(',').filter(|id| !id.is_empty()) {
+        let id = id.parse::<u64>().map_err(|_| "文档 ID 无效")?;
+        if id == 0 {
+            return Err("文档 ID 无效".into());
+        }
+        let extension = match (
+            overrides,
+            values.get(&format!("{id}/kind")).map(String::as_str),
+        ) {
+            (false, Some("配置")) | (true, Some("YAML")) => "yaml",
+            (true, Some("JavaScript")) => "js",
+            _ => return Err("文档类型无效".into()),
+        };
+        let path = paths
+            .data()
+            .join(if overrides { "overrides" } else { "profiles" })
+            .join(format!("{id}.{extension}"));
+        let content = read_body(&path)?;
+        values.insert(format!("{id}/content"), content);
+    }
+    Ok(())
+}
+
+pub(crate) fn read_body(path: &std::path::Path) -> Result<String, String> {
+    use std::io::Read as _;
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|error| format!("无法读取文档 {}：{error}", path.display()))?;
+    if !metadata.is_file()
+        || metadata.file_type().is_symlink()
+        || metadata.len() > crate::configuration::INPUT_LIMIT
+    {
+        return Err(format!(
+            "文档不是普通文件或超过大小上限：{}",
+            path.display()
+        ));
+    }
+    let mut bytes = Vec::new();
+    fs::File::open(path)
+        .and_then(|file| {
+            file.take(crate::configuration::INPUT_LIMIT + 1)
+                .read_to_end(&mut bytes)
+        })
+        .map_err(|error| format!("无法读取文档 {}：{error}", path.display()))?;
+    if bytes.len() as u64 > crate::configuration::INPUT_LIMIT {
+        return Err(format!("文档超过大小上限：{}", path.display()));
+    }
+    String::from_utf8(bytes).map_err(|_| format!("文档不是 UTF-8：{}", path.display()))
+}
+
+pub(crate) fn metadata_values(documents: &[Document]) -> BTreeMap<String, String> {
+    let mut metadata = values(documents, None);
+    metadata.retain(|key, _| !key.ends_with("/content"));
+    metadata
 }
 pub(crate) fn load_values(
     values: BTreeMap<String, String>,

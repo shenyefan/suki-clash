@@ -45,6 +45,7 @@ impl Actor {
     }
     pub(super) async fn profiles(&mut self, command: ProfileCommand) -> Result<(), String> {
         self.snapshot.operation_module = Some("profiles");
+        self.snapshot.operation_committed = false;
         if let ProfileCommand::Restore { ids } = command {
             return self.restore_profiles(ids).await;
         }
@@ -117,13 +118,17 @@ impl Actor {
         }
         let mut errors = Vec::new();
         // Credentials are read only for downloads or changed fields, never for rendering.
+        let vault = crate::profiles::CredentialStore::new(&self.paths);
         let mut secrets = BTreeMap::new();
+        let mut previous_secrets = BTreeMap::new();
         for document in &mut documents {
-            if !document.token.is_empty() || !document.age_key.is_empty() {
-                secrets.insert(
-                    document.id,
-                    (document.token.clone(), document.age_key.clone()),
-                );
+            if document.credentials.changed() {
+                let previous = vault.read(document.id).await?;
+                let resolved = document.credentials.resolve(previous.clone());
+                document.token.clone_from(&resolved.0);
+                document.age_key.clone_from(&resolved.1);
+                previous_secrets.insert(document.id, previous);
+                secrets.insert(document.id, resolved);
             }
             let initial = !old.iter().any(|doc| doc.id == document.id);
             if document.is_remote() && document.content.is_empty() {
@@ -131,13 +136,14 @@ impl Actor {
             }
             repository::validate(document)?;
         }
-        let selection = if selected.is_some_and(|id| !documents.iter().any(|doc| doc.id == id)) {
+        let selection = if (old.is_empty() && selected.is_none())
+            || selected.is_some_and(|id| !documents.iter().any(|doc| doc.id == id))
+        {
             documents.first().map(|doc| doc.id)
         } else {
             selected
         };
         // Save credentials before committing a record that depends on them; restore on failure.
-        let vault = crate::profiles::CredentialStore::new(&self.paths);
         let mut removed = Vec::new();
         let repository = crate::storage::Repository::open(self.paths.clone())
             .map_err(|_| "无法读取订阅恢复材料")?;
@@ -159,10 +165,6 @@ impl Actor {
                 credentials: vault.read(document.id).await?,
             });
         }
-        let mut previous_secrets = BTreeMap::new();
-        for id in secrets.keys() {
-            previous_secrets.insert(*id, vault.read(*id).await?);
-        }
         for (id, (token, age)) in &secrets {
             if let Err(error) = vault.write(*id, token, age).await {
                 return Err(match vault.restore(previous_secrets).await {
@@ -178,6 +180,7 @@ impl Actor {
                 Err(recovery) => format!("{error}；{recovery}"),
             });
         } else {
+            self.snapshot.operation_committed = true;
             for entry in removed {
                 self.deleted_profiles.insert(entry.document.id, entry);
             }
@@ -355,17 +358,16 @@ impl Actor {
         if self.transfer.is_some() {
             return Err("已有下载正在执行".into());
         }
-        if document.token.is_empty() && document.age_key.is_empty() {
-            let (token, age) = (if document.kind == crate::profiles::model::DocumentKind::Profile {
-                crate::profiles::CredentialStore::new(&self.paths)
-            } else {
-                crate::profiles::CredentialStore::overrides(&self.paths)
-            })
-            .read(document.id)
-            .await?;
-            document.token = token;
-            document.age_key = age;
-        }
+        let saved = (if document.kind == crate::profiles::model::DocumentKind::Profile {
+            crate::profiles::CredentialStore::new(&self.paths)
+        } else {
+            crate::profiles::CredentialStore::overrides(&self.paths)
+        })
+        .read(document.id)
+        .await?;
+        let (token, age) = document.credentials.resolve(saved);
+        document.token = token;
+        document.age_key = age;
         let preferences =
             crate::storage::Repository::open(self.paths.clone()).map_err(|_| "无法读取下载设置")?;
         let settings =
@@ -490,8 +492,22 @@ impl Actor {
         let previous: serde_yaml_ng::Value =
             serde_yaml_ng::from_str(&running.launch.composed).map_err(|_| "旧内核配置无效")?;
         candidate.reuse_control(&running.launch).await?;
-        let candidate = self.validate(candidate).await?;
+        let mut candidate = self.validate(candidate).await?;
+        if candidate.privileged_network()?
+            && self
+                .running
+                .as_ref()
+                .is_some_and(|running| !running.is_service())
+            && super::privileged::tun_service_required().await?
+        {
+            candidate.force_service = true;
+            return self.replace_committing(candidate, commit).await;
+        }
         let yaml = candidate.yaml().await?;
+        let reload = match self.prepare_reload(&candidate).await? {
+            Some(path) => path,
+            None => return self.replace_committing(candidate, commit).await,
+        };
         let expected: serde_yaml_ng::Value =
             serde_yaml_ng::from_str(&candidate.composed).map_err(|_| "候选内核配置无效")?;
         if let Some(settings) = self
@@ -505,8 +521,9 @@ impl Actor {
         }
         self.invalidate_monitor();
         let result = async {
-            client.reload(&yaml).await?;
+            self.reload_prepared(&reload, &yaml).await?;
             client.verify_listeners(&expected).await?;
+            self.snapshot.tun = Some(client.verify_tun(&expected).await?);
             commit()?;
             self.running
                 .as_mut()
@@ -518,8 +535,13 @@ impl Actor {
         .await;
         if let Err(error) = result {
             let restored = async {
-                client.reload(&previous_yaml).await?;
+                self.reload_launch(
+                    &self.running.as_ref().ok_or("旧内核不存在")?.launch,
+                    &previous_yaml,
+                )
+                .await?;
                 client.verify_listeners(&previous).await?;
+                self.snapshot.tun = Some(client.verify_tun(&previous).await?);
                 Ok::<(), String>(())
             }
             .await;
@@ -531,11 +553,7 @@ impl Actor {
                 }
             };
         }
-        if let Err(error) = self
-            .restore_proxy_selections()
-            .await
-            .and(self.restore_chain_selection().await)
-        {
+        if let Err(error) = self.restore_all_selections().await {
             self.runtime_warning = Some(format!("节点选择恢复失败：{error}"));
         }
         self.snapshot.proxy_names.clear();

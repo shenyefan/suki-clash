@@ -289,7 +289,7 @@ mod tests {
         ));
         cx.update(|cx| {
             gpui_kit::init(cx);
-            crate::integration::init(service, cx);
+            crate::integration::init(service, None, cx);
             cx.set_reduce_motion(true);
         });
         let (handle, page) = cx.update(|cx| {

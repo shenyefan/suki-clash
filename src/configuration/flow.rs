@@ -216,13 +216,6 @@ pub(crate) fn apply_settings(
         let document = sniffer_document(&sniffer)?;
         config.insert("sniffer".into(), document);
     }
-    let tun = read_settings(paths, staged, SettingsKind::Tun)?;
-    if tun
-        .get("IsTunEnabled")
-        .is_some_and(|enabled| enabled == "true")
-    {
-        return Err("虚拟网卡设置已启用，但平台执行尚未接入".into());
-    }
     Ok(())
 }
 
@@ -349,9 +342,9 @@ pub(crate) fn validate_settings(kind: SettingsKind, values: &Values) -> Result<(
             if let Some(listen) = dns.get("listen")
                 && !listen
                     .as_str()
-                    .is_some_and(|text| text.parse::<std::net::SocketAddr>().is_ok())
+                    .is_some_and(preferences::schema::valid_dns_listen)
             {
-                return Err("DNS 监听地址需包含 IP 和端口".into());
+                return Err("DNS 监听地址无效，例如 :53、127.0.0.1:53".into());
             }
             if !dns
                 .get("nameserver")
@@ -461,6 +454,40 @@ pub(crate) fn validate_settings(kind: SettingsKind, values: &Values) -> Result<(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn dns_listen_form_and_yaml_accept_kernel_wildcard_and_ip_forms() {
+        for listen in [
+            ":53",
+            "0.0.0.0:1053",
+            "127.0.0.1:53",
+            "[::]:53",
+            "[::1]:1053",
+        ] {
+            let mut values = preferences::defaults(SettingsKind::Dns);
+            values.insert("DnsOverrideEnabled".into(), "true".into());
+            values.insert("DnsEnabled".into(), "true".into());
+            values.insert("DnsListen".into(), listen.into());
+            validate_settings(SettingsKind::Dns, &values).unwrap();
+            values.insert(
+                "DnsYaml".into(),
+                format!("dns: {{enable: true, listen: '{listen}', nameserver: ['1.1.1.1']}}"),
+            );
+            validate_settings(SettingsKind::Dns, &values).unwrap();
+        }
+        for listen in [
+            "",
+            ":",
+            ":65536",
+            ":-1",
+            ":+53",
+            "127.0.0.1",
+            "::1:53",
+            "[::1]:65536",
+        ] {
+            assert!(!preferences::schema::valid_dns_listen(listen), "{listen}");
+        }
+    }
+
     #[test]
     fn sniffer_form_keeps_unknown_protocol_fields_and_uses_native_port_types() {
         let mut values = preferences::defaults(SettingsKind::Sniffer);

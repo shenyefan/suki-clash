@@ -1,6 +1,58 @@
 //! Subscription secrets never enter the metadata document, logs, or process arguments.
 use crate::storage::AppPaths;
 use sha2::{Digest as _, Sha256};
+
+#[derive(Clone, Default, PartialEq, Eq)]
+pub(crate) enum SecretEdit {
+    #[default]
+    Keep,
+    Replace(String),
+    Clear,
+}
+impl std::fmt::Debug for SecretEdit {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::Keep => "Keep",
+            Self::Replace(_) => "Replace",
+            Self::Clear => "Clear",
+        })
+    }
+}
+impl SecretEdit {
+    fn resolve(&self, previous: String) -> String {
+        match self {
+            Self::Keep => previous,
+            Self::Replace(value) => value.clone(),
+            Self::Clear => String::new(),
+        }
+    }
+}
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct CredentialEdits {
+    pub(crate) token: SecretEdit,
+    pub(crate) age: SecretEdit,
+}
+impl CredentialEdits {
+    pub(crate) fn from_inputs(token: &str, age: &str) -> Self {
+        let edit = |value: &str| {
+            if value.is_empty() {
+                SecretEdit::Keep
+            } else {
+                SecretEdit::Replace(value.to_owned())
+            }
+        };
+        Self {
+            token: edit(token),
+            age: edit(age),
+        }
+    }
+    pub(crate) fn changed(&self) -> bool {
+        self.token != SecretEdit::Keep || self.age != SecretEdit::Keep
+    }
+    pub(crate) fn resolve(&self, previous: (String, String)) -> (String, String) {
+        (self.token.resolve(previous.0), self.age.resolve(previous.1))
+    }
+}
 pub(crate) struct CredentialStore {
     service: String,
 }
@@ -16,6 +68,11 @@ impl CredentialStore {
             ),
         }
     }
+    pub(crate) fn gist(paths: &AppPaths) -> Self {
+        let mut store = Self::new(paths);
+        store.service = store.service.replace(".profiles.", ".gist.");
+        store
+    }
     pub(crate) fn overrides(paths: &AppPaths) -> Self {
         let mut store = Self::new(paths);
         store.service = store.service.replace(".profiles.", ".overrides.");
@@ -28,9 +85,9 @@ impl CredentialStore {
                 &self.service,
                 &id.to_string(),
             ) {
-                Ok(bytes) => serde_json::from_slice(&bytes).map_err(|_| "订阅凭据格式无效".into()),
+                Ok(bytes) => serde_json::from_slice(&bytes).map_err(|_| "安全凭据格式无效".into()),
                 Err(error) if error.code() == -25300 => Ok((String::new(), String::new())),
-                Err(_) => Err("无法读取订阅钥匙串凭据".into()),
+                Err(_) => Err("无法读取钥匙串凭据".into()),
             }
         }
         #[cfg(all(windows, not(test)))]
@@ -43,8 +100,13 @@ impl CredentialStore {
         }
         #[cfg(test)]
         {
-            let _ = (&self.service, id);
-            Ok((String::new(), String::new()))
+            Ok(test_vault()
+                .lock()
+                .map_err(|_| "隔离凭据存储不可用")?
+                .entries
+                .get(&(self.service.clone(), id))
+                .cloned()
+                .unwrap_or_default())
         }
     }
     pub(crate) async fn write(&self, id: u64, token: &str, age: &str) -> Result<(), String> {
@@ -53,13 +115,13 @@ impl CredentialStore {
         }
         #[cfg(all(target_os = "macos", not(test)))]
         {
-            let bytes = serde_json::to_vec(&(token, age)).map_err(|_| "无法编码订阅凭据")?;
+            let bytes = serde_json::to_vec(&(token, age)).map_err(|_| "无法编码安全凭据")?;
             security_framework::passwords::set_generic_password(
                 &self.service,
                 &id.to_string(),
                 &bytes,
             )
-            .map_err(|_| "无法保存订阅钥匙串凭据".into())
+            .map_err(|_| "无法保存钥匙串凭据".into())
         }
         #[cfg(all(windows, not(test)))]
         {
@@ -71,12 +133,15 @@ impl CredentialStore {
         }
         #[cfg(test)]
         {
-            let _ = (&self.service, id);
-            if token.is_empty() && age.is_empty() {
-                Ok(())
-            } else {
-                Err("当前平台尚未接入订阅凭据安全存储".into())
-            }
+            test_vault()
+                .lock()
+                .map_err(|_| "隔离凭据存储不可用")?
+                .entries
+                .insert(
+                    (self.service.clone(), id),
+                    (token.to_owned(), age.to_owned()),
+                );
+            Ok(())
         }
     }
     pub(crate) async fn restore(
@@ -104,7 +169,7 @@ impl CredentialStore {
             ) {
                 Ok(()) => Ok(()),
                 Err(error) if error.code() == -25300 => Ok(()),
-                Err(_) => Err("无法删除订阅钥匙串凭据".into()),
+                Err(_) => Err("无法删除钥匙串凭据".into()),
             }
         }
         #[cfg(all(windows, not(test)))]
@@ -117,9 +182,22 @@ impl CredentialStore {
         }
         #[cfg(test)]
         {
-            let _ = (&self.service, id);
+            let mut store = test_vault().lock().map_err(|_| "隔离凭据存储不可用")?;
+            let key = (self.service.clone(), id);
+            if store.failed_deletes.remove(&key) {
+                return Err("隔离凭据清理失败".into());
+            }
+            store.entries.remove(&key);
             Ok(())
         }
+    }
+    #[cfg(test)]
+    pub(crate) fn fail_next_delete(&self, id: u64) {
+        test_vault()
+            .lock()
+            .unwrap()
+            .failed_deletes
+            .insert((self.service.clone(), id));
     }
 }
 
@@ -129,3 +207,15 @@ mod linux;
 #[cfg(all(windows, not(test)))]
 #[path = "credentials_windows.rs"]
 mod windows;
+
+#[cfg(test)]
+#[derive(Default)]
+struct TestVault {
+    entries: std::collections::BTreeMap<(String, u64), (String, String)>,
+    failed_deletes: std::collections::BTreeSet<(String, u64)>,
+}
+#[cfg(test)]
+fn test_vault() -> &'static std::sync::Mutex<TestVault> {
+    static VAULT: std::sync::OnceLock<std::sync::Mutex<TestVault>> = std::sync::OnceLock::new();
+    VAULT.get_or_init(Default::default)
+}

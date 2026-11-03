@@ -25,6 +25,82 @@ fn bytes(value: u64) -> String {
     format!("{number:.1} {}", units[unit])
 }
 impl Overview {
+    fn system_card(&self, cx: &App) -> Div {
+        let core = self.session.read(cx).core();
+        let uptime = self.started.elapsed().as_secs();
+        let status = if core.service_mode() {
+            "后台服务"
+        } else if core.has_process() {
+            "子进程"
+        } else {
+            "未运行"
+        };
+        let info = self.system.clone();
+        let details = format!(
+            "应用版本：{}\n操作系统：{}\n架构：{}\n主机：{}\n权限：{}\n内核版本：{}\n内核运行方式：{status}\n服务：{}\n自启动：{}\n运行时长：{:02}:{:02}:{:02}",
+            env!("CARGO_PKG_VERSION"),
+            info.as_ref().map(|i| i.os.as_str()).unwrap_or("读取中"),
+            info.as_ref()
+                .map(|i| i.architecture.as_str())
+                .unwrap_or("—"),
+            info.as_ref().map(|i| i.hostname.as_str()).unwrap_or("—"),
+            info.as_ref()
+                .map(|i| match &i.elevated {
+                    Ok(true) => "管理员".into(),
+                    Ok(false) => "普通用户".into(),
+                    Err(e) => e.clone(),
+                })
+                .unwrap_or_else(|| "读取中".into()),
+            core.version().unwrap_or("—"),
+            core.service_state().label(),
+            info.as_ref()
+                .map(|i| match &i.autostart {
+                    Ok(true) => "开启".into(),
+                    Ok(false) => "关闭".into(),
+                    Err(e) => e.clone(),
+                })
+                .unwrap_or_else(|| "读取中".into()),
+            uptime / 3600,
+            uptime / 60 % 60,
+            uptime % 60
+        );
+        ui::surface(cx)
+            .p(space::LG)
+            .gap(space::SM)
+            .child(
+                h_flex().justify_between().child("系统信息").child(
+                    ui::icon_button(
+                        "system-information",
+                        gpui_kit::assets::IconName::Info,
+                        "系统信息详情",
+                    )
+                    .on_click(move |_, window, cx| {
+                        ui::detail_dialog("系统信息", details.clone(), window, cx)
+                    }),
+                ),
+            )
+            .child(ui::muted(
+                self.system
+                    .as_ref()
+                    .map(|info| format!("{} · {}", info.os, info.architecture))
+                    .unwrap_or_else(|| "读取中".into()),
+                cx,
+            ))
+            .child(
+                h_flex()
+                    .justify_between()
+                    .child(format!("内核：{} · {status}", core.label()))
+                    .child(ui::muted(
+                        format!(
+                            "运行 {:02}:{:02}:{:02}",
+                            uptime / 3600,
+                            uptime / 60 % 60,
+                            uptime % 60
+                        ),
+                        cx,
+                    )),
+            )
+    }
     fn empty_plot(id: &'static str, message: &'static str, cx: &App) -> impl IntoElement + Styled {
         let plot = div().id(id);
         #[cfg(test)]
@@ -425,16 +501,85 @@ impl Render for Overview {
         let state = self.session.read(cx);
         let profile = state.profile_name().unwrap_or("未选择配置").to_owned();
         let runtime = state.runtime();
-        let node = runtime
+        let profile_id = state.active_profile_id();
+        let preferences = state.core().proxy_preferences.profile(profile_id);
+        let group = runtime
             .mode
-            .and_then(|mode| runtime.proxies.current_node(mode))
-            .unwrap_or("—")
-            .to_owned();
-        let quick_test = runtime.mode.and_then(|mode| {
+            .and_then(|mode| preferences.group(&runtime.proxies, mode))
+            .map(str::to_owned);
+        let node = if runtime.mode == Some(crate::session::ProxyMode::Direct) {
+            "DIRECT"
+        } else {
+            group
+                .as_deref()
+                .and_then(|group| runtime.proxies.current_node_in(group))
+                .unwrap_or("—")
+        }
+        .to_owned();
+        let quick_test = group.as_deref().and_then(|group| {
+            let node = runtime.proxies.selected(group)?;
             runtime
                 .proxies
-                .current_test(mode, runtime.generation, runtime.epoch)
+                .testable(group, node)
+                .then(|| crate::proxies::runtime::Test {
+                    group: Some(group.to_owned()),
+                    node: Some(node.to_owned()),
+                    urls: preferences.test_urls.clone(),
+                    generation: runtime.generation,
+                    epoch: runtime.epoch,
+                })
         });
+        let groups = runtime
+            .proxies
+            .order
+            .iter()
+            .filter(|name| {
+                name.as_str() != "GLOBAL"
+                    && runtime.proxies.entries.get(*name).is_some_and(|p| {
+                        !p.hidden && matches!(p.kind.as_str(), "Selector" | "URLTest")
+                    })
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        let choose_group = {
+            use gpui_kit::component::{
+                button::{Button, ButtonVariants},
+                menu::DropdownMenu,
+            };
+            Button::new("dashboard-proxy-group")
+                .ghost()
+                .small()
+                .label(group.clone().unwrap_or_else(|| "代理组".into()))
+                .icon(gpui_kit::assets::IconName::ChevronDown)
+                .accessibility_label("选择仪表盘代理组")
+                .disabled(
+                    runtime.mode != Some(crate::session::ProxyMode::Rule) || groups.is_empty(),
+                )
+                .dropdown_menu(move |mut menu, _, _| {
+                    for name in &groups {
+                        let selected = group.as_ref() == Some(name);
+                        let name = name.clone();
+                        menu = menu.item(
+                            crate::ui::actions::menu(name.clone())
+                                .checked(selected)
+                                .on_click(move |_, window, cx| {
+                                    crate::core::request(
+                                        crate::core::Command::ProxyPreferences {
+                                            profile: profile_id,
+                                            change:
+                                                crate::proxies::preferences::Change::DashboardGroup(
+                                                    name.clone(),
+                                                ),
+                                        },
+                                        window,
+                                        cx,
+                                    );
+                                }),
+                        );
+                    }
+                    menu
+                })
+        };
         ui::workspace()
             .child(ui::workspace_header("仪表盘", "", cx))
             .child(
@@ -455,6 +600,7 @@ impl Render for Overview {
                                             .flex_1()
                                             .min_w(space::NONE)
                                             .gap(space::SM)
+                                            .child(choose_group)
                                             .child(Self::context("策略节点", node, cx))
                                             .child({
                                                 use gpui_kit::component::button::{
@@ -489,15 +635,20 @@ impl Render for Overview {
                                                             "ip-auto-refresh",
                                                         )
                                                         .small()
-                                                        .checked(self.ip_auto_refresh)
+                                                        .checked(runtime.ip_auto_refresh == Some(true))
+                                                        .disabled(runtime.ip_auto_refresh.is_none() || state.core_busy())
                                                         .accessibility_label("自动刷新出口 IP")
                                                         .on_change(cx.listener(
-                                                            |this, enabled, _, cx| {
-                                                                this.ip_auto_refresh = *enabled;
-                                                                crate::core::ip_auto_refresh(
-                                                                    *enabled, cx,
+                                                            |_, enabled: &bool, window, cx| {
+                                                                let _ = crate::core::execute(
+                                                                    crate::core::Command::Settings {
+                                                                        kind: crate::preferences::SettingsKind::General,
+                                                                        patch: crate::storage::Values::from([("IpAutoRefresh".into(), enabled.to_string())]),
+                                                                    },
+                                                                    window,
+                                                                    cx,
+                                                                    |_, _, _| {},
                                                                 );
-                                                                cx.notify();
                                                             },
                                                         )),
                                                     )
@@ -563,6 +714,9 @@ impl Render for Overview {
                                                     cx,
                                                 ))
                                                 .child(ui::muted(info.organization.clone(), cx))
+                                                .when(!info.timezone.is_empty(), |view| {
+                                                    view.child(ui::muted(format!("时区：{}", info.timezone), cx))
+                                                })
                                                 .when_some(
                                                     info.latitude_microdegrees
                                                         .zip(info.longitude_microdegrees),
@@ -624,7 +778,8 @@ impl Render for Overview {
                                             .min_w(space::NONE)
                                             .gap(space::LG)
                                             .child(self.connections_card(cx))
-                                            .child(self.totals_card(cx)),
+                                            .child(self.totals_card(cx))
+                                            .child(self.system_card(cx)),
                                     )
                                     .child(
                                         v_flex()

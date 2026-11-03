@@ -13,6 +13,7 @@ pub(crate) fn read(paths: &AppPaths) -> Result<(Values, Vec<Document>), String> 
     let mut values = repository
         .read_limited(&namespace()?, crate::configuration::INPUT_LIMIT)
         .map_err(|_| "无法读取订阅索引")?;
+    store::hydrate(paths, false, &mut values)?;
     let documents = decode(&values)?;
     values.remove("active");
     if let Some(id) = crate::configuration::selected_profile(paths)? {
@@ -176,7 +177,7 @@ pub(crate) fn commit(
         }
     }
     let repository = Repository::open(paths.clone()).map_err(|_| "无法打开订阅存储")?;
-    let values = store::values(new, None);
+    let values = store::metadata_values(new);
     if serde_json::to_vec(&values)
         .map_err(|_| "无法编码订阅")?
         .len() as u64
@@ -185,8 +186,14 @@ pub(crate) fn commit(
         return Err("订阅索引超过大小上限".into());
     }
     for document in new {
-        atomic_write(&body_path(paths, document.id), document.content.as_bytes())
-            .map_err(|_| "订阅文件保存失败")?;
+        if old
+            .iter()
+            .find(|old| old.id == document.id)
+            .is_none_or(|old| old.content != document.content)
+        {
+            atomic_write(&body_path(paths, document.id), document.content.as_bytes())
+                .map_err(|_| "订阅文件保存失败")?;
+        }
     }
     repository
         .save(&namespace()?, &values)
@@ -206,5 +213,78 @@ pub(crate) fn commit(
             }
         }
     }
-    Ok(values)
+    Ok(store::values(new, selection))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn external_body_is_the_only_source_and_metadata_edits_do_not_rewrite_it() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = AppPaths::isolated(root.path());
+        let repository = Repository::open(paths.clone()).unwrap();
+        let mut document = Document::new(7, DocumentKind::Profile);
+        document.name = "local".into();
+        document.content = "mode: rule\n".into();
+        commit(&paths, &[], &[document], None).unwrap();
+        assert!(
+            !repository
+                .read(&namespace().unwrap())
+                .unwrap()
+                .contains_key("7/content")
+        );
+        let body = body_path(&paths, 7);
+        atomic_write(&body, b"mode: direct\n").unwrap();
+        let (revision, old) = read(&paths).unwrap();
+        assert_eq!(revision["7/content"], "mode: direct\n");
+        assert_eq!(
+            crate::configuration::Source::from_profile(&paths, 7)
+                .unwrap()
+                .content(),
+            b"mode: direct\n"
+        );
+        let mut renamed = old.clone();
+        renamed[0].name = "renamed".into();
+        // A metadata-only commit must not export its earlier body snapshot back
+        // over a file saved by the external editor.
+        atomic_write(&body, b"mode: global\n").unwrap();
+        commit(&paths, &old, &renamed, None).unwrap();
+        assert_eq!(std::fs::read(&body).unwrap(), b"mode: global\n");
+        assert_eq!(read(&paths).unwrap().1[0].name, "renamed");
+        let mut metadata = repository.read(&namespace().unwrap()).unwrap();
+        metadata.insert("ids".into(), "7,8".into());
+        metadata.insert("8/kind".into(), "配置".into());
+        metadata.insert("8/name".into(), "missing unrelated body".into());
+        repository.save(&namespace().unwrap(), &metadata).unwrap();
+        assert_eq!(
+            crate::configuration::Source::from_profile(&paths, 7)
+                .unwrap()
+                .content(),
+            b"mode: global\n"
+        );
+        std::fs::remove_file(&body).unwrap();
+        assert!(read(&paths).err().unwrap().contains("7.yaml"));
+    }
+
+    #[test]
+    fn inline_index_content_is_rejected_instead_of_used_as_a_fallback() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = AppPaths::isolated(root.path());
+        let repository = Repository::open(paths.clone()).unwrap();
+        repository
+            .save(
+                &namespace().unwrap(),
+                &Values::from([
+                    ("format".into(), "1".into()),
+                    ("ids".into(), "7".into()),
+                    ("7/kind".into(), "配置".into()),
+                    ("7/content".into(), "mode: rule".into()),
+                ]),
+            )
+            .unwrap();
+        assert!(read(&paths).err().unwrap().contains("索引不得包含正文"));
+        assert!(!body_path(&paths, 7).exists());
+    }
 }

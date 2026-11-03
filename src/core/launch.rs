@@ -13,6 +13,7 @@ use tokio::process::Command;
 const SOURCE_LIMIT: u64 = configuration::INPUT_LIMIT;
 
 pub(super) struct Launch {
+    pub(super) force_service: bool,
     executable: PathBuf,
     work_dir: PathBuf,
     config: PathBuf,
@@ -36,6 +37,38 @@ struct Composition {
 }
 
 impl Launch {
+    pub(super) fn tun_enabled(&self) -> Result<bool, String> {
+        let value: Value = serde_yaml_ng::from_str(&self.composed).map_err(|_| "运行配置无效")?;
+        configuration::tun::enabled(&value)
+    }
+    pub(super) fn privileged_network(&self) -> Result<bool, String> {
+        let config: Value = serde_yaml_ng::from_str(&self.composed).map_err(|_| "运行配置无效")?;
+        Ok(self.tun_enabled()?
+            || (cfg!(target_os = "linux")
+                && ["tproxy-port", "routing-mark"].iter().any(|key| {
+                    config
+                        .get(*key)
+                        .and_then(Value::as_u64)
+                        .is_some_and(|value| value > 0)
+                })))
+    }
+    pub(super) async fn service_bundle(&self) -> Result<suki_service::RuntimeBundle, String> {
+        let core = suki_service::service_paths()
+            .map_err(|error| error.to_string())?
+            .core_dir()
+            .join(crate::bootstrap::core_name());
+        super::runtime_bundle::collect_runtime_bundle_from(&self.config, &core, &self.work_dir)
+            .await
+            .map_err(|error| error.to_string())
+    }
+    pub(super) fn service_endpoint(&mut self, identity: &suki_service::OwnerIdentity) {
+        let path = suki_service::mihomo_ipc_path(identity);
+        #[cfg(unix)]
+        let endpoint = Endpoint::Unix(path.into());
+        #[cfg(windows)]
+        let endpoint = Endpoint::Pipe(path);
+        self.client.set_endpoint(endpoint);
+    }
     pub(super) fn redactions(&self) -> Vec<String> {
         fn collect(value: &Value, secrets: &mut Vec<String>) {
             match value {
@@ -211,6 +244,7 @@ impl Launch {
         let yaml = serde_yaml_ng::to_string(&candidate).map_err(|_| "无法编码热更新配置")?;
         crate::storage::atomic_write(&self.config, yaml.as_bytes())
             .map_err(|_| "无法写入热更新配置")?;
+        self.force_service = previous.force_service;
         self.client = previous.client.clone();
         Ok(())
     }
@@ -308,17 +342,13 @@ impl Launch {
             crate::bootstrap::require_core(paths)?;
             work_dir.join(crate::bootstrap::core_name())
         };
-        // Read one atomically committed index: its inline content and saved ID
-        // order are authoritative, rather than separately exported editor files.
-        // All I/O and composition run on the existing lifecycle worker.
+        // Metadata supplies order and scope; current body files are the sole
+        // content source. All I/O runs on the existing lifecycle worker.
         let repository = Repository::open(paths.clone()).map_err(|_| "无法打开配置来源存储")?;
-        let namespace = Namespace::parse("override-index").map_err(|_| "覆写存储名称无效")?;
         let overrides = if let Some(overrides) = options.overrides {
             overrides
         } else if apply_overrides {
-            repository
-                .read_limited(&namespace, SOURCE_LIMIT)
-                .map_err(|_| "无法读取覆写索引，文件损坏或超过 8 MiB 限制")?
+            crate::profiles::override_repository::read(paths)?.0
         } else {
             Default::default()
         };
@@ -402,11 +432,20 @@ impl Launch {
             options.flow.as_ref(),
             mapped.as_mapping_mut().ok_or("合成结果必须为对象")?,
         )?;
+        configuration::tun::prepare(mapped.as_mapping_mut().ok_or("合成结果必须为对象")?)?;
         let chain = match options.chain {
             Some(chain) => chain,
             None => crate::proxies::chain_config::Config::load(paths)?,
         };
-        chain.apply(mapped.as_mapping_mut().ok_or("合成结果必须为对象")?)?;
+        chain.apply_from(
+            mapped.as_mapping_mut().ok_or("合成结果必须为对象")?,
+            &work_dir,
+        )?;
+        super::runtime_bundle::resolve_provider_path_conflicts(
+            mapped.as_mapping_mut().ok_or("运行配置无效")?,
+            &work_dir,
+        )
+        .map_err(|error| error.to_string())?;
         let composed = serde_yaml_ng::to_string(&mapped).map_err(|_| "无法合成应用内核设置")?;
         let directory = tempfile::Builder::new()
             .prefix("run-")
@@ -456,6 +495,7 @@ impl Launch {
         // This runs on the application's core worker, never on GPUI's UI thread.
         crate::storage::atomic_write(&config, yaml.as_bytes()).map_err(|_| "写入候选配置失败")?;
         Ok(Self {
+            force_service: false,
             executable,
             work_dir,
             config,
@@ -538,11 +578,6 @@ fn protected_with_preferences(
             if let Some(enabled) = value.get("enable") {
                 match enabled.as_bool() {
                     Some(false) => {}
-                    Some(true) if key == "tun" => {
-                        return Err(format!(
-                            "{label} 平台执行尚未接入，不能启动启用了 {label} 的配置"
-                        ));
-                    }
                     Some(true) => {}
                     None => return Err(format!("{label} enable 必须是布尔值")),
                 }
@@ -553,7 +588,7 @@ fn protected_with_preferences(
     for key in ["redir-port", "tproxy-port", "routing-mark"] {
         if owned.is_some()
             && ((key == "redir-port" && cfg!(unix))
-                || (key == "tproxy-port" && cfg!(target_os = "linux")))
+                || (matches!(key, "tproxy-port" | "routing-mark") && cfg!(target_os = "linux")))
         {
             continue;
         }
@@ -564,8 +599,8 @@ fn protected_with_preferences(
             return Err(format!("{key} 尚未接入平台恢复流程"));
         }
     }
-    if config.contains_key("listeners") || config.contains_key("iptables") {
-        return Err("额外入站与路由集成尚未接入".into());
+    if config.contains_key("iptables") {
+        return Err("iptables 不是内核配置字段；自动路由请使用虚拟网卡自动路由".into());
     }
     for key in [
         "external-controller",
@@ -609,10 +644,7 @@ fn protected_with_preferences(
         .and_then(Value::as_bool)
         .unwrap_or(false);
     config.insert(Value::String("allow-lan".into()), Value::Bool(lan));
-    config.insert(
-        Value::String("bind-address".into()),
-        Value::String(if lan { "*" } else { "127.0.0.1" }.into()),
-    );
+    configuration::ensure_lan_bind_address(&mut config);
     serde_yaml_ng::to_string(&config).map_err(|_| "无法生成候选配置".into())
 }
 
@@ -667,6 +699,26 @@ fn current_user_pipe_sddl() -> io::Result<String> {
 mod tests {
     use super::protected_config;
     #[test]
+    fn final_control_protection_keeps_custom_bindings() {
+        for allow_lan in [false, true] {
+            for binding in ["192.168.1.2", "2001:db8::10"] {
+                let owned =
+                    serde_yaml_ng::Mapping::from_iter([("allow-lan".into(), allow_lan.into())]);
+                let output = super::protected_with_preferences(
+                    format!("bind-address: '{binding}'").as_bytes(),
+                    "external-controller-unix",
+                    "/api.sock",
+                    "secret",
+                    Some(&owned),
+                )
+                .unwrap();
+                let value: serde_yaml_ng::Value = serde_yaml_ng::from_str(&output).unwrap();
+                assert_eq!(value["bind-address"], binding);
+            }
+        }
+    }
+
+    #[test]
     fn private_controller_is_final_and_unknown_fields_are_preserved() {
         let source = b"external-controller: 0.0.0.0:9090\nsecret: source-secret\ncustom-key:\n  MixedCase: preserved\nproxies: []\nrules: ['MATCH,DIRECT']\n";
         let output = protected_config(
@@ -686,12 +738,7 @@ mod tests {
     }
     #[test]
     fn unsupported_network_changes_fail_instead_of_being_silently_disabled() {
-        for source in [
-            "tun: {enable: true}",
-            "listeners: []",
-            "redir-port: 1234",
-            "[]",
-        ] {
+        for source in ["redir-port: 1234", "[]"] {
             assert!(
                 protected_config(
                     source.as_bytes(),
@@ -702,5 +749,17 @@ mod tests {
                 .is_err()
             );
         }
+        let output = protected_config(
+            b"listeners: []",
+            "external-controller-unix",
+            "/api.sock",
+            "secret",
+        )
+        .unwrap();
+        let value: serde_yaml_ng::Value = serde_yaml_ng::from_str(&output).unwrap();
+        assert_eq!(
+            value["listeners"],
+            serde_yaml_ng::Value::Sequence(Vec::new())
+        );
     }
 }

@@ -71,14 +71,6 @@ fn options(key: &str) -> &'static [(&'static str, &'static str)] {
             ("纯色", "solid"),
             ("Acrylic", "acrylic"),
         ],
-        "PriorityIndex" => &[
-            ("空闲", "idle"),
-            ("低于正常", "below_normal"),
-            ("正常", "normal"),
-            ("高于正常", "above_normal"),
-            ("高", "high"),
-            ("实时", "realtime"),
-        ],
         "AppLogLevel" => &[
             ("Trace", "trace"),
             ("Debug", "debug"),

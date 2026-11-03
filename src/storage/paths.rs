@@ -34,6 +34,13 @@ impl AppPaths {
                 .join("suki-clash"),
         })
     }
+    pub(crate) fn staged(root: &Path) -> Self {
+        Self {
+            config: root.join("config"),
+            data: root.join("data"),
+            cache: root.join("cache"),
+        }
+    }
     #[cfg(test)]
     pub(crate) fn isolated(root: &Path) -> Self {
         Self {

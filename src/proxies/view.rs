@@ -216,6 +216,14 @@ impl ProxiesPage {
             .child(self.sort_button(cx))
             .child(self.display_button(cx))
             .child(
+                ui::icon_button("proxy-return-top", IconName::ArrowUp, "返回顶部").on_click(
+                    cx.listener(|this, _, _, cx| {
+                        this.list_scroll.scroll_to_item(0, ScrollStrategy::Top);
+                        cx.notify();
+                    }),
+                ),
+            )
+            .child(
                 Button::new("proxy-chain")
                     .ghost()
                     .with_size(control::STANDARD)
@@ -291,7 +299,8 @@ impl Render for ProxiesPage {
                         };
                         let gap = proxy_card::GAP.to_pixels(window.rem_size());
                         let min = proxy_card::MIN_WIDTH.to_pixels(window.rem_size());
-                        let inset = crate::ui::theme::list::INSET_X.to_pixels(window.rem_size());
+                        let inset = (crate::ui::theme::list::INSET_X + proxy_card::GROUP_INSET_X)
+                            .to_pixels(window.rem_size());
                         let columns = (((bounds.size.width - inset * 2. + gap) / (min + gap))
                             .floor() as usize)
                             .clamp(proxy_card::MIN_COLUMNS, proxy_card::MAX_COLUMNS);

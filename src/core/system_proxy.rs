@@ -50,11 +50,16 @@ impl Actor {
         let previous = self.proxy_settings()?;
         // An unknown OS state must not be interpreted as an off switch.
         self.snapshot.system_proxy = self.system_proxy.observe().await?;
-        let enabled = !self
-            .snapshot
-            .system_proxy
-            .enabled()
-            .ok_or("无法确认系统代理状态")?;
+        let enabled = match self.snapshot.system_proxy.enabled() {
+            Some(enabled) => !enabled,
+            None if previous
+                .get("IsSystemProxyEnabled")
+                .is_some_and(|value| value == "true") =>
+            {
+                false
+            }
+            None => return Err("无法确认系统代理状态，不能开启系统代理".into()),
+        };
         self.save_system_proxy(
             &repository,
             &previous,
@@ -132,10 +137,19 @@ impl Actor {
             });
         }
         self.snapshot.settings.insert("sysproxy".into(), desired);
+        self.snapshot.operation_committed = true;
+        if !enabled
+            && previous
+                .get("IsSystemProxyEnabled")
+                .is_some_and(|value| value == "true")
+            && self.running.is_some()
+        {
+            self.cleanup_all_after_commit("系统代理已关闭").await?;
+        }
         Ok(())
     }
     pub(super) async fn sync_system_proxy(&mut self) -> Result<(), String> {
-        if self.snapshot.phase != Phase::Ready {
+        if self.snapshot.phase != Phase::Ready || self.system_proxy.automatic_suspended() {
             return Ok(());
         }
         let values = self.proxy_settings()?;
@@ -149,7 +163,8 @@ impl Actor {
             let result = async {
                 let port = self.proxy_port(&values).await?;
                 if !self.system_proxy.is_current(&values, port) {
-                    self.snapshot.system_proxy = self.system_proxy.apply(&values, port).await?;
+                    self.snapshot.system_proxy =
+                        self.system_proxy.apply_automatic(&values, port).await?;
                 }
                 Ok::<(), String>(())
             }
@@ -172,8 +187,13 @@ impl Actor {
         Ok(())
     }
     pub(super) async fn poll_system_proxy(&mut self) -> Result<(), String> {
+        if self.system_proxy.automatic_suspended() {
+            return Ok(());
+        }
         let observed = if self.snapshot.phase == Phase::Ready {
-            self.sync_system_proxy().await?;
+            // Polling observes the OS and services an already-established guard.
+            // A failed startup/apply must not become an implicit retry every tick.
+            // Lifecycle/configuration commits explicitly call sync_system_proxy.
             let values = self.proxy_settings()?;
             self.system_proxy.poll(&values).await
         } else {

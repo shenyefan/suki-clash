@@ -59,7 +59,11 @@ impl SettingsPage {
         }
         let values = self.values(cx);
         if let Some(value) = values.get(key) {
-            self.commit_core(Values::from([(key.into(), value.clone())]), window, cx);
+            let mut patch = Values::from([(key.into(), value.clone())]);
+            if self.kind == super::SettingsKind::Tun && key == "AutoRoute" && value == "false" {
+                patch.insert("AutoRedirect".into(), "false".into());
+            }
+            self.commit_core(patch, window, cx);
         }
     }
     pub(super) fn commit_core(

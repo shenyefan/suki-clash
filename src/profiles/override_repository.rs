@@ -7,12 +7,13 @@ use crate::storage::{AppPaths, Namespace, Repository, Values, atomic_write};
 use std::{collections::BTreeSet, path::PathBuf};
 pub(crate) fn read(paths: &AppPaths) -> Result<(Values, Vec<Document>), String> {
     let repository = Repository::open(paths.clone()).map_err(|error| error.to_string())?;
-    let values = repository
+    let mut values = repository
         .read_limited(
             &Namespace::parse("override-index").map_err(|error| error.to_string())?,
             crate::configuration::INPUT_LIMIT,
         )
         .map_err(|error| error.to_string())?;
+    store::hydrate(paths, true, &mut values)?;
     crate::configuration::validate_override_index(&values).map_err(|error| error.to_string())?;
     if values.is_empty() {
         return Ok((values, vec![]));
@@ -116,7 +117,7 @@ pub(crate) fn commit(
             return Err("覆写 ID 重复".into());
         }
     }
-    let values = store::values(new, None);
+    let values = store::metadata_values(new);
     if serde_json::to_vec(&values)
         .map_err(|_| "无法编码覆写索引")?
         .len() as u64
@@ -125,8 +126,14 @@ pub(crate) fn commit(
         return Err("覆写索引超过上限".into());
     }
     for document in new {
-        atomic_write(&path(paths, document), document.content.as_bytes())
-            .map_err(|_| "覆写文件保存失败")?;
+        if old
+            .iter()
+            .find(|old| old.id == document.id && old.kind == document.kind)
+            .is_none_or(|old| old.content != document.content)
+        {
+            atomic_write(&path(paths, document), document.content.as_bytes())
+                .map_err(|_| "覆写文件保存失败")?;
+        }
     }
     Repository::open(paths.clone())
         .map_err(|error| error.to_string())?
@@ -146,5 +153,39 @@ pub(crate) fn commit(
             }
         }
     }
-    Ok(values)
+    Ok(store::values(new, None))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn external_override_body_updates_composition_without_being_reexported() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = AppPaths::isolated(root.path());
+        let repository = Repository::open(paths.clone()).unwrap();
+        let mut document = Document::new(9, DocumentKind::Yaml);
+        document.name = "override".into();
+        document.enabled = true;
+        document.content = "mode: rule\n".into();
+        commit(&paths, &[], &[document.clone()]).unwrap();
+        let index = repository
+            .read(&Namespace::parse("override-index").unwrap())
+            .unwrap();
+        assert!(!index.contains_key("9/content"));
+        let body = path(&paths, &document);
+        atomic_write(&body, b"mode: direct\n").unwrap();
+        let (values, old) = read(&paths).unwrap();
+        let output = crate::configuration::compose(b"{}", None, &values).unwrap();
+        let output: serde_yaml_ng::Value = serde_yaml_ng::from_slice(&output).unwrap();
+        assert_eq!(output["mode"], "direct");
+        let mut renamed = old.clone();
+        renamed[0].name = "renamed".into();
+        atomic_write(&body, b"mode: global\n").unwrap();
+        commit(&paths, &old, &renamed).unwrap();
+        assert_eq!(std::fs::read(&body).unwrap(), b"mode: global\n");
+        std::fs::remove_file(&body).unwrap();
+        assert!(read(&paths).err().unwrap().contains("9.yaml"));
+    }
 }

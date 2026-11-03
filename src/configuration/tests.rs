@@ -203,20 +203,20 @@ async fn selected_profile_reloads_current_source_and_bad_selection_never_falls_b
     let paths = AppPaths::isolated(root.path());
     let store = Repository::open(paths.clone()).unwrap();
     let namespace = Namespace::parse("profile-index").unwrap();
-    let mut values = Values::from([
+    let values = Values::from([
         ("format".into(), "1".into()),
         ("ids".into(), "7".into()),
         ("7/kind".into(), "配置".into()),
         ("7/name".into(), "真实本地配置".into()),
-        ("7/content".into(), "mode: rule".into()),
     ]);
     store.save(&namespace, &values).unwrap();
+    let body = crate::profiles::repository::body_path(&paths, 7);
+    crate::storage::atomic_write(&body, b"mode: rule").unwrap();
     let source = Source::from_profile(&paths, 7).unwrap();
     assert_eq!(source.profile().unwrap().id(), 7);
     assert_eq!(source.profile().unwrap().name(), "真实本地配置");
     source.commit(&paths).unwrap();
-    values.insert("7/content".into(), "mode: direct".into());
-    store.save(&namespace, &values).unwrap();
+    crate::storage::atomic_write(&body, b"mode: direct").unwrap();
     let loaded = Source::load(&paths).await.unwrap();
     assert_eq!(
         loaded.profile().unwrap().id(),

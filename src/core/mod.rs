@@ -2,6 +2,7 @@
 mod bridge;
 mod delays;
 mod icons;
+mod log_stream;
 mod monitor;
 mod streams;
 pub(crate) use monitor::Runtime;
@@ -9,6 +10,7 @@ mod chain;
 mod client;
 mod connections;
 mod download;
+pub(crate) mod gist;
 mod install;
 mod proxy_control;
 mod system_proxy;
@@ -19,8 +21,12 @@ mod launch;
 mod output;
 mod ownership;
 mod port;
+mod privileged;
+mod provider_sync;
 mod release;
 mod resources;
+mod runtime_bundle;
+mod service_identity;
 pub(crate) use crate::configuration::Preferences;
 pub(crate) use release::ReleaseSelection;
 pub(crate) use resources::{ProviderKind, Resources};
@@ -31,9 +37,10 @@ pub(crate) use profiles::ProfileCommand;
 mod service;
 
 pub(crate) use bridge::{
-    attach_window, controller, execute, init, init_unavailable, ip_auto_refresh, quit, refresh_ip,
-    request, reset_program, submit,
+    attach_window, controller, execute, init, init_unavailable, quit, refresh_ip, request,
+    reset_program, restart_program, submit,
 };
+pub(crate) use privileged::Action as ServiceAction;
 pub(crate) use service::{Command, Service, ServiceError};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -101,13 +108,20 @@ impl TransferProgress {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Snapshot {
+    pub(crate) autostart: Option<Result<bool, String>>,
     revision: u64,
+    pub(crate) gist: gist::State,
+    pub(crate) proxy_preferences: crate::proxies::preferences::Preferences,
     generation: u64,
     request_id: Option<u64>,
     phase: Phase,
     pid: Option<u32>,
     version: Option<String>,
     core_installed: Option<bool>,
+    tun: Option<bool>,
+    service_mode: bool,
+    service_state: privileged::State,
+    uwp_apps: Vec<suki_service::windows_network::UwpApp>,
     error: Option<String>,
     notice: Option<String>,
     profile: Option<crate::configuration::ProfileIdentity>,
@@ -116,6 +130,7 @@ pub(crate) struct Snapshot {
     versions: Vec<String>,
     information: Option<String>,
     operation_active: bool,
+    operation_committed: bool,
     operation_module: Option<&'static str>,
     progress: Option<TransferProgress>,
     resources: Resources,
@@ -126,9 +141,24 @@ pub(crate) struct Snapshot {
     proxy_names: Vec<String>,
     monitor_epoch: u64,
     chain: crate::proxies::chain_config::Config,
+    pub(crate) chain_sources:
+        std::collections::BTreeMap<String, crate::proxies::chain_sources::Source>,
     system_proxy: crate::system_proxy::Observation,
 }
 impl Snapshot {
+    pub(crate) fn uwp_apps(&self) -> &[suki_service::windows_network::UwpApp] {
+        &self.uwp_apps
+    }
+
+    pub(crate) fn service_state(&self) -> &privileged::State {
+        &self.service_state
+    }
+    pub(crate) fn tun(&self) -> Option<bool> {
+        self.tun
+    }
+    pub(crate) fn service_mode(&self) -> bool {
+        self.service_mode
+    }
     pub(crate) fn runtime_yaml(&self) -> Option<&str> {
         self.runtime_yaml.as_deref()
     }
@@ -201,6 +231,9 @@ impl Snapshot {
     pub(crate) fn error(&self) -> Option<&str> {
         self.error.as_deref()
     }
+    pub(crate) fn operation_committed(&self) -> bool {
+        self.operation_committed
+    }
     pub(crate) fn is_busy(&self) -> bool {
         self.operation_active
             || matches!(
@@ -244,3 +277,6 @@ pub(crate) fn test_delay(
         crate::ui::show_error(error, window, cx);
     }
 }
+
+#[cfg(windows)]
+pub(crate) use service_identity::current_owner_identity as service_identity_for_autostart;

@@ -13,6 +13,7 @@ pub(crate) struct Config {
         deserialize_with = "deserialize_custom"
     )]
     pub(crate) custom: String,
+    pub(crate) sources: std::collections::BTreeMap<String, super::chain_sources::Source>,
 }
 #[derive(Clone, Debug)]
 pub(crate) struct Change {
@@ -47,6 +48,36 @@ fn deserialize_custom<'de, D: serde::Deserializer<'de>>(
     serde_yaml_ng::to_string(&value).map_err(serde::de::Error::custom)
 }
 impl Config {
+    pub(crate) fn existing(root: &Value, exit: &str) -> Result<Vec<String>, String> {
+        let Some(definitions) = root.get("proxies").and_then(Value::as_sequence) else {
+            return Ok(Vec::new());
+        };
+        let mut nodes = Vec::new();
+        let mut current = exit;
+        loop {
+            if nodes.iter().any(|name| name == current) || nodes.len() >= 32 {
+                return Err("来源代理链存在循环或超过节点上限".into());
+            }
+            let node = definitions
+                .iter()
+                .find(|node| node.get("name").and_then(Value::as_str) == Some(current));
+            let Some(node) = node else {
+                return if nodes.is_empty() {
+                    Ok(Vec::new())
+                } else {
+                    Err("来源代理链含未解析节点".into())
+                };
+            };
+            nodes.push(current.to_owned());
+            match node.get("dialer-proxy").and_then(Value::as_str) {
+                Some(next) => current = next,
+                None => break,
+            }
+        }
+        nodes.reverse();
+        Ok(if nodes.len() > 1 { nodes } else { Vec::new() })
+    }
+
     #[cfg(test)]
     pub(crate) fn path(paths: &AppPaths) -> std::path::PathBuf {
         crate::preferences::app::path(paths)
@@ -109,12 +140,34 @@ impl Config {
         }
         Ok(())
     }
+    #[cfg(test)]
     pub(crate) fn apply(&self, root: &mut Mapping) -> Result<(), String> {
+        self.apply_from(root, std::path::Path::new("."))
+    }
+    pub(crate) fn apply_from(
+        &self,
+        root: &mut Mapping,
+        directory: &std::path::Path,
+    ) -> Result<(), String> {
         self.validate()?;
         if !self.enabled {
             return Ok(());
         }
-        let custom = self.custom_nodes()?;
+        let mut custom = self.custom_nodes()?;
+        let bindings = self
+            .sources
+            .iter()
+            .filter(|(name, _)| self.nodes.contains(name))
+            .map(|(name, source)| (name.clone(), source.clone()))
+            .collect();
+        let resolved = super::chain_sources::resolve(root, directory, &bindings)?;
+        custom.retain(|proxy| {
+            !proxy
+                .get("name")
+                .and_then(Value::as_str)
+                .is_some_and(|name| self.sources.contains_key(name))
+        });
+        custom.extend(resolved);
         if !root.contains_key("proxies") {
             root.insert("proxies".into(), Value::Sequence(vec![]));
         }
@@ -166,6 +219,26 @@ impl Config {
             ) {
                 return Err("链式目标需为手动选择或延迟优选组".into());
             }
+            if !group
+                .as_mapping()
+                .ok_or("目标代理组不是对象")?
+                .contains_key("proxies")
+            {
+                let provider_members = group
+                    .get("use")
+                    .and_then(Value::as_sequence)
+                    .is_some_and(|providers| !providers.is_empty())
+                    || ["include-all", "include-all-providers"]
+                        .iter()
+                        .any(|key| group.get(*key).and_then(Value::as_bool) == Some(true));
+                if !provider_members {
+                    return Err("目标代理组没有成员来源".into());
+                }
+                group
+                    .as_mapping_mut()
+                    .ok_or("目标代理组不是对象")?
+                    .insert("proxies".into(), Value::Sequence(Vec::new()));
+            }
             let members = group
                 .get_mut("proxies")
                 .and_then(Value::as_sequence_mut)
@@ -180,6 +253,34 @@ impl Config {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn provider_only_target_keeps_its_sources_and_gains_the_materialized_exit() {
+        use super::Config;
+        use serde_yaml_ng::{Mapping, Value};
+        for members in [
+            "use: [remote]",
+            "include-all-providers: true",
+            "include-all: true",
+        ] {
+            let mut root: Mapping = serde_yaml_ng::from_str(&format!("proxies: [{{name: entry, type: socks5}}, {{name: exit, type: socks5}}]\nproxy-groups: [{{name: provider-group, type: select, {members}}}]\nproxy-providers: {{remote: {{type: http, url: 'https://example.test/nodes', path: remote.yaml}}}}\n")).unwrap();
+            let before = root["proxy-groups"][0].clone();
+            Config {
+                enabled: true,
+                group: "provider-group".into(),
+                nodes: vec!["entry".into(), "exit".into()],
+                ..Default::default()
+            }
+            .apply(&mut root)
+            .unwrap();
+            let group = &root["proxy-groups"][0];
+            assert_eq!(group["proxies"], Value::Sequence(vec!["exit".into()]));
+            for (key, value) in before.as_mapping().unwrap() {
+                assert_eq!(&group[key], value);
+            }
+            assert_eq!(root["proxies"][1]["dialer-proxy"], "entry");
+        }
+    }
+
     use super::*;
     #[test]
     fn ordered_links_preserve_sources_and_custom_definitions_follow_visual_order() {
@@ -190,6 +291,7 @@ mod tests {
             group: "select".into(),
             nodes: vec!["a".into(), "b".into()],
             custom: String::new(),
+            sources: Default::default(),
         };
         chain.apply(&mut output).unwrap();
         let proxies = output["proxies"].as_sequence().unwrap();
@@ -210,7 +312,7 @@ mod tests {
     }
     #[test]
     fn custom_yaml_does_not_override_visual_reorder_or_removed_nodes() {
-        let chain=Config { enabled:true, group:"g".into(), nodes:vec!["b".into(),"a".into()], custom:"proxies: [{name: a, type: socks5}, {name: b, type: socks5}, {name: c, type: socks5}]".into() };
+        let chain=Config { enabled:true, group:"g".into(), nodes:vec!["b".into(),"a".into()], custom:"proxies: [{name: a, type: socks5}, {name: b, type: socks5}, {name: c, type: socks5}]".into(),sources:Default::default() };
         let mut root = serde_yaml_ng::from_str::<Mapping>(
             "proxy-groups: [{name: g, type: url-test, proxies: [a,b,c]}]",
         )
@@ -221,6 +323,20 @@ mod tests {
         assert_eq!(proxies[0]["dialer-proxy"].as_str(), Some("b"));
         assert!(proxies[1].get("dialer-proxy").is_none());
         assert!(proxies[2].get("dialer-proxy").is_none());
+    }
+    #[test]
+    fn existing_chain_reverses_links_and_rejects_cycles_or_missing_relay() {
+        let root: Value = serde_yaml_ng::from_str(
+            "proxies: [{name: a}, {name: b, dialer-proxy: a}, {name: c, dialer-proxy: b}]",
+        )
+        .unwrap();
+        assert_eq!(Config::existing(&root, "c").unwrap(), ["a", "b", "c"]);
+        assert!(Config::existing(&root, "DIRECT").unwrap().is_empty());
+        let mut invalid = root.clone();
+        invalid["proxies"][0]["dialer-proxy"] = "c".into();
+        assert!(Config::existing(&invalid, "c").is_err());
+        invalid["proxies"][0]["dialer-proxy"] = "missing".into();
+        assert!(Config::existing(&invalid, "c").is_err());
     }
     #[test]
     fn missing_defaults_and_invalid_json_do_not_overwrite_user_file() {

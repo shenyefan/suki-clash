@@ -28,7 +28,7 @@ impl ProxiesPage {
     pub(super) fn edit_chain(&self, window: &mut Window, cx: &mut Context<Self>) {
         let session = self.session.clone();
         if let Err(error) = crate::core::execute(
-            crate::core::Command::RuntimeConfig,
+            crate::core::Command::ChainCandidates,
             window,
             cx,
             move |result, window, cx| {
@@ -93,6 +93,7 @@ struct ChainEditor {
     group: Entity<SelectState<Vec<SharedString>>>,
     nodes: Vec<String>,
     definitions: BTreeMap<String, Value>,
+    sources: BTreeMap<String, super::chain_sources::Source>,
     source: Entity<EditorState>,
     list_scroll: VirtualListScrollHandle,
     drop_target: Option<(String, bool)>,
@@ -118,7 +119,11 @@ impl ChainEditor {
             .chain(expected.custom_nodes().unwrap_or_default())
         {
             if let Some(name) = proxy.get("name").and_then(Value::as_str) {
-                definitions.insert(name.to_owned(), proxy);
+                if expected.sources.contains_key(name) {
+                    definitions.entry(name.to_owned()).or_insert(proxy);
+                } else {
+                    definitions.insert(name.to_owned(), proxy);
+                }
             }
         }
         let candidates = definitions
@@ -164,10 +169,29 @@ impl ChainEditor {
             cx.observe(&group, |_, _, cx| cx.notify()),
             cx.observe(&session, |_, _, cx| cx.notify()),
         ];
+        let mut sources = expected.sources.clone();
+        sources.extend(session.read(cx).core().chain_sources.clone());
+        let imported = if expected.nodes.is_empty() {
+            let result = group
+                .read(cx)
+                .selected_value()
+                .and_then(|group| session.read(cx).selected_node(group.as_ref()))
+                .map(|exit| Config::existing(&config, exit));
+            match result {
+                Some(Ok(nodes)) => nodes,
+                Some(Err(error)) => {
+                    ui::show_error(error, window, cx);
+                    Vec::new()
+                }
+                None => Vec::new(),
+            }
+        } else {
+            expected.nodes.clone()
+        };
         Self {
             session,
             enabled: expected.enabled,
-            nodes: expected.nodes.clone(),
+            nodes: imported,
             expected,
             generation,
             epoch,
@@ -176,6 +200,7 @@ impl ChainEditor {
             entry,
             group,
             definitions,
+            sources,
             source,
             list_scroll: VirtualListScrollHandle::new(),
             drop_target: None,
@@ -217,6 +242,21 @@ impl ChainEditor {
         .validate()?;
         for proxy in proxies {
             if let Some(name) = proxy.get("name").and_then(Value::as_str) {
+                // Editing a materialized provider node turns it into a custom
+                // definition; a YAML roundtrip alone retains its source binding.
+                if self.sources.contains_key(name) {
+                    let mut candidate = proxy.clone();
+                    candidate
+                        .as_mapping_mut()
+                        .map(|map| map.remove("dialer-proxy"));
+                    let mut original = self.definitions.get(name).cloned();
+                    if let Some(original) = original.as_mut().and_then(Value::as_mapping_mut) {
+                        original.remove("dialer-proxy");
+                    }
+                    if original.as_ref() != Some(&candidate) {
+                        self.sources.remove(name);
+                    }
+                }
                 self.definitions.insert(name.to_owned(), proxy);
             }
         }
@@ -282,6 +322,12 @@ impl ChainEditor {
                     .unwrap_or_default(),
                 nodes: self.nodes.clone(),
                 custom,
+                sources: self
+                    .sources
+                    .iter()
+                    .filter(|(name, _)| self.nodes.contains(name))
+                    .map(|(name, source)| (name.clone(), source.clone()))
+                    .collect(),
             }
         };
         if let Err(error) = desired.validate() {
@@ -301,7 +347,9 @@ impl ChainEditor {
             move |result, window, cx| {
                 let _ = owner.update(cx, |this, cx| {
                     this.pending = false;
-                    if result.is_ok() {
+                    let snapshot = this.session.read(cx).core();
+                    let committed = snapshot.operation_committed() && snapshot.chain() == &desired;
+                    if result.is_ok() || committed {
                         this.expected = desired;
                         this.enabled = this.expected.enabled;
                         let snapshot = this.session.read(cx).core();
@@ -634,9 +682,8 @@ impl Render for ChainFooter {
         let mode = self.editor.clone();
         let disconnect = self.editor.clone();
         let save = self.editor.clone();
-        h_flex()
+        ui::modal_footer()
             .w_full()
-            .gap(space::SM)
             .when(editor.expected.enabled, |row| {
                 row.child(
                     Button::new("disconnect-chain")
@@ -649,7 +696,6 @@ impl Render for ChainFooter {
                         }),
                 )
             })
-            .child(div().flex_1())
             .child(
                 Button::new("chain-editor-mode")
                     .icon(IconName::FileCode)
@@ -665,6 +711,7 @@ impl Render for ChainFooter {
                         mode.update(cx, |this, cx| this.mode(!this.raw, window, cx));
                     }),
             )
+            .child(div().flex_1())
             .child(
                 Button::new("cancel-chain")
                     .icon(IconName::X)

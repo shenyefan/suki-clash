@@ -20,10 +20,24 @@ pub(crate) enum Action {
 }
 #[derive(Clone)]
 struct Tracked {
+    connection: Connection,
+    generation: u64,
+    epoch: u64,
     row: Record,
-    upload: u64,
-    download: u64,
     at: Instant,
+}
+impl Tracked {
+    fn close(&mut self) {
+        self.row = record(
+            &self.connection,
+            self.row.id,
+            self.generation,
+            self.epoch,
+            0.,
+            0.,
+        );
+        self.row.active = false;
+    }
 }
 #[derive(Clone)]
 pub(super) struct Closed {
@@ -68,11 +82,7 @@ impl Tracker {
             .collect::<BTreeSet<_>>();
         for (key, entry) in &mut self.entries {
             if entry.row.active && !current.contains(key) {
-                entry.row.active = false;
-                entry.row.numbers[3] = 0.;
-                entry.row.numbers[4] = 0.;
-                entry.row.cells[3] = "0 B/s".into();
-                entry.row.cells[4] = "0 B/s".into();
+                entry.close();
                 self.closed.push_back(key.clone());
             }
         }
@@ -87,8 +97,13 @@ impl Tracker {
                         (0., 0.)
                     } else {
                         (
-                            connection.upload.saturating_sub(previous.upload) as f64 / seconds,
-                            connection.download.saturating_sub(previous.download) as f64 / seconds,
+                            connection.upload.saturating_sub(previous.connection.upload) as f64
+                                / seconds,
+                            connection
+                                .download
+                                .saturating_sub(previous.connection.download)
+                                as f64
+                                / seconds,
                         )
                     }
                 })
@@ -103,9 +118,10 @@ impl Tracker {
             self.entries.insert(
                 key,
                 Tracked {
+                    connection: connection.clone(),
+                    generation: runtime.generation,
+                    epoch: runtime.epoch,
                     row,
-                    upload: connection.upload,
-                    download: connection.download,
                     at,
                 },
             );
@@ -135,11 +151,7 @@ impl Tracker {
         let mut changed = false;
         for (key, entry) in &mut self.entries {
             if entry.row.active {
-                entry.row.active = false;
-                entry.row.numbers[3] = 0.;
-                entry.row.numbers[4] = 0.;
-                entry.row.cells[3] = "0 B/s".into();
-                entry.row.cells[4] = "0 B/s".into();
+                entry.close();
                 self.closed.push_back(key.clone());
                 changed = true;
             }
@@ -228,8 +240,8 @@ fn record(
     } else {
         metadata.process.clone()
     };
-    let start = chrono::DateTime::parse_from_rfc3339(&connection.start)
-        .ok()
+    let started_at = chrono::DateTime::parse_from_rfc3339(&connection.start).ok();
+    let start = started_at
         .map(|time| {
             time.with_timezone(&chrono::Local)
                 .format("%H:%M:%S")
@@ -324,7 +336,9 @@ fn record(
             0.,
             0.,
             0.,
-            0.,
+            started_at
+                .map(|time| time.timestamp_millis() as f64)
+                .unwrap_or(0.),
             0.,
             0.,
             0.,
@@ -429,6 +443,68 @@ mod tests {
         assert_eq!(rows.len(), 3);
         assert!(rows.iter().any(|row| row.id == id && !row.active));
         assert!(rows.iter().any(|row| row.active));
+    }
+    #[test]
+    fn start_time_sort_uses_full_instants_across_dates_and_offsets() {
+        let starts = [
+            "2026-11-02T23:59:59+08:00",
+            "2026-11-03T00:00:01+08:00",
+            "2026-11-01T23:59:59+08:00",
+            "2026-11-02T16:00:02Z",
+        ];
+        let rows = starts
+            .iter()
+            .enumerate()
+            .map(|(id, start)| {
+                record(
+                    &Connection {
+                        start: (*start).into(),
+                        ..Default::default()
+                    },
+                    id as u64,
+                    1,
+                    1,
+                    0.,
+                    0.,
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            super::super::model::sorted_indices(&rows, vec![0, 1, 2, 3], 8, false),
+            vec![2, 0, 1, 3]
+        );
+        assert_eq!(
+            super::super::model::sorted_indices(&rows, vec![0, 1, 2, 3], 8, true),
+            vec![3, 1, 0, 2]
+        );
+    }
+    #[test]
+    fn closed_and_stopped_details_use_zero_rates_without_losing_metadata() {
+        for stopped in [false, true] {
+            let mut tracker = Tracker::default();
+            let at = Instant::now();
+            tracker.update(&frame("uuid", 1, at, 100));
+            tracker.update(&frame("uuid", 1, at + Duration::from_secs(2), 2148));
+            assert!(tracker.rows()[0].details.contains("上传速率\t1.0 KiB/s"));
+            if stopped {
+                tracker.stopped();
+            } else {
+                tracker.update(&Runtime {
+                    generation: 1,
+                    epoch: 1,
+                    connections_live: true,
+                    connections_at: Some(at + Duration::from_secs(3)),
+                    ..Default::default()
+                });
+            }
+            let row = &tracker.rows()[0];
+            assert!(!row.active);
+            assert_eq!(row.numbers[3..5], [0., 0.]);
+            assert!(row.details.contains(&format!("下载速率\t{}", row.cells[3])));
+            assert!(row.details.contains(&format!("上传速率\t{}", row.cells[4])));
+            assert!(row.details.contains("连接 ID\tuuid"));
+            assert!(row.details.contains("源地址\t[::1]:1234"));
+        }
     }
     #[test]
     fn closed_connection_history_is_bounded() {

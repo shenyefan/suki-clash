@@ -1,14 +1,17 @@
-use crate::ui::theme::{control, space};
+use crate::ui::theme::control;
+pub(crate) use actions::copy_environment;
 mod actions;
 mod core;
 mod core_apply;
 mod core_tools;
 mod dns;
 mod fields;
+mod gist;
 mod preferences;
 mod resources;
 mod runtime;
 mod sysproxy;
+mod uwp;
 use crate::preferences::schema;
 mod view;
 use crate::integration as store;
@@ -19,7 +22,6 @@ use gpui_kit::{
     component::{
         IndexPath, Sizable, Theme, ThemeMode, WindowExt,
         button::{Button, ButtonVariants},
-        h_flex,
         input::{EditorState, Input, InputEvent, InputState, MaskPattern},
         select::SelectState,
     },
@@ -512,6 +514,9 @@ impl SettingsPage {
         cx.notify();
     }
     pub(crate) fn reopen(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.kind == SettingsKind::General && !self.session.read(cx).core_busy() {
+            crate::core::request(crate::core::Command::AutostartStatus, window, cx);
+        }
         if self.error.is_none() || self.saving {
             return;
         }
@@ -713,7 +718,7 @@ impl SettingsPage {
         }
     }
     fn uwp_dialog(window: &mut Window, cx: &mut App) {
-        ui::request_command("枚举 UWP 回环应用", window, cx);
+        uwp::open(window, cx);
     }
     fn add_panel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.edit_panel(None, window, cx);
@@ -785,9 +790,7 @@ impl SettingsPage {
                 },
             ))
             .footer(
-                h_flex()
-                    .justify_end()
-                    .gap(space::SM)
+                ui::modal_footer()
                     .child(
                         Button::new("cancel-panel")
                             .icon(gpui_kit::assets::IconName::X)
@@ -855,7 +858,7 @@ mod tests {
         )
         .unwrap();
         cx.update(|cx| {
-            crate::integration::init(service, cx);
+            crate::integration::init(service, None, cx);
             gpui_kit::init(cx);
             cx.set_reduce_motion(true);
         });
@@ -991,7 +994,7 @@ mod provider_layout_tests {
                 .unwrap();
         cx.update(|cx| {
             gpui_kit::init(cx);
-            crate::integration::init(service, cx);
+            crate::integration::init(service, None, cx);
             cx.set_reduce_motion(true);
         });
         for (tab, kind) in [
@@ -1090,7 +1093,7 @@ mod yaml_layout_tests {
         )
         .unwrap();
         cx.update(|cx| {
-            crate::integration::init(service, cx);
+            crate::integration::init(service, None, cx);
             gpui_kit::init(cx);
             cx.set_reduce_motion(true);
         });

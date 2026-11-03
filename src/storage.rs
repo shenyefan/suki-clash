@@ -121,6 +121,11 @@ impl Repository {
         namespace: &Namespace,
         limit: u64,
     ) -> Result<Values, StorageError> {
+        if namespace.name() == "tun" {
+            return crate::configuration::Preferences::load(&self.paths)
+                .and_then(|preferences| crate::configuration::tun::project(preferences.native()))
+                .map_err(StorageError::Settings);
+        }
         if namespace.is_setting() && !matches!(namespace.name(), "dns" | "sniffer") {
             return crate::preferences::app::read_values(
                 &self.paths,
@@ -230,6 +235,15 @@ impl Repository {
     }
     pub(crate) fn save(&self, namespace: &Namespace, values: &Values) -> Result<(), StorageError> {
         let values = persistent_values(values);
+        if namespace.name() == "tun" {
+            let previous = crate::configuration::Preferences::load(&self.paths)
+                .map_err(StorageError::Settings)?;
+            let mut combined = previous.values();
+            combined.extend(values);
+            return crate::configuration::Preferences::from_values(&combined, Some(&previous))
+                .and_then(|next| next.save(&self.paths))
+                .map_err(StorageError::Settings);
+        }
         if namespace.is_setting() && !matches!(namespace.name(), "dns" | "sniffer") {
             return crate::preferences::app::write_values(
                 &self.paths,

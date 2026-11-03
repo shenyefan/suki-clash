@@ -154,7 +154,7 @@ mod synchronization_tests {
         }
         let service = crate::integration::Service::start(repository).unwrap();
         cx.update(|cx| {
-            crate::integration::init(service, cx);
+            crate::integration::init(service, None, cx);
             gpui_kit::init(cx);
             cx.set_reduce_motion(true);
         });

@@ -1,6 +1,9 @@
 //! A separate measurement lane. Lifecycle commands never wait for latency batches.
 use super::monitor::Target;
-use crate::{proxies::runtime::Test, storage::AppPaths};
+use crate::{
+    proxies::runtime::{MeasurementError, Test},
+    storage::AppPaths,
+};
 use std::{
     collections::{BTreeMap, BTreeSet},
     sync::Arc,
@@ -10,7 +13,7 @@ use tokio::{
     task::JoinSet,
 };
 type Key = (String, String);
-type Measurements = BTreeMap<Key, Result<u32, String>>;
+type Measurements = BTreeMap<Key, Result<u32, MeasurementError>>;
 #[derive(Clone, Default)]
 pub(super) struct State {
     pub(super) generation: u64,
@@ -55,16 +58,20 @@ pub(super) async fn prepare(
         .get("DelayTestUrl")
         .map(String::as_str)
         .unwrap_or("https://www.gstatic.com/generate_204");
-    let timeout = settings
-        .get("DelayTestTimeout")
-        .and_then(|value| value.parse::<u64>().ok())
-        .unwrap_or(5000)
-        .clamp(100, 60000);
-    let concurrency = settings
-        .get("DelayTestConcurrency")
-        .and_then(|value| value.parse::<usize>().ok())
-        .unwrap_or(8)
-        .clamp(1, 10);
+    let timeout = settings["DelayTestTimeout"]
+        .parse::<u64>()
+        .map_err(|_| "测速超时需在 100–60000 毫秒之间")?;
+    if !(100..=60000).contains(&timeout) {
+        return Err("测速超时需在 100–60000 毫秒之间".into());
+    }
+    let concurrency = settings["DelayTestConcurrency"]
+        .parse::<usize>()
+        .map_err(|_| "测速并发数需在 1–10 之间")?;
+    if !(1..=10).contains(&concurrency) {
+        return Err("测速并发数需在 1–10 之间".into());
+    }
+    let preferences = crate::proxies::preferences::Preferences::load(paths)?
+        .profile(crate::configuration::selected_profile(paths)?);
     let groups = if let Some(group) = &test.group {
         if !proxies
             .entries
@@ -78,6 +85,7 @@ pub(super) async fn prepare(
         proxies.order.clone()
     };
     let mut requests = Vec::new();
+    let mut identities = BTreeSet::new();
     for group in groups {
         if proxies.entries[&group].hidden {
             continue;
@@ -85,6 +93,7 @@ pub(super) async fn prepare(
         let url = test
             .urls
             .get(&group)
+            .or_else(|| preferences.test_urls.get(&group))
             .map(String::as_str)
             .filter(|url| !url.trim().is_empty())
             .unwrap_or_else(|| proxies.test_url(&group, default))
@@ -109,10 +118,14 @@ pub(super) async fn prepare(
             {
                 continue;
             }
+            let key = proxies.measurement_key(&group, member);
+            if !identities.insert((group.clone(), key.clone())) {
+                continue;
+            }
             requests.push(Measurement {
                 group: group.clone(),
                 node: member.name.clone(),
-                key: proxies.measurement_key(&group, member),
+                key,
                 provider: proxy.provider.clone(),
                 url: url.clone(),
             });
@@ -140,7 +153,7 @@ struct Progress {
     scope: (u64, u64),
     request_id: u64,
     key: Key,
-    result: Result<u32, String>,
+    result: Result<u32, MeasurementError>,
 }
 async fn measure(
     target: Target,
@@ -230,7 +243,6 @@ pub(super) async fn run(
     automatic.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut last_auto: Option<std::time::Instant> = None;
     let mut automatic_request = None;
-    let mut urls = BTreeMap::new();
     loop {
         if *shutdown.borrow() {
             break;
@@ -245,7 +257,6 @@ pub(super) async fn run(
             while tasks.join_next().await.is_some() {}
             last_auto = None;
             automatic_request = None;
-            urls.clear();
             measured_at.clear();
             reserved.clear();
             state = State {
@@ -273,7 +284,12 @@ pub(super) async fn run(
                     let config = current.client.json("/configs").await?;
                     let mode = match config.get("mode").and_then(serde_json::Value::as_str) { Some("global") => crate::session::ProxyMode::Global, Some("direct") => crate::session::ProxyMode::Direct, _ => crate::session::ProxyMode::Rule };
                     let proxies = current.client.proxies(&current.order).await?;
-                    Ok::<_, String>(proxies.current_test(mode, current.generation, current.epoch))
+                    let profile = crate::proxies::preferences::Preferences::load(&paths)?.profile(crate::configuration::selected_profile(&paths)?);
+                    let test = profile.group(&proxies, mode).and_then(|group| {
+                        let node = proxies.selected(group)?;
+                        proxies.testable(group, node).then(|| Test { urls: profile.test_urls.clone(), group: Some(group.into()), node: Some(node.into()), generation: current.generation, epoch: current.epoch })
+                    });
+                    Ok::<_, String>(test)
                 }=>result };
                 match observed { Ok(Some(test)) => automatic_request = Some(Request { id: u64::MAX, test }), Ok(None) => {}, Err(error) => { state.error=Some((u64::MAX,error)); updates.send_replace(state.clone()); } }
             },
@@ -302,9 +318,7 @@ pub(super) async fn run(
                 }
             },
             request=async { if let Some(request) = automatic_request.take() { Ok(request) } else { requests.recv().await } },if tasks.len()<32=>{
-                let Ok(mut request)=request else{break;};
-                if request.id != u64::MAX { urls.extend(request.test.urls.clone()); }
-                request.test.urls = urls.clone();
+                let Ok(request)=request else{break;};
                 let result=if let Some(target)=&target {
                     tokio::select! {biased;_=shutdown.changed()=>break,changed=targets.changed()=>{if changed.is_err(){break;}continue;},result=prepare(&paths,target,&request.test)=>result}
                 }else{Err("内核尚未就绪".into())};
@@ -350,8 +364,8 @@ mod tests {
                         connections.spawn(async move {
                             let mut bytes=[0;8192];let n=stream.read(&mut bytes).await.unwrap();
                             let request=String::from_utf8_lossy(&bytes[..n]);
-                            let body=if request.starts_with("GET /proxies ") {r#"{"proxies":{"g":{"name":"g","type":"Selector","all":["fast","slow"],"now":"fast"},"fast":{"name":"fast","type":"Socks5"},"slow":{"name":"slow","type":"Socks5"}}}"#}
-                            else if request.starts_with("GET /providers/proxies ") {r#"{"providers":{}}"#}
+                            let body=if request.starts_with("GET /proxies ") {r#"{"proxies":{"g":{"name":"g","type":"Selector","all":["fast","fast","slow"],"now":"fast"},"h":{"name":"h","type":"Selector","all":["shared","shared","shared"]},"fast":{"name":"fast","type":"Socks5"},"slow":{"name":"slow","type":"Socks5"}}}"#}
+                            else if request.starts_with("GET /providers/proxies ") {r#"{"providers":{"a":{"proxies":[{"name":"shared","type":"Socks5"}]},"b":{"proxies":[{"name":"shared","type":"Socks5"}]}}}"#}
                             else if request.starts_with("GET /proxies/slow/") {gate.notified().await;r#"{"delay":451}"#}
                             else {r#"{"delay":37}"#};
                             stream.write_all(format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).as_bytes()).await.unwrap();
@@ -362,19 +376,76 @@ mod tests {
             }
         });
         let target = Target {
+            logs: None,
             client: super::super::client::Client::new(
                 super::super::client::Endpoint::Unix(endpoint),
                 "test".into(),
+            )
+            .with_proxy_config(
+                &serde_yaml_ng::from_str("proxy-groups:\n- name: h\n  use: [a, b]\n").unwrap(),
             ),
             http: Default::default(),
             generation: 7,
             epoch: 9,
-            order: vec!["g".into()],
+            order: vec!["g".into(), "h".into()],
             proxy_port: 0,
             proxy_auth: None,
             dns_mode: None,
             proxy_error: None,
         };
+        let mut preferences = crate::proxies::preferences::Preferences::default();
+        preferences
+            .update(
+                None,
+                crate::proxies::preferences::Change::TestUrl {
+                    group: "g".into(),
+                    url: "https://persisted.test/test".into(),
+                },
+            )
+            .unwrap();
+        preferences.save(&paths).unwrap();
+        let test = Test {
+            urls: Default::default(),
+            group: None,
+            node: None,
+            generation: 7,
+            epoch: 9,
+        };
+        let plan = prepare(&paths, &target, &test).await.unwrap();
+        assert_eq!(
+            plan.requests.len(),
+            4,
+            "repeated identical sources share a request"
+        );
+        assert_eq!(
+            plan.requests
+                .iter()
+                .filter(|request| request.group == "h")
+                .map(|request| request.provider.as_deref().unwrap())
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from(["a", "b"])
+        );
+        assert!(
+            plan.requests
+                .iter()
+                .filter(|request| request.group == "g")
+                .all(|request| request.url == "https://persisted.test/test")
+        );
+        let mut settings = crate::preferences::defaults(crate::preferences::SettingsKind::General);
+        settings.insert("DelayTestTimeout".into(), "100".into());
+        settings.insert("DelayTestConcurrency".into(), "1".into());
+        crate::preferences::app::write_values(&paths, "general", &settings).unwrap();
+        let plan = prepare(&paths, &target, &test).await.unwrap();
+        assert_eq!((plan.timeout, plan.concurrency), (100, 1));
+        settings.insert("DelayTestConcurrency".into(), "11".into());
+        crate::preferences::app::write_values(&paths, "general", &settings).unwrap();
+        assert!(prepare(&paths, &target, &test).await.is_err());
+        crate::preferences::app::write_values(
+            &paths,
+            "general",
+            &crate::preferences::defaults(crate::preferences::SettingsKind::General),
+        )
+        .unwrap();
         let (_targets, changes) = watch::channel(Some(target));
         let (sender, requests) = async_channel::bounded(2);
         let (updates, mut events) = watch::channel(State::default());
@@ -404,7 +475,7 @@ mod tests {
                 if events
                     .borrow()
                     .results
-                    .contains_key(&("g".into(), "fast".into()))
+                    .contains_key(&("g".into(), "c:4:fast".into()))
                 {
                     break;
                 }
@@ -413,8 +484,8 @@ mod tests {
         .await
         .unwrap();
         let partial = events.borrow().clone();
-        assert_eq!(partial.results[&("g".into(), "fast".into())], Ok(37));
-        assert!(!partial.testing.contains(&("g".into(), "fast".into())));
+        assert_eq!(partial.results[&("g".into(), "c:4:fast".into())], Ok(37));
+        assert!(!partial.testing.contains(&("g".into(), "c:4:fast".into())));
         assert!(partial.testing.contains(&("g".into(), "slow".into())));
         assert_eq!(partial.batches.len(), 2);
         assert!(partial.completed.is_empty());

@@ -180,6 +180,24 @@ fn proxy_sections() -> Vec<SectionSpec> {
                 actions: &[],
             },
             FieldSpec {
+                key: "EnableBypassCheck",
+                label: "绕过校验",
+                description: "",
+                kind: FieldKind::Toggle,
+                default: "true",
+                options: &[],
+                actions: &[],
+            },
+            FieldSpec {
+                key: "UseDefaultBypass",
+                label: "使用默认绕过",
+                description: "",
+                kind: FieldKind::Toggle,
+                default: "true",
+                options: &[],
+                actions: &[],
+            },
+            FieldSpec {
                 key: "PacScript",
                 label: "PAC 脚本",
                 description: "支持 %proxy_host% 与 %mixed-port% 占位符",
@@ -310,7 +328,13 @@ fn tun_sections() -> Vec<SectionSpec> {
                     kind: FieldKind::ReadOnly,
                     default: "",
                     options: &[],
-                    actions: &["安装服务", "修复服务", "停止服务"],
+                    actions: &[
+                        "安装服务",
+                        "修复服务",
+                        "停止服务内核",
+                        "转为子进程",
+                        "卸载服务",
+                    ],
                 },
                 FieldSpec {
                     key: "TunAction1",
@@ -332,6 +356,15 @@ fn general_extensions() -> Vec<SectionSpec> {
             title: "启动与行为",
             fields: vec![
                 FieldSpec {
+                    key: "IpAutoRefresh",
+                    label: "自动刷新出口 IP",
+                    description: "",
+                    kind: FieldKind::Toggle,
+                    default: "true",
+                    options: &[],
+                    actions: &[],
+                },
+                FieldSpec {
                     key: "StartPage",
                     label: "启动页面",
                     description: "",
@@ -345,7 +378,7 @@ fn general_extensions() -> Vec<SectionSpec> {
                     label: "托盘点击行为",
                     description: "",
                     kind: FieldKind::Select,
-                    default: "显示主窗口",
+                    default: "显示托盘菜单",
                     options: &[
                         "显示主窗口",
                         "显示托盘菜单",
@@ -395,7 +428,7 @@ fn general_extensions() -> Vec<SectionSpec> {
                     label: "托盘代理组布局",
                     description: "",
                     kind: FieldKind::Select,
-                    default: "默认",
+                    default: "内联",
                     options: &["默认", "内联", "隐藏"],
                     actions: &[],
                 },
@@ -429,15 +462,6 @@ fn general_extensions() -> Vec<SectionSpec> {
                     kind: FieldKind::Select,
                     default: "右侧",
                     options: &["左侧", "右侧"],
-                    actions: &[],
-                },
-                FieldSpec {
-                    key: "AutoCheckUpdate",
-                    label: "自动检查更新",
-                    description: "",
-                    kind: FieldKind::Toggle,
-                    default: "true",
-                    options: &[],
                     actions: &[],
                 },
                 FieldSpec {
@@ -644,7 +668,13 @@ fn general_extensions() -> Vec<SectionSpec> {
                     kind: FieldKind::ReadOnly,
                     default: "",
                     options: &[],
-                    actions: &["安装服务", "修复服务", "停止服务"],
+                    actions: &[
+                        "安装服务",
+                        "修复服务",
+                        "停止服务内核",
+                        "转为子进程",
+                        "卸载服务",
+                    ],
                 },
                 FieldSpec {
                     key: "AppVersion",
@@ -1091,6 +1121,15 @@ fn original_sections(kind: SettingsKind) -> Vec<SectionSpec> {
                 title: "内核维护",
                 fields: vec![
                     FieldSpec {
+                        key: "CoreUwp",
+                        label: "UWP 应用代理",
+                        description: "选择允许访问本机代理的应用",
+                        kind: FieldKind::ReadOnly,
+                        default: "",
+                        options: &[],
+                        actions: &["选择应用"],
+                    },
+                    FieldSpec {
                         key: "CoreValidate",
                         label: "运行配置",
                         description: "使用当前内核检查候选配置",
@@ -1475,6 +1514,15 @@ fn original_sections(kind: SettingsKind) -> Vec<SectionSpec> {
                         actions: &[],
                     },
                     FieldSpec {
+                        key: "StartupScript",
+                        label: "启动脚本",
+                        description: "脚本文件的绝对路径",
+                        kind: FieldKind::Text,
+                        default: "",
+                        options: &[],
+                        actions: &[],
+                    },
+                    FieldSpec {
                         key: "CloseToTray",
                         label: "关闭时最小化到托盘",
                         description: "关闭窗口时保留后台运行",
@@ -1603,144 +1651,27 @@ fn original_sections(kind: SettingsKind) -> Vec<SectionSpec> {
             },
             SectionSpec {
                 title: "Gist 同步",
-                fields: vec![
-                    FieldSpec {
-                        key: "SyncRuntimeConfigToGist",
-                        label: "同步运行配置",
-                        description: "将当前运行配置上传到 GitHub Gist",
-                        kind: FieldKind::Toggle,
-                        default: "false",
-                        options: &[],
-                        actions: &["立即同步"],
-                    },
-                    FieldSpec {
-                        key: "GitHubToken",
-                        label: "GitHub Token",
-                        description: "令牌需包含 gist 权限",
-                        kind: FieldKind::Secret,
-                        default: "",
-                        options: &[],
-                        actions: &[],
-                    },
-                    FieldSpec {
-                        key: "GistId",
-                        label: "Gist ID",
-                        description: "留空时新建私有 Gist",
-                        kind: FieldKind::Text,
-                        default: "",
-                        options: &[],
-                        actions: &[],
-                    },
-                    FieldSpec {
-                        key: "GistAgeEncrypt",
-                        label: "加密 Gist 配置",
-                        description: "上传前使用 Age 公钥加密",
-                        kind: FieldKind::Toggle,
-                        default: "false",
-                        options: &[],
-                        actions: &[],
-                    },
-                    FieldSpec {
-                        key: "GistAgeRecipient",
-                        label: "Age 接收方公钥",
-                        description: "格式：age1",
-                        kind: FieldKind::Text,
-                        default: "",
-                        options: &[],
-                        actions: &[],
-                    },
-                    FieldSpec {
-                        key: "GistAgeSecretKey",
-                        label: "Age 私钥",
-                        description: "与上方公钥配对，请妥善保管",
-                        kind: FieldKind::Secret,
-                        default: "",
-                        options: &[],
-                        actions: &["生成 Age 密钥"],
-                    },
-                ],
+                fields: vec![FieldSpec {
+                    key: "GistBackup",
+                    label: "Gist 备份",
+                    description: "配置、订阅与覆写的完整备份",
+                    kind: FieldKind::ReadOnly,
+                    default: "",
+                    options: &[],
+                    actions: &["配置 Gist 备份", "创建 Gist 备份", "Gist 备份历史"],
+                }],
             },
             SectionSpec {
                 title: "内核与配置",
-                fields: vec![
-                    FieldSpec {
-                        key: "PriorityIndex",
-                        label: "内核进程优先级",
-                        description: "仅在 Sidecar 模式下生效",
-                        kind: FieldKind::Select,
-                        default: "正常",
-                        options: &["空闲", "低于正常", "正常", "高于正常", "高", "实时"],
-                        actions: &[],
-                    },
-                    FieldSpec {
-                        key: "DiffWorkDir",
-                        label: "独立工作目录",
-                        description: "为每个订阅使用单独的内核工作目录",
-                        kind: FieldKind::Toggle,
-                        default: "false",
-                        options: &[],
-                        actions: &[],
-                    },
-                    FieldSpec {
-                        key: "UseHotReloadProfile",
-                        label: "热重载订阅",
-                        description: "切换订阅时不重启内核",
-                        kind: FieldKind::Toggle,
-                        default: "true",
-                        options: &[],
-                        actions: &[],
-                    },
-                    FieldSpec {
-                        key: "HotReloadProfileAutoCloseConnection",
-                        label: "热重载前关闭连接",
-                        description: "切换订阅前关闭现有连接",
-                        kind: FieldKind::Toggle,
-                        default: "false",
-                        options: &[],
-                        actions: &[],
-                    },
-                    FieldSpec {
-                        key: "AutoCloseConnection",
-                        label: "切换代理后关闭连接",
-                        description: "切换节点或代理模式后关闭现有连接",
-                        kind: FieldKind::Toggle,
-                        default: "false",
-                        options: &[],
-                        actions: &[],
-                    },
-                    FieldSpec {
-                        key: "TestProfileOnStart",
-                        label: "启动前检查配置",
-                        description: "启动内核前检查 mihomo 配置",
-                        kind: FieldKind::Toggle,
-                        default: "true",
-                        options: &[],
-                        actions: &[],
-                    },
-                ],
-            },
-            SectionSpec {
-                title: "网络环境",
-                fields: vec![
-                    FieldSpec {
-                        key: "PauseSsidText",
-                        label: "指定 Wi-Fi 直连",
-                        description: "每行一个 SSID",
-                        kind: FieldKind::Multiline,
-                        default: "",
-                        options: &[],
-                        actions: &[],
-                    },
-                    FieldSpec {
-                        key: "DisableDnsOnPauseSsid",
-                        label: "直连时使用系统 DNS",
-                        description: "匹配上述 SSID 时不使用应用 DNS",
-                        kind: FieldKind::Toggle,
-                        default: "false",
-                        options: &[],
-                        actions: &[],
-                    },
-                ],
+                fields: vec![FieldSpec {
+                    key: "AutoCloseConnection",
+                    label: "切换代理后关闭连接",
+                    description: "切换节点或代理模式后关闭现有连接",
+                    kind: FieldKind::Toggle,
+                    default: "false",
+                    options: &[],
+                    actions: &[],
+                }],
             },
             SectionSpec {
                 title: "维护",
@@ -1809,7 +1740,7 @@ pub(crate) fn section_tab(kind: SettingsKind, title: &str, key: &str) -> usize {
             "常规" if key == "SettingsAction6" => 5,
             "备份文件" if key == "RemoteBackupHistory" => 4,
             "托盘" => 2,
-            "网络与订阅" | "内核与配置" | "网络环境" => 3,
+            "网络与订阅" | "内核与配置" => 3,
             "Gist 同步" | "WebDAV" => 4,
             "维护" | "备份文件" | "自动备份" | "工具与更新" | "测速与日志" => 5,
             _ => 0,
@@ -1820,7 +1751,7 @@ pub(crate) fn section_tab(kind: SettingsKind, title: &str, key: &str) -> usize {
 
 pub(crate) fn field_visible(kind: SettingsKind, key: &str) -> bool {
     match (kind, key) {
-        (SettingsKind::Tun, "TunAction1") => {
+        (SettingsKind::Tun, "TunAction1") | (SettingsKind::Core, "CoreUwp") => {
             cfg!(target_os = "windows")
         }
         (SettingsKind::Tun, "AutoRedirect") => cfg!(target_os = "linux"),
@@ -1828,6 +1759,7 @@ pub(crate) fn field_visible(kind: SettingsKind, key: &str) -> bool {
         (SettingsKind::General, "BackdropIndex") => {
             cfg!(any(target_os = "macos", target_os = "windows"))
         }
+        (SettingsKind::General, "IpAutoRefresh") => false,
         (SettingsKind::General, "TrayEvent") => !cfg!(target_os = "linux"),
         _ => true,
     }
@@ -1873,12 +1805,6 @@ pub(crate) fn field_enabled(
         (SettingsKind::General, "AutoBackupInterval") => enabled("AutoBackupSchedule"),
         (SettingsKind::Core, "RedirPort") => !cfg!(windows),
         (SettingsKind::Core, "TproxyPort") => cfg!(target_os = "linux"),
-        (SettingsKind::General, "HotReloadProfileAutoCloseConnection") => {
-            enabled("UseHotReloadProfile")
-        }
-        (SettingsKind::General, "DisableDnsOnPauseSsid") => values
-            .get("PauseSsidText")
-            .is_some_and(|text| !text.trim().is_empty()),
         _ => true,
     }
 }
@@ -1949,6 +1875,9 @@ fn validate_preferences(values: &BTreeMap<String, String>) -> Option<String> {
     if values
         .get("SystemProxyModeIndex")
         .is_some_and(|value| value != "PAC")
+        && values
+            .get("EnableBypassCheck")
+            .is_none_or(|value| value != "false")
         && let Some(value) = values.get("BypassList")
         && !split_entries(value).all(valid_bypass)
     {
@@ -1987,13 +1916,22 @@ fn valid_sniffer_ports(value: &str) -> bool {
     })
 }
 
+pub(crate) fn valid_dns_listen(value: &str) -> bool {
+    value.parse::<std::net::SocketAddr>().is_ok()
+        || value.strip_prefix(':').is_some_and(|port| {
+            !port.is_empty()
+                && port.bytes().all(|byte| byte.is_ascii_digit())
+                && port.parse::<u16>().is_ok()
+        })
+}
+
 fn validate_flow_settings(values: &BTreeMap<String, String>) -> Option<String> {
     let on = |key: &str| values.get(key).is_some_and(|value| value == "true");
     if on("DnsOverrideEnabled") && on("DnsEnabled") {
         if let Some(listen) = values.get("DnsListen")
-            && listen.parse::<std::net::SocketAddr>().is_err()
+            && !valid_dns_listen(listen)
         {
-            return Some("DNS 监听地址需包含 IP 和端口，例如 127.0.0.1:53".into());
+            return Some("DNS 监听地址无效，例如 :53、127.0.0.1:53".into());
         }
         if values
             .get("EnhancedModeIndex")
@@ -2067,10 +2005,10 @@ pub(crate) fn validate(
             let range = match field.key {
                 "Mtu" => Some((576, 65535)),
                 "AutoBackupInterval" => Some((1, 168)),
+                "DelayTestTimeout" => Some((100, 60000)),
+                "DelayTestConcurrency" => Some((1, 10)),
                 "ProxyGuardDuration"
                 | "SubscriptionTimeout"
-                | "DelayTestConcurrency"
-                | "DelayTestTimeout"
                 | "AutoDelayInterval"
                 | "AppLogMaxSize"
                 | "AppLogMaxCount" => Some((1, u32::MAX)),
@@ -2093,6 +2031,26 @@ mod tests {
     use super::super::SettingsKind;
     use super::{FieldKind, sections, validate};
     use std::collections::BTreeMap;
+    #[test]
+    fn measurement_settings_reject_values_the_executor_cannot_honor() {
+        let sections = sections(SettingsKind::General);
+        let mut values = crate::preferences::defaults(SettingsKind::General);
+        for (key, valid, invalid) in [
+            ("DelayTestTimeout", ["100", "60000"], ["99", "60001"]),
+            ("DelayTestConcurrency", ["1", "10"], ["0", "11"]),
+        ] {
+            let original = values[key].clone();
+            for value in valid {
+                values.insert(key.into(), value.into());
+                assert!(validate(&sections, &values).is_none());
+            }
+            for value in invalid {
+                values.insert(key.into(), value.into());
+                assert!(validate(&sections, &values).is_some());
+            }
+            values.insert(key.into(), original);
+        }
+    }
     #[test]
     fn general_settings_keep_tray_and_sync_without_removed_customization_features() {
         let general = sections(SettingsKind::General);
@@ -2123,8 +2081,7 @@ mod tests {
             "TrayIcon",
             "TrayProxyGroups",
             "EnableTraySpeed",
-            "SyncRuntimeConfigToGist",
-            "GitHubToken",
+            "GistBackup",
             "WebDavUrl",
             "WebDavPassword",
         ] {
@@ -2298,6 +2255,9 @@ mod tests {
         assert!(validate(&sections, &values).is_none());
         values.insert("BypassList".into(), "https://bad.example".into());
         assert!(validate(&sections, &values).is_some());
+        values.insert("EnableBypassCheck".into(), "false".into());
+        assert!(validate(&sections, &values).is_none());
+        values.insert("EnableBypassCheck".into(), "true".into());
         values.insert("SystemProxyModeIndex".into(), "PAC".into());
         assert!(validate(&sections, &values).is_none());
         values.insert("SystemProxyHost".into(), "999.0.0.1".into());

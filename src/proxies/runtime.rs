@@ -38,12 +38,46 @@ pub(crate) struct Proxy {
     pub(crate) test_url: String,
     #[serde(default)]
     pub(crate) icon: String,
+    #[serde(default)]
+    pub(crate) udp: bool,
+    #[serde(default)]
+    pub(crate) xudp: bool,
+    #[serde(default)]
+    pub(crate) tfo: bool,
+    #[serde(default)]
+    pub(crate) mptcp: bool,
+    #[serde(default)]
+    pub(crate) smux: bool,
     #[serde(skip)]
     pub(crate) provider: Option<String>,
 }
 #[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
 pub(crate) struct Delay {
     pub(crate) delay: u32,
+}
+/// Measurement failures retain their protocol meaning independently of display text.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub(crate) enum MeasurementError {
+    Timeout,
+    Failed(String),
+}
+impl std::fmt::Display for MeasurementError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Timeout => formatter.write_str("测速超时"),
+            Self::Failed(message) => formatter.write_str(message),
+        }
+    }
+}
+impl From<String> for MeasurementError {
+    fn from(message: String) -> Self {
+        Self::Failed(message)
+    }
+}
+impl From<&str> for MeasurementError {
+    fn from(message: &str) -> Self {
+        Self::Failed(message.to_owned())
+    }
 }
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct GroupScope {
@@ -67,7 +101,7 @@ pub(crate) struct Proxies {
     pub(crate) provider_error: Option<String>,
     provider_names: BTreeMap<String, Vec<String>>,
     core_names: BTreeSet<String>,
-    pub(crate) measurements: BTreeMap<(String, String), Result<u32, String>>,
+    pub(crate) measurements: BTreeMap<(String, String), Result<u32, MeasurementError>>,
     pub(crate) testing: BTreeSet<(String, String)>,
     pub(crate) batches: BTreeSet<(String, String)>,
 }
@@ -245,6 +279,45 @@ impl Proxies {
             .as_ref()
             .and_then(|id| self.records.get(id))
     }
+    /// Follow actual selected members through their resolved source records.
+    /// Duplicate names that point at distinct records are not guessed from a global name map.
+    pub(crate) fn selected_path<'a>(
+        &'a self,
+        member: &'a Member,
+    ) -> Result<Vec<&'a Proxy>, &'static str> {
+        let mut proxy = self
+            .member_proxy(member)
+            .ok_or(member.reason.unwrap_or("节点尚未解析"))?;
+        let mut seen = BTreeSet::new();
+        let mut path = Vec::new();
+        loop {
+            if !seen.insert(proxy.name.as_str()) {
+                return Err("代理组选择存在循环");
+            }
+            path.push(proxy);
+            if proxy.all.is_none() {
+                return Ok(path);
+            }
+            let now = proxy.now.as_deref().ok_or("代理组尚未选择节点")?;
+            let candidates = self
+                .members
+                .get(&proxy.name)
+                .into_iter()
+                .flatten()
+                .filter(|member| member.name == now)
+                .collect::<Vec<_>>();
+            let first = candidates.first().ok_or("当前节点尚未解析")?;
+            if candidates
+                .iter()
+                .any(|candidate| candidate.record_id != first.record_id)
+            {
+                return Err("当前同名节点来源不明确");
+            }
+            proxy = self
+                .member_proxy(first)
+                .ok_or(first.reason.unwrap_or("当前节点尚未解析"))?;
+        }
+    }
     pub(crate) fn measurement_key(&self, group: &str, member: &Member) -> String {
         if self.members.get(group).is_some_and(|members| {
             members
@@ -260,6 +333,16 @@ impl Proxies {
         } else {
             member.name.clone()
         }
+    }
+    pub(crate) fn selectable(&self, group: &str, node: &str) -> bool {
+        self.entries
+            .get(group)
+            .is_some_and(|proxy| matches!(proxy.kind.as_str(), "Selector" | "URLTest" | "Fallback"))
+            && self.members.get(group).is_some_and(|members| {
+                members
+                    .iter()
+                    .any(|member| member.name == node && self.member_proxy(member).is_some())
+            })
     }
     pub(crate) fn testable(&self, group: &str, node: &str) -> bool {
         !matches!(
@@ -290,44 +373,7 @@ impl Proxies {
     pub(crate) fn selected(&self, group: &str) -> Option<&str> {
         self.entries.get(group)?.now.as_deref()
     }
-    pub(crate) fn current_test(
-        &self,
-        mode: ProxyMode,
-        generation: u64,
-        epoch: u64,
-    ) -> Option<Test> {
-        if mode == ProxyMode::Direct {
-            return None;
-        }
-        let group = if mode == ProxyMode::Global {
-            "GLOBAL"
-        } else {
-            self.order
-                .iter()
-                .find(|name| name.as_str() != "GLOBAL")?
-                .as_str()
-        };
-        let node = self.selected(group)?;
-        self.testable(group, node).then(|| Test {
-            urls: Default::default(),
-            group: Some(group.to_owned()),
-            node: Some(node.to_owned()),
-            generation,
-            epoch,
-        })
-    }
-    pub(crate) fn current_node(&self, mode: ProxyMode) -> Option<&str> {
-        if mode == ProxyMode::Direct {
-            return Some("DIRECT");
-        }
-        let mut current = if mode == ProxyMode::Global {
-            "GLOBAL"
-        } else {
-            self.order
-                .iter()
-                .find(|name| name.as_str() != "GLOBAL")
-                .map(String::as_str)?
-        };
+    pub(crate) fn current_node_in<'a>(&'a self, mut current: &'a str) -> Option<&'a str> {
         let mut seen = BTreeSet::new();
         while seen.insert(current) {
             let Some(proxy) = self.entries.get(current) else {
@@ -423,15 +469,27 @@ impl Selections {
 mod tests {
     use super::*;
     #[test]
+    fn selected_path_stops_at_cycles_and_does_not_guess_unresolved_members() {
+        let proxies = Proxies::parse(br#"{"proxies":{"a":{"name":"a","type":"Selector","all":["b"],"now":"b"},"b":{"name":"b","type":"Selector","all":["a"],"now":"a"}}}"#, &[]).unwrap();
+        assert_eq!(
+            proxies.selected_path(&proxies.members["a"][0]).unwrap_err(),
+            "代理组选择存在循环"
+        );
+        let proxies = Proxies::parse(br#"{"proxies":{"a":{"name":"a","type":"Selector","all":["missing"],"now":"missing"}}}"#, &[]).unwrap();
+        assert_eq!(
+            proxies.selected_path(&proxies.members["a"][0]).unwrap_err(),
+            "节点尚未解析"
+        );
+    }
+    #[test]
     fn parses_observed_order_nested_choices_and_cycles() {
         let data=br#"{"proxies":{"a":{"name":"a","type":"Selector","all":["b"],"now":"b"},"b":{"name":"b","type":"URLTest","all":["DIRECT"],"now":"DIRECT","fixed":"DIRECT"},"DIRECT":{"name":"DIRECT","type":"Direct"},"GLOBAL":{"name":"GLOBAL","type":"Selector","all":["a"],"now":"a"}}}"#;
         let mut observed = Proxies::parse(data, &["a".into(), "b".into()]).unwrap();
         assert_eq!(observed.order, vec!["a", "b", "GLOBAL"]);
-        assert_eq!(observed.current_node(ProxyMode::Rule), Some("DIRECT"));
-        assert_eq!(observed.current_node(ProxyMode::Global), Some("DIRECT"));
+        assert_eq!(observed.current_node_in("a"), Some("DIRECT"));
+        assert_eq!(observed.current_node_in("GLOBAL"), Some("DIRECT"));
         observed.entries.get_mut("b").unwrap().now = Some("a".into());
-        assert_eq!(observed.current_node(ProxyMode::Rule), None);
-        assert_eq!(observed.current_node(ProxyMode::Direct), Some("DIRECT"));
+        assert_eq!(observed.current_node_in("a"), None);
         assert!(
             Proxies::parse(
                 br#"{"proxies":{"a":{"name":"other","type":"Direct"}}}"#,
@@ -502,6 +560,23 @@ mod reference_tests {
 #[cfg(test)]
 mod source_identity_tests {
     use super::*;
+    #[test]
+    fn selection_requires_a_resolved_member_and_preserves_preset_selection() {
+        let mut proxies = Proxies::parse(br#"{"proxies":{"g":{"name":"g","type":"Selector","all":["DIRECT","n","unknown"]},"DIRECT":{"name":"DIRECT","type":"Direct"},"balanced":{"name":"balanced","type":"LoadBalance","all":["DIRECT"]}}}"#, &[]).unwrap();
+        assert!(proxies.selectable("g", "DIRECT"));
+        assert!(!proxies.testable("g", "DIRECT"));
+        assert!(!proxies.selectable("g", "n"));
+        assert!(!proxies.selectable("g", "unknown"));
+        assert!(!proxies.selectable("balanced", "DIRECT"));
+        proxies
+            .include_providers(br#"{"providers":{"p":{"proxies":[{"name":"n","type":"Trojan"}]}}}"#)
+            .unwrap();
+        assert!(proxies.selectable("g", "n"));
+        assert!(proxies.testable("g", "n"));
+        assert!(!proxies.selectable("g", "unknown"));
+        proxies.include_providers(br#"{"providers":{}}"#).unwrap();
+        assert!(!proxies.selectable("g", "n"));
+    }
     #[test]
     fn duplicate_provider_members_follow_use_order_occurrence_and_rebind() {
         let mut proxies = Proxies::parse(

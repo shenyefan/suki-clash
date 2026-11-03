@@ -4,7 +4,7 @@ use crate::{
     ui::theme::{control, layout, space, stroke, text},
 };
 use gpui_kit::{
-    component::{ActiveTheme, Sizable, WindowExt, button::Button, h_flex, v_flex},
+    component::{ActiveTheme, Sizable, WindowExt, button::Button, v_flex},
     *,
 };
 use std::sync::Arc;
@@ -207,9 +207,8 @@ impl ProfilesPage {
                     },
                 ))
                 .footer(
-                    h_flex()
-                        .justify_end()
-                        .gap(space::SM)
+                    ui::modal_footer()
+                        .w_full()
                         .child(
                             Button::new("copy-subscription-url")
                                 .icon(gpui_kit::assets::IconName::Copy)
@@ -219,6 +218,7 @@ impl ProfilesPage {
                                     cx.write_to_clipboard(ClipboardItem::new_string(url.clone()))
                                 }),
                         )
+                        .child(div().flex_1())
                         .child(
                             Button::new("close-subscription-qr")
                                 .icon(gpui_kit::assets::IconName::X)

@@ -58,6 +58,11 @@ pub(crate) struct SukiApp {
 }
 
 impl SukiApp {
+    pub(crate) fn import_uri(&mut self, uri: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.navigate(Page::Profiles, cx);
+        self.profiles
+            .update(cx, |profiles, cx| profiles.import_uri(uri, window, cx));
+    }
     pub(crate) fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         window.set_window_title("Suki Clash");
         crate::core::attach_window(window, cx);
@@ -504,7 +509,7 @@ mod tests {
         assert!(service.startup_error().is_some());
         cx.update(|cx| {
             gpui_kit::init(cx);
-            crate::integration::init(service, cx);
+            crate::integration::init(service, None, cx);
             cx.set_reduce_motion(true);
         });
         let handle = cx.open_window(size(px(1220.), px(820.)), |window, cx| {
@@ -545,7 +550,7 @@ mod tests {
         )
         .unwrap();
         cx.update(|cx| {
-            crate::integration::init(service, cx);
+            crate::integration::init(service, None, cx);
             gpui_kit::init(cx);
             cx.set_reduce_motion(false);
         });
@@ -623,7 +628,7 @@ mod tests {
         )
         .unwrap();
         cx.update(|cx| {
-            crate::integration::init(service, cx);
+            crate::integration::init(service, None, cx);
             gpui_kit::init(cx);
             cx.set_reduce_motion(true);
         });

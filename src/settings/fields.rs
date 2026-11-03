@@ -22,11 +22,17 @@ impl SettingsPage {
         let spec = &field.spec;
         let policy = self.values(cx);
         let disabled = !super::schema::field_enabled(self.kind, key, &policy)
+            || (key == "IsTunEnabled"
+                && self.session.read(cx).core().phase() == crate::core::Phase::Failed)
             || self.saving
             || self.session.read(cx).core_busy();
         let control = match &field.control {
             FieldControl::Toggle(value) => {
-                let checked = *value;
+                let checked = if key == "IsTunEnabled" {
+                    self.session.read(cx).tun() == Some(true)
+                } else {
+                    *value
+                };
                 Switch::new(SharedString::from(format!("setting-{key}")))
                     .with_size(control::STANDARD)
                     .checked(checked)
@@ -78,6 +84,7 @@ impl SettingsPage {
                 .into_any_element(),
             FieldControl::ReadOnly => {
                 let value = match spec.label {
+                    "后台服务" => self.session.read(cx).core().service_state().label(),
                     "运行状态" => self.session.read(cx).core().label(),
                     "当前版本" => "—",
                     "应用版本" => env!("CARGO_PKG_VERSION"),
@@ -94,7 +101,11 @@ impl SettingsPage {
             .map(|action| {
                 let action = *action;
                 let busy = self.saving || self.session.read(cx).core_busy();
-                let icon = if action.contains("复制") {
+                let icon = if action == "配置 Gist 备份" {
+                    IconName::Settings2
+                } else if matches!(action, "创建 Gist 备份" | "Gist 备份历史") {
+                    IconName::Archive
+                } else if action.contains("复制") {
                     IconName::Copy
                 } else if action == "网卡信息" {
                     IconName::Network
@@ -119,7 +130,12 @@ impl SettingsPage {
                 {
                     return Button::new(SharedString::from(format!("action-{key}-{action}")))
                         .with_size(control::STANDARD)
-                        .label(action)
+                        .label(match action {
+                            "配置 Gist 备份" => "配置…",
+                            "创建 Gist 备份" => "创建备份",
+                            "Gist 备份历史" => "历史…",
+                            _ => action,
+                        })
                         .icon(icon)
                         .disabled(busy)
                         .on_click(cx.listener(move |this, _, w, cx| {
@@ -201,6 +217,88 @@ impl SettingsPage {
                             .children(actions),
                     );
             return row.px(space::LG).into_any_element();
+        }
+        if key == "AutoRun" {
+            let desired = policy.get("AutoRun").is_some_and(|value| value == "true");
+            let actual = self.session.read(cx).core().autostart.as_ref();
+            let (description, mismatch) = match actual {
+                Some(Ok(actual)) => (
+                    format!(
+                        "系统登录注册：{}{}",
+                        if *actual { "已开启" } else { "已关闭" },
+                        if *actual != desired {
+                            "，与设置不一致"
+                        } else {
+                            ""
+                        }
+                    ),
+                    *actual != desired,
+                ),
+                Some(Err(error)) => (format!("系统登录注册：待确认；{error}"), false),
+                None => ("系统登录注册：待确认".to_owned(), false),
+            };
+            return ui::preference_row(
+                spec.label,
+                &description,
+                h_flex()
+                    .gap(space::SM)
+                    .child(control)
+                    .when(mismatch, |row| {
+                        row.child(
+                            Button::new("repair-autostart")
+                                .with_size(control::STANDARD)
+                                .label("修正注册")
+                                .disabled(disabled)
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.commit_core_field("AutoRun", window, cx);
+                                })),
+                        )
+                    })
+                    .child(
+                        ui::icon_button(
+                            "refresh-autostart",
+                            IconName::RefreshCw,
+                            "刷新登录注册状态",
+                        )
+                        .disabled(disabled)
+                        .on_click(|_, window, cx| {
+                            crate::core::request(crate::core::Command::AutostartStatus, window, cx);
+                        }),
+                    ),
+                cx,
+            )
+            .into_any_element();
+        }
+        if matches!(key, "TunService" | "ServiceMode") {
+            use gpui_kit::component::menu::DropdownMenu;
+            let owner = cx.entity();
+            let busy = self.saving || self.session.read(cx).core_busy();
+            let service_actions = spec.actions;
+            let menu = Button::new(SharedString::from(format!("service-actions-{key}")))
+                .label("管理服务")
+                .with_size(control::STANDARD)
+                .disabled(busy)
+                .dropdown_menu(move |mut menu, _, _| {
+                    for action in service_actions {
+                        let action = *action;
+                        let owner = owner.clone();
+                        menu = menu.item(crate::ui::actions::menu(action).on_click(
+                            move |_, window, cx| {
+                                owner.update(cx, |this, cx| {
+                                    this.field_action(key, action, window, cx)
+                                })
+                            },
+                        ));
+                    }
+                    menu
+                });
+            return ui::preference_row(
+                spec.label,
+                spec.description,
+                h_flex().gap(space::SM).child(control).child(menu),
+                cx,
+            )
+            .into_any_element();
         }
         let control = if matches!(
             field.control,

@@ -14,6 +14,7 @@ use tokio::sync::watch;
 #[derive(Clone)]
 pub(super) struct Target {
     pub(super) client: Client,
+    pub(super) logs: Option<super::log_stream::Source>,
     pub(super) http: crate::network::Http,
     pub(super) generation: u64,
     pub(super) epoch: u64,
@@ -30,6 +31,7 @@ pub(crate) struct IpInfo {
     pub(crate) country_code: String,
     pub(crate) region: String,
     pub(crate) city: String,
+    pub(crate) timezone: String,
     pub(crate) organization: String,
     pub(crate) asn_organization: String,
     pub(crate) asn: Option<u32>,
@@ -77,9 +79,20 @@ pub(crate) struct Runtime {
     pub(crate) external_ip: Option<String>,
     pub(crate) ip_info: Option<IpInfo>,
     pub(crate) ip_loading: bool,
+    pub(crate) ip_auto_refresh: Option<bool>,
     pub(crate) error: Option<String>,
     pub(crate) probe_error: Option<String>,
     pub(crate) storage_error: Option<String>,
+}
+impl Runtime {
+    fn apply_probe(&mut self, result: Probe) {
+        self.latency = result.latency;
+        if let Some(info) = result.ip_info {
+            self.external_ip = Some(info.ip.clone());
+            self.ip_info = Some(info);
+        }
+        self.probe_error = result.error;
+    }
 }
 fn send(
     value: &Runtime,
@@ -92,18 +105,10 @@ fn send(
         let _ = updates.try_send(value);
     }
 }
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub(super) struct ProbeControl {
     pub(super) revision: u64,
-    pub(super) auto_refresh: bool,
-}
-impl Default for ProbeControl {
-    fn default() -> Self {
-        Self {
-            revision: 0,
-            auto_refresh: true,
-        }
-    }
+    pub(super) auto_refresh: Option<bool>,
 }
 pub(super) async fn run(
     paths: AppPaths,
@@ -136,9 +141,22 @@ pub(super) async fn run(
     let storage_error = loaded.as_ref().err().cloned();
     let mut recorder = loaded.unwrap_or_default();
     let writable = storage_error.is_none();
+    let ip_preference = crate::storage::Repository::open(paths.clone())
+        .map_err(|error| error.to_string())
+        .and_then(|repository| {
+            crate::preferences::values(&repository, crate::preferences::SettingsKind::General)
+                .map_err(|error| error.to_string())
+        })
+        .map(|values| {
+            values
+                .get("IpAutoRefresh")
+                .is_some_and(|value| value == "true")
+        });
     let mut runtime = Runtime {
         statistics: recorder.summary(chrono::Local::now()),
         storage_error,
+        ip_auto_refresh: ip_preference.as_ref().ok().copied(),
+        probe_error: ip_preference.err(),
         ..Default::default()
     };
     let mut connections = super::streams::Feed::start(
@@ -151,8 +169,12 @@ pub(super) async fn run(
     timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut last_save = Instant::now();
     let mut last_control: Option<Instant> = None;
+    let mut control_failures = 0u8;
     let mut last_probe: Option<Instant> = None;
-    let mut auto_refresh = true;
+    let mut auto_refresh = runtime.ip_auto_refresh == Some(true);
+    let mut probe_revision = refresh
+        .as_ref()
+        .map_or(0, |control| control.borrow().revision);
     let mut probe: Option<tokio::task::JoinHandle<Probe>> = None;
     let mut scope = None;
     let mut flush = tokio::time::interval(Duration::from_millis(200));
@@ -180,6 +202,7 @@ pub(super) async fn run(
             }
             scope = next_scope;
             last_control = None;
+            control_failures = 0;
             last_probe = None;
             connection_error = None;
             traffic_error = None;
@@ -188,6 +211,7 @@ pub(super) async fn run(
             runtime = Runtime {
                 statistics,
                 storage_error,
+                ip_auto_refresh: runtime.ip_auto_refresh,
                 ..Default::default()
             };
             if let Some((generation, epoch)) = scope {
@@ -198,7 +222,21 @@ pub(super) async fn run(
         }
         tokio::select! {
                     _=shutdown.changed()=>break,
-                    _=async { match &mut refresh { Some(refresh) => { let _ = refresh.changed().await; }, None => std::future::pending::<()>().await } },if refresh.is_some()=> { if let Some(receiver) = &mut refresh { if receiver.has_changed().is_err() { refresh=None; } else { let request = receiver.borrow_and_update().clone(); auto_refresh=request.auto_refresh; last_probe=None; } } continue; },
+                    _=async { match &mut refresh { Some(refresh) => { let _ = refresh.changed().await; }, None => std::future::pending::<()>().await } },if refresh.is_some()=> {
+                        if let Some(receiver) = &mut refresh {
+                            if receiver.has_changed().is_err() { refresh=None; }
+                            else {
+                                let request = receiver.borrow_and_update().clone();
+                                if let Some(enabled) = request.auto_refresh {
+                                    auto_refresh=enabled;
+                                    runtime.ip_auto_refresh=Some(enabled);
+                                }
+                                if probe_revision != request.revision { last_probe=None; probe_revision=request.revision; }
+                                send(&runtime,&updates,&observer);
+                            }
+                        }
+                        continue;
+                    },
                     changed=delay_events.changed(),if delay_task.is_some()=> {
                         if changed.is_err(){break;}
                         let state=delay_events.borrow_and_update().clone();
@@ -246,24 +284,29 @@ pub(super) async fn run(
                     },
                     _=timer.tick()=> {
                         let Some(current)=target.borrow().clone() else {continue;};
-                        if last_control.is_none_or(|last|last.elapsed()>=Duration::from_secs(5)) {
+                        if control_failures < 3 && last_control.is_none_or(|last|last.elapsed()>=Duration::from_secs(5)) {
                             last_control=Some(Instant::now());
                             let observed=tokio::select! {biased;_=shutdown.changed()=>break,changed=target.changed()=>{if changed.is_err(){break;}continue;},result=read_control(&current)=>result};
                             match observed {
                                 Ok((mode,dns,mut proxies,port))=>{
+                                    control_failures=0;
                                     let delays=delay_events.borrow();
                                     if scope==Some((delays.generation,delays.epoch)){proxies.measurements=delays.results.clone();proxies.testing=delays.testing.clone();proxies.batches=delays.batches.clone();}
         let sources=proxies.entries.values().filter(|proxy|!proxy.hidden).map(|proxy|proxy.icon.trim().to_owned()).filter(|source|!source.is_empty() && source.len()<=3*1024*1024).take(128).collect();
                                     let request=Arc::new(super::icons::Request{target:current.clone(),sources});
                                     icon_requests.send_if_modified(|old|{if old.as_ref().is_some_and(|old|old.target.generation==request.target.generation && old.target.epoch==request.target.epoch && old.sources==request.sources){false}else{*old=Some(request);true}});
                                     runtime.connected=true;runtime.mode=Some(mode);runtime.dns_mode=dns.or_else(||current.dns_mode.clone());runtime.error=proxies.provider_error.clone();runtime.proxies=proxies;runtime.proxy_port=port;},
-                                Err(error)=>{runtime.connected=false;runtime.error=Some(error);}
+                                Err(error)=>{control_failures+=1;runtime.connected=false;runtime.error=Some(if control_failures>=3 {format!("{error}；已停止自动重试")}else{error});}
                             }
                         }
                         if writable && last_save.elapsed()>=Duration::from_secs(30) {runtime.storage_error=recorder.save(&paths).err();last_save=Instant::now();}
                         if let Some(task)=probe.as_ref() && task.is_finished() && let Some(task)=probe.take() {
                             runtime.ip_loading=false;
-                            if let Ok(result)=task.await && scope==Some((result.generation,result.epoch)) { runtime.latency=result.latency;if let Some(info)=result.ip_info {runtime.external_ip=Some(info.ip.clone());runtime.ip_info=Some(info);}runtime.probe_error=result.error; }
+                            match task.await {
+                                Ok(result) if scope==Some((result.generation,result.epoch)) => runtime.apply_probe(result),
+                                Err(error) => runtime.probe_error=Some(format!("出口 IP 查询任务异常：{error}")),
+                                _ => {},
+                            }
                         }
                         if !cfg!(test) && runtime.connected && runtime.proxy_port.is_some() && probe.is_none() && last_probe.is_none_or(|last|auto_refresh && last.elapsed()>=Duration::from_secs(300)) {
                             last_probe=Some(Instant::now());runtime.ip_loading=true;let mut observed=current;observed.proxy_port=runtime.proxy_port.unwrap_or(0);probe=Some(tokio::spawn(probe_exit(paths.clone(),observed,target.clone(),shutdown.clone())));
@@ -396,8 +439,8 @@ async fn probe_services(
     });
     let settings = match settings {
         Ok(settings) => settings,
-        Err(_) => {
-            result.error = Some("出口检测设置读取失败".into());
+        Err(error) => {
+            result.error = Some(error.to_string());
             return result;
         }
     };
@@ -405,12 +448,13 @@ async fn probe_services(
         .get("DelayTestUrl")
         .map(String::as_str)
         .unwrap_or("https://www.gstatic.com/generate_204");
-    let timeout = settings
-        .get("DelayTestTimeout")
-        .and_then(|value| value.parse::<u64>().ok())
-        .unwrap_or(5000)
-        .clamp(100, 60000)
-        .div_ceil(1000);
+    let timeout = match settings["DelayTestTimeout"].parse::<u64>() {
+        Ok(value) if (100..=60000).contains(&value) => Duration::from_millis(value),
+        _ => {
+            result.error = Some("测速超时需在 100–60000 毫秒之间".into());
+            return result;
+        }
+    };
     let latency = probe_http(
         &paths,
         &target,
@@ -503,6 +547,15 @@ fn parse_ip_info(bytes: &[u8]) -> Result<IpInfo, String> {
         country_code: text("country_code"),
         region: text("region"),
         city: text("city"),
+        timezone: response
+            .get("timezone")
+            .and_then(|value| {
+                value
+                    .as_str()
+                    .or_else(|| value.get("id").and_then(serde_json::Value::as_str))
+            })
+            .unwrap_or_default()
+            .to_owned(),
         organization: if connection.is_some() {
             nested("isp")
         } else {
@@ -526,7 +579,7 @@ async fn probe_http(
     paths: &AppPaths,
     target: &Target,
     url: &str,
-    timeout: u64,
+    timeout: Duration,
     mut changes: watch::Receiver<Option<Target>>,
     mut shutdown: watch::Receiver<bool>,
 ) -> Result<Option<(Vec<u8>, u32)>, String> {
@@ -557,6 +610,79 @@ async fn probe_http(
 
 #[cfg(all(test, unix))]
 mod tests {
+    #[test]
+    fn ip_metadata_keeps_timezone_and_failed_refresh_keeps_last_success() {
+        let info = super::parse_ip_info(
+            br#"{"ip":"203.0.113.9","timezone":"Asia/Shanghai","country_code":"CN"}"#,
+        )
+        .unwrap();
+        assert_eq!(info.timezone, "Asia/Shanghai");
+        let nested = super::parse_ip_info(
+            br#"{"ip":"203.0.113.10","timezone":{"id":"Europe/Paris"},"connection":{"asn":64500}}"#,
+        )
+        .unwrap();
+        assert_eq!(nested.timezone, "Europe/Paris");
+        assert_eq!(nested.asn, Some(64500));
+        let mut runtime = super::Runtime::default();
+        runtime.apply_probe(super::Probe {
+            generation: 1,
+            epoch: 1,
+            latency: Some(23),
+            ip: Some(info.ip.clone()),
+            ip_info: Some(info.clone()),
+            error: None,
+        });
+        runtime.apply_probe(super::Probe {
+            generation: 1,
+            epoch: 1,
+            latency: None,
+            ip: None,
+            ip_info: None,
+            error: Some("IP 服务返回 HTTP 503".into()),
+        });
+        assert_eq!(runtime.ip_info, Some(info));
+        assert_eq!(runtime.external_ip.as_deref(), Some("203.0.113.9"));
+        assert_eq!(runtime.probe_error.as_deref(), Some("IP 服务返回 HTTP 503"));
+    }
+
+    #[tokio::test]
+    async fn ip_refresh_preference_survives_reload_and_manual_refresh() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = crate::storage::AppPaths::isolated(root.path());
+        let repository = crate::storage::Repository::open(paths.clone()).unwrap();
+        let kind = crate::preferences::SettingsKind::General;
+        let mut values = crate::preferences::defaults(kind);
+        values.insert("IpAutoRefresh".into(), "false".into());
+        repository
+            .save(
+                &crate::storage::Namespace::parse(kind.id()).unwrap(),
+                &values,
+            )
+            .unwrap();
+        let (_targets, target) = tokio::sync::watch::channel(None);
+        let (updates, events) = async_channel::bounded(1);
+        let observer = events.clone();
+        let (stop, shutdown) = tokio::sync::watch::channel(false);
+        let (controls, refresh) = tokio::sync::watch::channel(super::ProbeControl::default());
+        let task = tokio::spawn(super::run(
+            paths,
+            target,
+            updates,
+            observer,
+            shutdown,
+            None,
+            Some(refresh),
+        ));
+        assert_eq!(events.recv().await.unwrap().ip_auto_refresh, Some(false));
+        controls.send_modify(|control| control.revision += 1);
+        assert_eq!(events.recv().await.unwrap().ip_auto_refresh, Some(false));
+        controls.send_modify(|control| control.auto_refresh = Some(true));
+        assert_eq!(events.recv().await.unwrap().ip_auto_refresh, Some(true));
+        stop.send_replace(true);
+        task.await.unwrap();
+        let reloaded = crate::preferences::values(&repository, kind).unwrap();
+        assert_eq!(reloaded["IpAutoRefresh"], "false");
+    }
     use super::*;
     use crate::core::client::Endpoint;
     #[tokio::test]
@@ -566,6 +692,7 @@ mod tests {
         let socket = root.path().join("monitor.sock");
         let listener = tokio::net::UnixListener::bind(&socket).unwrap();
         let (targets, target) = watch::channel(Some(Target {
+            logs: None,
             http: crate::network::Http::default(),
             client: Client::new(Endpoint::Unix(socket), String::new()),
             generation: 1,
@@ -664,6 +791,7 @@ mod tests {
             requests
         });
         let target = Target {
+            logs: None,
             http: crate::network::Http::default(),
             client: Client::new(
                 Endpoint::Unix(root.path().join("unused.sock")),

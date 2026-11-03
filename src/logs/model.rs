@@ -194,7 +194,7 @@ mod tests {
         );
     }
     #[test]
-    fn search_combines_case_word_regex_and_literal_fallback() {
+    fn search_combines_case_word_and_regex_without_literal_fallback() {
         let entry = &initial_entries()[4];
         let mut search = LogSearch::default();
         search.compile("mixed");
@@ -211,6 +211,7 @@ mod tests {
         assert!(search.matches(&entry.text()));
         search.compile("[");
         assert!(search.error.is_some());
+        assert!(!search.matches("["));
         search.whole_word = false;
         search.compile("代理组");
         assert!(search.matches(&initial_entries()[2].text()));

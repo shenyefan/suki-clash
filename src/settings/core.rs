@@ -58,9 +58,9 @@ impl SettingsPage {
         let core = self.session.read(cx).core();
         let has_process = core.has_process();
         let busy = self.session.read(cx).core_busy();
-        if self.runtime_tab == 0
-            && (query.is_empty() || "mihomo smart 内核 状态 版本 发行 通道".contains(query))
-        {
+        let status_matches = self.runtime_tab == 0
+            && (query.is_empty() || "mihomo smart 内核 状态 版本 发行 通道".contains(query));
+        if status_matches {
             let status = h_flex()
                 .gap(space::SM)
                 .child(ui::muted(core.label(), cx))
@@ -155,7 +155,7 @@ impl SettingsPage {
             2 => &["访问控制"],
             _ => &["内核维护", "外部控制", "WebUI", "日志维护"],
         };
-        let mut found = false;
+        let mut found = status_matches;
         for section in &self.sections {
             if section.title == "状态" {
                 continue;
@@ -343,5 +343,55 @@ impl SettingsPage {
             return ui::empty(IconName::Search, "未找到设置项", "尝试其他关键词", cx);
         }
         body
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SettingsPage;
+    use crate::{session::Session, settings::SettingsKind};
+    use gpui_kit::{
+        AppContext as _, Context, TestAppContext, WindowOptions, test::TestWindowExt as _,
+    };
+    #[gpui_kit::test]
+    fn status_only_search_keeps_the_core_status_card(cx: &mut TestAppContext) {
+        let root = tempfile::tempdir().unwrap();
+        let paths = crate::storage::AppPaths::isolated(root.path());
+        let service =
+            crate::integration::Service::start(crate::storage::Repository::open(paths).unwrap())
+                .unwrap();
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            crate::integration::init(service, None, cx);
+            cx.set_reduce_motion(true);
+        });
+        let (handle, page) = cx.update(|cx| {
+            gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
+                let session = cx.new(Session::new);
+                cx.new(|cx| SettingsPage::new(SettingsKind::Core, session, window, cx))
+            })
+            .unwrap()
+        });
+        for query in ["版本", "状态"] {
+            handle
+                .update(cx, |_, window, cx| {
+                    page.update(cx, |this, cx: &mut Context<SettingsPage>| {
+                        this.filter
+                            .update(cx, |filter, cx| filter.set_value(query, window, cx));
+                        cx.notify();
+                    });
+                    window.render_frame(cx);
+                    assert!(
+                        window.find("core-power").visible(),
+                        "status search must retain core card: {query}"
+                    );
+                    assert!(
+                        window.find("core-upgrade").visible(),
+                        "version search must retain version row: {query}"
+                    );
+                })
+                .unwrap();
+        }
+        crate::integration::finish_test_services(cx);
     }
 }

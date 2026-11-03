@@ -58,6 +58,9 @@ impl Preferences {
         defaults.extend(crate::preferences::defaults(
             crate::preferences::SettingsKind::Resources,
         ));
+        defaults.extend(crate::preferences::defaults(
+            crate::preferences::SettingsKind::Tun,
+        ));
         let app_values = crate::preferences::app::read_values(paths, "core", LIMIT)?;
         let saved = if native.try_exists().map_err(|_| "无法检查内核设置")? {
             let mapping: Mapping =
@@ -86,6 +89,7 @@ impl Preferences {
             })
         };
         if let Some(saved) = &saved {
+            super::tun::project(&saved.native)?;
             validate_native(&saved.native)
                 .map_err(|error| format!("{}：{error}；请修正文件后重试", native.display()))?;
             if saved.app.contains_key("WebUiConfigured") {
@@ -286,6 +290,10 @@ impl Preferences {
         ] {
             app.remove(field);
         }
+        super::tun::apply(values, &mut native)?;
+        for (field, _) in super::tun::FIELDS {
+            app.remove(*field);
+        }
         super::resources::apply(values, &mut native)?;
         app.retain(|key, _| !super::resources::is_field(key));
         Ok(Self { native, app })
@@ -293,6 +301,9 @@ impl Preferences {
     pub(crate) fn values(&self) -> Values {
         let mut values = self.app.clone();
         values.extend(super::resources::read(&self.native));
+        if let Ok(tun) = super::tun::project(&self.native) {
+            values.extend(tun);
+        }
         if let Some(channel) = values.get_mut("CoreReleaseIndex") {
             *channel = match channel.as_str() {
                 "latest" => "最新版",
@@ -441,7 +452,7 @@ impl Preferences {
     }
     pub(crate) fn overlay(&self, config: &mut Mapping) {
         for (key, value) in &self.native {
-            if matches!(key.as_str(), Some("profile" | "geox-url")) {
+            if matches!(key.as_str(), Some("profile" | "geox-url" | "tun")) {
                 let mut profile = config
                     .get(key)
                     .and_then(Value::as_mapping)
@@ -470,15 +481,7 @@ impl Preferences {
                 config.insert(key.into(), value.clone());
             }
         }
-        config.insert(
-            "bind-address".into(),
-            if self.native.get("allow-lan").and_then(Value::as_bool) == Some(true) {
-                "*"
-            } else {
-                "127.0.0.1"
-            }
-            .into(),
-        );
+        ensure_lan_bind_address(config);
     }
     pub(crate) fn save(&self, paths: &AppPaths) -> Result<(), String> {
         let [native, _] = Self::paths(paths);
@@ -660,9 +663,57 @@ fn read_bytes(path: &std::path::Path) -> Result<Vec<u8>, String> {
     Ok(bytes)
 }
 
+/// Widen only loopback bindings when LAN access is enabled; explicit interfaces stay authoritative.
+pub(crate) fn ensure_lan_bind_address(config: &mut Mapping) {
+    if config.get("allow-lan").and_then(Value::as_bool) != Some(true) {
+        return;
+    }
+    let Some(address) = config.get("bind-address").and_then(Value::as_str) else {
+        return;
+    };
+    let address = address.trim();
+    let address = address
+        .strip_prefix('[')
+        .and_then(|s| s.strip_suffix(']'))
+        .unwrap_or(address);
+    let loopback = address.eq_ignore_ascii_case("localhost")
+        || address.parse::<std::net::IpAddr>().is_ok_and(|address| address.is_loopback())
+        || address.split('.').map(str::parse::<u32>).collect::<Result<Vec<_>, _>>().is_ok_and(|parts| {
+            matches!(parts.as_slice(), [127, tail] if *tail <= 0x00ff_ffff)
+                || matches!(parts.as_slice(), [127, middle, tail] if *middle <= 0xff && *tail <= 0xffff)
+        });
+    if loopback {
+        config.insert("bind-address".into(), "*".into());
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn lan_overlay_preserves_explicit_interfaces_and_only_widens_loopback() {
+        for allowed in [false, true] {
+            let preferences = Preferences::from_values(
+                &Values::from([("AllowLan".into(), allowed.to_string())]),
+                None,
+            )
+            .unwrap();
+            for address in ["192.168.1.2", "2001:db8::10", "*"] {
+                let mut config = Mapping::from_iter([("bind-address".into(), address.into())]);
+                preferences.overlay(&mut config);
+                assert_eq!(config["bind-address"], address);
+            }
+            for address in ["127.0.0.1", "127.1", "127.0.1", "localhost", "[::1]"] {
+                let mut config = Mapping::from_iter([("bind-address".into(), address.into())]);
+                preferences.overlay(&mut config);
+                assert_eq!(config["bind-address"], if allowed { "*" } else { address });
+            }
+            let mut config = Mapping::new();
+            preferences.overlay(&mut config);
+            assert!(!config.contains_key("bind-address"));
+        }
+    }
+
     #[test]
     fn native_yaml_roundtrip_preserves_unknown_fields_and_keeps_preferences_separate() {
         let root = tempfile::tempdir().unwrap();

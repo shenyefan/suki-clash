@@ -17,6 +17,21 @@ use gpui_kit::{
     *,
 };
 
+pub(super) enum DeferredAction {
+    ResetProgram,
+    FlushFakeIp,
+    Service(crate::core::ServiceAction),
+}
+impl DeferredAction {
+    fn label(&self) -> &'static str {
+        match self {
+            Self::ResetProgram => "重置程序",
+            Self::FlushFakeIp => "清空 Fake-IP 缓存",
+            Self::Service(crate::core::ServiceAction::Uninstall) => "卸载服务",
+            Self::Service(_) => "转为子进程",
+        }
+    }
+}
 impl SettingsPage {
     pub(super) fn runtime_view(&self, window: &mut Window, cx: &mut Context<Self>) -> Div {
         if self.kind == SettingsKind::SysProxy {
@@ -193,6 +208,22 @@ impl SettingsPage {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let action = match action {
+            "重置程序" => DeferredAction::ResetProgram,
+            "清空 Fake-IP 缓存" => DeferredAction::FlushFakeIp,
+            _ => {
+                ui::show_error("操作不可用".into(), window, cx);
+                return;
+            }
+        };
+        self.defer_action(action, window, cx);
+    }
+    pub(super) fn defer_action(
+        &mut self,
+        action: DeferredAction,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.pending_action.is_some() {
             ui::show_error("已有待执行操作，请先完成或撤销".into(), window, cx);
             return;
@@ -200,7 +231,7 @@ impl SettingsPage {
         let owner = cx.weak_entity();
         let note = ui::notifications::undo(
             window,
-            format!("将在 5 秒后{action}"),
+            format!("将在 5 秒后{}", action.label()),
             cx,
             move |_, cx| {
                 let _ = owner.update(cx, |this, cx| {
@@ -221,10 +252,16 @@ impl SettingsPage {
                 if let Some(note) = note {
                     note.update(cx, |note, cx| note.dismiss(window, cx));
                 }
-                if action == "重置程序" {
-                    crate::core::reset_program(window, cx);
-                } else {
-                    crate::core::request(crate::core::Command::FlushFakeIp, window, cx);
+                match action {
+                    DeferredAction::ResetProgram => crate::core::reset_program(window, cx),
+                    DeferredAction::FlushFakeIp => {
+                        crate::core::request(crate::core::Command::FlushFakeIp, window, cx)
+                    }
+                    DeferredAction::Service(action) => crate::core::request(
+                        crate::core::Command::PlatformService(action),
+                        window,
+                        cx,
+                    ),
                 }
                 cx.notify();
             });

@@ -55,10 +55,12 @@ pub(crate) fn initialize(repository: &Repository) -> Result<(), StorageError> {
         failures.push(error.clone());
     }
     let mut pending = Vec::new();
-    for kind in SettingsKind::ALL
-        .into_iter()
-        .filter(|kind| !matches!(kind, SettingsKind::Core | SettingsKind::Resources))
-    {
+    for kind in SettingsKind::ALL.into_iter().filter(|kind| {
+        !matches!(
+            kind,
+            SettingsKind::Core | SettingsKind::Resources | SettingsKind::Tun
+        )
+    }) {
         let result = (|| {
             let namespace = Namespace::parse(kind.id())?;
             let saved = repository.read(&namespace)?;
@@ -137,6 +139,30 @@ mod tests {
     use super::*;
     use crate::storage::AppPaths;
     #[test]
+    fn general_settings_expose_only_implemented_authorized_consumers() {
+        let fields = schema::sections(SettingsKind::General)
+            .into_iter()
+            .flat_map(|section| section.fields)
+            .map(|field| field.key)
+            .collect::<Vec<_>>();
+        let defaults = defaults(SettingsKind::General);
+        for key in [
+            "AutoCheckUpdate",
+            "PriorityIndex",
+            "DiffWorkDir",
+            "UseHotReloadProfile",
+            "HotReloadProfileAutoCloseConnection",
+            "TestProfileOnStart",
+            "PauseSsidText",
+            "DisableDnsOnPauseSsid",
+        ] {
+            assert!(!fields.contains(&key), "{key}");
+            assert!(!defaults.contains_key(key), "{key}");
+        }
+        assert!(fields.contains(&"AutoCloseConnection"));
+        assert!(fields.contains(&"GistBackup"));
+    }
+    #[test]
     fn missing_settings_create_defaults_without_user_sources_and_reopen_keeps_edits() {
         let root = tempfile::tempdir().unwrap();
         let paths = AppPaths::isolated(root.path());
@@ -163,12 +189,12 @@ mod tests {
             "dns",
             "sniffer",
             "sysproxy",
-            "tun",
             "runtime",
             "proxy_chain",
         ] {
             assert!(program[section].is_object(), "{section}");
         }
+        assert!(program.get("tun").is_none());
         assert_eq!(program["dns"]["dns_override_enabled"], false);
         for name in ["dns", "sniffer"] {
             let yaml: serde_yaml_ng::Value = serde_yaml_ng::from_slice(

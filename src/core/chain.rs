@@ -51,6 +51,13 @@ impl Actor {
             self.snapshot.information = Some("链式代理设置已保存".into());
             return Ok(());
         }
+        let client = self
+            .running
+            .as_ref()
+            .ok_or("链式配置已应用；内核尚未运行")?
+            .launch
+            .client
+            .clone();
         let result = async {
             let node = if desired.enabled {
                 desired
@@ -104,6 +111,12 @@ impl Actor {
                 self.apply_profile_candidate(candidate, move || saved.save(&paths))
                     .await?;
                 if let Some(node) = selection {
+                    let client = &self
+                        .running
+                        .as_ref()
+                        .ok_or("原链式配置已恢复；内核尚未运行")?
+                        .launch
+                        .client;
                     client.select_proxy(&target, Some(&node)).await?;
                     if !client
                         .proxies(&[])
@@ -121,29 +134,36 @@ impl Actor {
                 Err(recovery) => format!("{error}；链式配置恢复失败：{recovery}"),
             });
         }
-        if !desired.enabled {
-            client
-                .close_connections(None)
-                .await
-                .map_err(|error| format!("链式代理已断开；{error}"))?;
-            let remaining: crate::overview::statistics::Connections =
-                serde_json::from_value(client.json("/connections").await?)
-                    .map_err(|_| "链式代理已断开；连接回读无效")?;
-            if !remaining.connections.is_empty() {
-                return Err("链式代理已断开；仍有活动连接".into());
-            }
-        }
-        self.snapshot.chain = desired;
+        // Configuration and selection are committed before connection cleanup.
+        // A later cleanup failure must not publish the old connected state.
+        self.snapshot.chain = desired.clone();
+        self.snapshot.operation_committed = true;
         self.invalidate_monitor();
         self.publish(Phase::Ready, None);
-        self.snapshot.information = Some(
-            if self.snapshot.chain.enabled {
-                "链式代理已连接"
+        if !desired.enabled {
+            super::connections::close_current_connections(&client)
+                .await
+                .map_err(|error| format!("链式代理已断开；连接清理未完成：{error}"))?;
+        }
+        self.snapshot.information = Some(if self.snapshot.chain.enabled {
+            let observed = client
+                .proxies(&[])
+                .await
+                .map_err(|error| format!("链式配置已应用；出口状态回读失败：{error}"))?;
+            let exit = self.snapshot.chain.nodes.last().map(String::as_str);
+            if observed.selected(&self.snapshot.chain.group) == exit {
+                "链式代理已连接".into()
             } else {
-                "链式代理已断开"
+                format!(
+                    "链式配置已应用；出口已固定，当前节点：{}",
+                    observed
+                        .selected(&self.snapshot.chain.group)
+                        .unwrap_or("待确认")
+                )
             }
-            .into(),
-        );
+        } else {
+            "链式代理已断开".into()
+        });
         Ok(())
     }
 }

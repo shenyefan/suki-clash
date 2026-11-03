@@ -70,6 +70,7 @@ pub(crate) struct Document {
     pub(crate) accept_invalid_certs: bool,
     pub(crate) token: String,
     pub(crate) age_key: String,
+    pub(crate) credentials: super::credentials::CredentialEdits,
     pub(crate) usage: Option<TrafficUsage>,
     pub(crate) updated_at: Option<i64>,
     pub(crate) home: String,
@@ -107,6 +108,7 @@ impl Document {
             accept_invalid_certs: false,
             token: String::new(),
             age_key: String::new(),
+            credentials: Default::default(),
             usage: None,
             updated_at: None,
             home: String::new(),
@@ -131,6 +133,12 @@ impl Document {
         !self.url.is_empty()
     }
 }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SubscriptionImport {
+    pub(crate) url: String,
+    pub(crate) name: Option<String>,
+}
+
 pub(crate) fn valid_remote_url(value: &str) -> bool {
     value.len() <= 8192
         && url::Url::parse(value).ok().is_some_and(|url| {

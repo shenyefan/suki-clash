@@ -75,6 +75,10 @@ impl SettingsPage {
         if values.get("EnableProxyGuard").is_some_and(|v| v == "true") {
             rows.push(self.field_row("ProxyGuardDuration", cx));
         }
+        if !pac {
+            rows.push(self.field_row("UseDefaultBypass", cx));
+            rows.push(self.field_row("EnableBypassCheck", cx));
+        }
         let key = if pac { "PacScript" } else { "BypassList" };
         let field = &self.fields[key];
         let mut editor = v_flex().w_full().min_w(space::NONE).gap(space::SM);
@@ -170,7 +174,7 @@ mod tests {
         .unwrap();
         cx.update(|cx| {
             gpui_kit::init(cx);
-            crate::integration::init(service, cx);
+            crate::integration::init(service, None, cx);
             cx.set_reduce_motion(true);
         });
         let retained = Rc::new(RefCell::new(None));

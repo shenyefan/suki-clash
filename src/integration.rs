@@ -25,6 +25,9 @@ pub(crate) fn logs(cx: &App) -> crate::logging::Feed {
 pub(crate) fn shutdown(cx: &mut App) -> Option<std::thread::JoinHandle<()>> {
     cx.global_mut::<Bridge>().service.shutdown()
 }
+pub(crate) fn flush(cx: &mut App) -> Result<Option<service::Pending>, ServiceError> {
+    cx.global_mut::<Bridge>().service.flush()
+}
 pub(crate) fn paths(cx: &App) -> Option<AppPaths> {
     cx.global::<Bridge>().service.paths().cloned()
 }
@@ -49,9 +52,11 @@ pub(crate) fn announce_module(
         ));
     }
 }
-pub(crate) fn init(service: Service, cx: &mut App) {
+pub(crate) fn init(service: Service, startup_error: Option<String>, cx: &mut App) {
     ui::notifications::init(cx);
-    if let Some(paths) = service.paths() {
+    if let Some(error) = startup_error {
+        crate::core::init_unavailable(error, cx);
+    } else if let Some(paths) = service.paths() {
         crate::core::init(paths.clone(), service.logs(), cx);
     } else {
         crate::core::init_unavailable("无法确定应用数据目录".into(), cx);
@@ -73,7 +78,7 @@ pub(crate) fn init(service: Service, cx: &mut App) {
     });
 }
 pub(crate) fn read(page: &str, cx: &App) -> Values {
-    if matches!(page, "core" | "resources")
+    if matches!(page, "core" | "resources" | "tun")
         && let Some(preferences) = crate::core::controller(cx)
             .read(cx)
             .snapshot()
@@ -279,7 +284,7 @@ mod tests {
             Service::start(Repository::open(AppPaths::isolated(root.path())).unwrap()).unwrap();
         cx.update(|cx| {
             gpui_kit::init(cx);
-            init(service, cx);
+            init(service, None, cx);
         });
         let window = cx.open_window(size(px(400.), px(300.)), |_, _| Host);
         cx.update(|cx| cx.global_mut::<Bridge>().service.shutdown())
@@ -320,7 +325,7 @@ mod tests {
             Service::start(Repository::open(AppPaths::isolated(root.path())).unwrap()).unwrap();
         cx.update(|cx| {
             gpui_kit::init(cx);
-            init(service, cx);
+            init(service, None, cx);
         });
         let window = cx.open_window(size(px(400.), px(300.)), |_, _| Host);
         let complete = Rc::new(Cell::new(false));

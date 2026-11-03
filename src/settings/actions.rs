@@ -10,6 +10,73 @@ impl SettingsPage {
         cx: &mut Context<Self>,
     ) -> bool {
         match action {
+            "配置 Gist 备份" => super::gist::configure(window, cx),
+            "创建 Gist 备份" => crate::core::request(
+                crate::core::Command::Gist(crate::core::gist::Command::Create),
+                window,
+                cx,
+            ),
+            "Gist 备份历史" => super::gist::history(window, cx),
+            "安装服务" | "修复服务" | "停止服务内核" | "转为子进程" | "卸载服务" =>
+            {
+                let action = match action {
+                    "安装服务" => crate::core::ServiceAction::Install,
+                    "修复服务" => crate::core::ServiceAction::Repair,
+                    "转为子进程" => crate::core::ServiceAction::Sidecar,
+                    "卸载服务" => crate::core::ServiceAction::Uninstall,
+                    _ => crate::core::ServiceAction::Stop,
+                };
+                if matches!(
+                    action,
+                    crate::core::ServiceAction::Sidecar | crate::core::ServiceAction::Uninstall
+                ) {
+                    use gpui_kit::component::WindowExt;
+                    let title = if matches!(action, crate::core::ServiceAction::Uninstall) {
+                        "卸载服务并关闭虚拟网卡？"
+                    } else {
+                        "转为子进程并关闭虚拟网卡？"
+                    };
+                    let owner = cx.weak_entity();
+                    window.open_alert_dialog(cx, move |dialog, window, cx| {
+                        let action = action.clone();
+                        let owner = owner.clone();
+                        ui::modal_alert(dialog, window, cx)
+                            .title(title)
+                            .description(
+                                "系统代理设置保留；虚拟网卡将关闭。确认后等待 5 秒，期间可撤销。",
+                            )
+                            .footer(ui::dialog_footer(
+                                if matches!(action, crate::core::ServiceAction::Uninstall) {
+                                    "卸载服务"
+                                } else {
+                                    "转为子进程"
+                                },
+                            ))
+                            .on_ok(move |_, window, cx| {
+                                let _ = owner.update(cx, |this, cx| {
+                                    this.defer_action(
+                                        super::runtime::DeferredAction::Service(action.clone()),
+                                        window,
+                                        cx,
+                                    )
+                                });
+                                true
+                            })
+                    });
+                } else {
+                    crate::core::request(crate::core::Command::PlatformService(action), window, cx);
+                }
+            }
+            "重建防火墙规则" => crate::core::request(
+                crate::core::Command::WindowsNetwork(
+                    suki_service::windows_network::Request::RebuildFirewall,
+                ),
+                window,
+                cx,
+            ),
+            "选择普通图标" => crate::tray::choose_icon("common", window, cx),
+            "选择系统代理图标" => crate::tray::choose_icon("system", window, cx),
+            "选择虚拟网卡图标" => crate::tray::choose_icon("tun", window, cx),
             "导出诊断信息" => {
                 storage::execute(
                     storage::Command::Diagnostics,
@@ -52,52 +119,100 @@ impl SettingsPage {
                 "Suki Clash v{}",
                 env!("CARGO_PKG_VERSION")
             ))),
-            "复制环境变量" => {
-                let values = self.values(cx);
-                if let Some(error) = super::schema::validate(&self.sections, &values) {
-                    ui::show_error(error, window, cx);
-                    return true;
-                }
-                let host = storage::read("sysproxy", cx)
-                    .get("SystemProxyHost")
-                    .cloned()
-                    .unwrap_or_else(|| "127.0.0.1".into());
-                let port = storage::read("core", cx)
-                    .get("MixedPort")
-                    .cloned()
-                    .unwrap_or_else(|| "7897".into());
-                let host = if host.contains(':') && !host.starts_with('[') {
-                    format!("[{host}]")
-                } else {
-                    host
-                };
-                let http = format!("http://{host}:{port}");
-                let socks = format!("socks5://{host}:{port}");
-                let output = match values
-                    .get("EnvTypeIndex")
-                    .map(String::as_str)
-                    .unwrap_or("Bash")
-                {
-                    "PowerShell" => format!(
-                        "$env:http_proxy='{http}'; $env:https_proxy='{http}'; $env:all_proxy='{socks}'"
-                    ),
-                    "CMD" => format!(
-                        "set http_proxy={http}\r\nset https_proxy={http}\r\nset all_proxy={socks}"
-                    ),
-                    "Fish" => format!(
-                        "set -gx http_proxy '{http}'; set -gx https_proxy '{http}'; set -gx all_proxy '{socks}'"
-                    ),
-                    "Nushell" => format!(
-                        "$env.http_proxy = '{http}'; $env.https_proxy = '{http}'; $env.all_proxy = '{socks}'"
-                    ),
-                    _ => format!(
-                        "export http_proxy='{http}' https_proxy='{http}' all_proxy='{socks}'"
-                    ),
-                };
-                cx.write_to_clipboard(ClipboardItem::new_string(output));
-            }
+            "复制环境变量" => copy_environment(window, cx),
             _ => return false,
         }
         true
+    }
+}
+
+/// Shared by settings and the tray. Copy only configured protocol listeners.
+pub(crate) fn copy_environment(window: &mut Window, cx: &mut App) {
+    let values = storage::read("settings", cx);
+    let host = storage::read("sysproxy", cx)
+        .get("SystemProxyHost")
+        .cloned()
+        .unwrap_or_else(|| "127.0.0.1".into());
+    let ports = storage::read("core", cx);
+    match environment(
+        &host,
+        &ports,
+        values
+            .get("EnvTypeIndex")
+            .map(String::as_str)
+            .unwrap_or("Bash"),
+    ) {
+        Ok(output) => cx.write_to_clipboard(ClipboardItem::new_string(output)),
+        Err(error) => ui::show_error(error, window, cx),
+    }
+}
+fn environment(host: &str, ports: &crate::storage::Values, shell: &str) -> Result<String, String> {
+    let port = |name: &str| {
+        ports
+            .get(name)
+            .and_then(|value| value.parse::<u16>().ok())
+            .filter(|port| *port != 0)
+    };
+    let mixed = port("MixedPort");
+    let http = mixed.or_else(|| port("HttpPort"));
+    let socks = mixed.or_else(|| port("SocksPort"));
+    if http.is_none() && socks.is_none() {
+        return Err("未配置 HTTP 或 SOCKS 代理监听端口".into());
+    }
+    let host = if host.contains(':') && !host.starts_with('[') {
+        format!("[{host}]")
+    } else {
+        host.to_owned()
+    };
+    let http = http.map(|port| format!("http://{host}:{port}"));
+    let socks = socks.map(|port| format!("socks5://{host}:{port}"));
+    let entries = [
+        ("http_proxy", http.as_deref()),
+        ("https_proxy", http.as_deref()),
+        ("all_proxy", socks.as_deref()),
+    ];
+    let commands = entries
+        .into_iter()
+        .map(|(name, value)| match (shell, value) {
+            ("PowerShell", Some(value)) => format!("$env:{name}='{value}'"),
+            ("PowerShell", None) => format!("Remove-Item Env:{name} -ErrorAction SilentlyContinue"),
+            ("CMD", Some(value)) => format!("set {name}={value}"),
+            ("CMD", None) => format!("set {name}="),
+            ("Fish", Some(value)) => format!("set -gx {name} '{value}'"),
+            ("Fish", None) => format!("set -e {name}"),
+            ("Nushell", Some(value)) => format!("$env.{name} = '{value}'"),
+            ("Nushell", None) => format!("hide-env --ignore-errors {name}"),
+            (_, Some(value)) => format!("export {name}='{value}'"),
+            (_, None) => format!("unset {name}"),
+        })
+        .collect::<Vec<_>>();
+    Ok(commands.join(if shell == "CMD" { "\r\n" } else { "; " }))
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[::core::prelude::v1::test]
+    fn environment_uses_available_protocol_ports_and_clears_unavailable_variables() {
+        let ports = crate::storage::Values::from([
+            ("MixedPort".into(), "0".into()),
+            ("HttpPort".into(), "8080".into()),
+            ("SocksPort".into(), "0".into()),
+        ]);
+        let text = environment("::1", &ports, "Bash").unwrap();
+        assert!(text.contains("http://[::1]:8080"));
+        assert!(text.contains("unset all_proxy"));
+        assert!(!text.contains("socks5://"));
+        for shell in ["PowerShell", "CMD", "Fish", "Nushell"] {
+            assert!(
+                !environment("127.0.0.1", &ports, shell)
+                    .unwrap()
+                    .contains(":0")
+            );
+        }
+        let ports = crate::storage::Values::from([("SocksPort".into(), "1080".into())]);
+        let text = environment("localhost", &ports, "Fish").unwrap();
+        assert!(text.contains("socks5://localhost:1080"));
+        assert!(text.contains("set -e http_proxy"));
+        assert!(environment("localhost", &Default::default(), "Bash").is_err());
     }
 }

@@ -1,7 +1,9 @@
 //! Bounded per-file application/core logs with age-based retention, owned off the UI thread.
 mod feed;
+mod redact;
 use crate::storage::{AppPaths, DirectoryKind};
 pub(crate) use feed::{Feed, Level, Record, core_record};
+pub(crate) use redact::redact;
 use std::{
     fs::{self, File, OpenOptions},
     io::{self, Write as _},
@@ -109,27 +111,35 @@ impl Sink {
         }
         Ok(())
     }
-    pub(crate) fn write(&mut self, mut bytes: &[u8]) -> io::Result<()> {
-        while !bytes.is_empty() {
-            if self.size >= self.limit {
-                self.file.flush()?;
-                self.part = self
-                    .part
-                    .checked_add(1)
-                    .ok_or_else(|| io::Error::other("日志分卷编号耗尽"))?;
-                self.file = create(
-                    &self
-                        .directory
-                        .join(format!("{}-{}.log", self.prefix, self.part)),
-                )?;
-                self.size = 0;
-                self.prune_count()?;
-            }
-            let length = (self.limit - self.size).min(bytes.len() as u64) as usize;
-            self.file.write_all(&bytes[..length])?;
-            self.size += length as u64;
-            bytes = &bytes[length..];
+    /// One call is one complete UTF-8 record. A large record owns a whole part;
+    /// the hard limit rejects it before any file bytes are changed.
+    pub(crate) fn write(&mut self, bytes: &[u8]) -> io::Result<()> {
+        const MAX_RECORD_BYTES: usize = 64 * 1024;
+        if bytes.len() > MAX_RECORD_BYTES {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "单条日志超过64KiB上限",
+            ));
         }
+        std::str::from_utf8(bytes)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "日志记录不是有效UTF-8"))?;
+        if bytes.is_empty() {
+            return Ok(());
+        }
+        if self.size > 0 && self.size.saturating_add(bytes.len() as u64) > self.limit {
+            self.file.flush()?;
+            let part = self
+                .part
+                .checked_add(1)
+                .ok_or_else(|| io::Error::other("日志分卷编号耗尽"))?;
+            let file = create(&self.directory.join(format!("{}-{part}.log", self.prefix)))?;
+            self.file = file;
+            self.part = part;
+            self.size = 0;
+            self.prune_count()?;
+        }
+        self.file.write_all(bytes)?;
+        self.size += bytes.len() as u64;
         self.file.flush()
     }
 }
@@ -176,14 +186,17 @@ fn cleanup(directory: &std::path::Path, prefix: &str, days: u32) -> io::Result<(
 mod tests {
     use super::*;
     #[test]
-    fn logs_rotate_at_the_byte_limit_and_do_not_touch_unowned_files() {
+    fn logs_rotate_between_complete_records_and_do_not_touch_unowned_files() {
         let root = tempfile::tempdir().unwrap();
         let paths = AppPaths::isolated(root.path());
         paths.create().unwrap();
         let unrelated = paths.directory(DirectoryKind::Logs).join("unrelated.log");
         fs::write(&unrelated, b"keep").unwrap();
         let mut sink = Sink::new(&paths, Source::Core, 7, 1024).unwrap();
-        sink.write(&vec![b'x'; 2500]).unwrap();
+        for _ in 0..3 {
+            sink.write("[INFO] 一条完整记录\n".repeat(32).as_bytes())
+                .unwrap();
+        }
         let logs = fs::read_dir(paths.directory(DirectoryKind::Logs))
             .unwrap()
             .map(|entry| entry.unwrap().path())
@@ -200,5 +213,14 @@ mod tests {
                 .all(|path| fs::metadata(path).unwrap().len() <= 1024)
         );
         assert_eq!(fs::read(unrelated).unwrap(), b"keep");
+        assert!(logs.iter().all(|path| {
+            fs::read_to_string(path)
+                .unwrap()
+                .ends_with("一条完整记录\n")
+        }));
+        sink.write("中".repeat(1000).as_bytes()).unwrap();
+        let before = sink.size;
+        assert!(sink.write(&vec![b'x'; 64 * 1024 + 1]).is_err());
+        assert_eq!(sink.size, before);
     }
 }

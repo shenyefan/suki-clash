@@ -1,7 +1,9 @@
 mod chain;
 pub(crate) mod chain_config;
+pub(crate) mod chain_sources;
 mod model;
 mod node_list;
+pub(crate) mod preferences;
 pub(crate) mod runtime;
 mod view;
 
@@ -19,6 +21,7 @@ pub(crate) struct ProxiesPage {
     search: model::Filter,
     group_filter: BTreeSet<String>,
     group_urls: BTreeMap<String, Entity<InputState>>,
+    test_preferences: (Option<u64>, preferences::Preferences),
     url_editing: BTreeSet<String>,
     groups: Vec<ProxyGroup>,
     observed: std::sync::Arc<crate::core::Runtime>,
@@ -38,10 +41,12 @@ pub(crate) struct ProxiesPage {
 
 impl ProxiesPage {
     fn test_urls(&self, cx: &App) -> BTreeMap<String, String> {
-        self.group_urls
-            .iter()
-            .map(|(group, state)| (group.clone(), state.read(cx).value().trim().to_owned()))
-            .collect()
+        self.session
+            .read(cx)
+            .core()
+            .proxy_preferences
+            .profile(self.session.read(cx).active_profile_id())
+            .test_urls
     }
 
     pub(crate) fn new(
@@ -60,6 +65,10 @@ impl ProxiesPage {
         } else {
             Vec::new()
         };
+        let test_preferences = (
+            session.read(cx).active_profile_id(),
+            session.read(cx).core().proxy_preferences.clone(),
+        );
         let expanded = groups.iter().map(ProxyGroup::id).collect();
         let card_focus = groups
             .iter()
@@ -77,6 +86,33 @@ impl ProxiesPage {
                     .get("DelayTestTimeout")
                     .and_then(|value| value.parse().ok())
                     .unwrap_or(5000);
+                let preferences = (
+                    session.read(cx).active_profile_id(),
+                    session.read(cx).core().proxy_preferences.clone(),
+                );
+                if this.test_preferences != preferences {
+                    let urls = preferences.1.profile(preferences.0).test_urls;
+                    let previous_urls = this
+                        .test_preferences
+                        .1
+                        .profile(this.test_preferences.0)
+                        .test_urls;
+                    for (group, input) in &this.group_urls {
+                        if this.test_preferences.0 == preferences.0
+                            && previous_urls.get(group) == urls.get(group)
+                        {
+                            continue;
+                        }
+                        input.update(cx, |state, cx| {
+                            state.set_value(
+                                urls.get(group).cloned().unwrap_or_default(),
+                                window,
+                                cx,
+                            )
+                        });
+                    }
+                    this.test_preferences = preferences;
+                }
                 let runtime = session.read(cx).runtime();
                 if runtime.connected && session.read(cx).is_running() {
                     if this.observed.proxies != runtime.proxies
@@ -111,13 +147,12 @@ impl ProxiesPage {
                         });
                         let ids = groups.iter().map(ProxyGroup::id).collect::<BTreeSet<_>>();
                         this.expanded.retain(|id| ids.contains(id));
+                        this.group_filter.retain(|id| ids.contains(id));
                         for group in &groups {
-                            this.group_urls.entry(group.id()).or_insert_with(|| {
-                                cx.new(|cx| {
-                                    InputState::new(window, cx)
-                                        .placeholder("测速地址，留空使用默认")
-                                })
-                            });
+                            if !this.group_urls.contains_key(&group.id()) {
+                                let input = this.url_input(&group.id(), window, cx);
+                                this.group_urls.insert(group.id(), input);
+                            }
                             if !this.groups.iter().any(|old| old.id() == group.id()) {
                                 this.expanded.insert(group.id());
                                 if !this.query.read(cx).value().trim().is_empty() {
@@ -168,21 +203,13 @@ impl ProxiesPage {
                 cx.notify();
             }),
         ];
-        let group_urls = groups
-            .iter()
-            .map(|group| {
-                (
-                    group.id(),
-                    cx.new(|cx| InputState::new(window, cx).placeholder("测速地址，留空使用默认")),
-                )
-            })
-            .collect();
         let mut page = Self {
             session,
             query,
             search: Default::default(),
             group_filter: BTreeSet::new(),
-            group_urls,
+            group_urls: BTreeMap::new(),
+            test_preferences,
             url_editing: Default::default(),
             groups,
             observed: runtime,
@@ -199,8 +226,57 @@ impl ProxiesPage {
             card_focus,
             _subscriptions: subscriptions,
         };
+        for group in page.groups.iter().map(ProxyGroup::id).collect::<Vec<_>>() {
+            let input = page.url_input(&group, window, cx);
+            page.group_urls.insert(group, input);
+        }
         page.refresh_list(window, cx);
         page
+    }
+
+    fn url_input(
+        &mut self,
+        group: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Entity<InputState> {
+        let value = self.test_urls(cx).get(group).cloned().unwrap_or_default();
+        let input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("测速地址，留空使用默认")
+                .default_value(value)
+        });
+        let group = group.to_owned();
+        self._subscriptions.push(cx.subscribe_in(
+            &input,
+            window,
+            move |this, input, event, window, cx| {
+                if matches!(event, InputEvent::Blur) {
+                    let url = input.read(cx).value().trim().to_owned();
+                    let profile = this.session.read(cx).active_profile_id();
+                    if this
+                        .test_urls(cx)
+                        .get(&group)
+                        .map(String::as_str)
+                        .unwrap_or("")
+                        != url
+                    {
+                        crate::core::request(
+                            crate::core::Command::ProxyPreferences {
+                                profile,
+                                change: preferences::Change::TestUrl {
+                                    group: group.clone(),
+                                    url,
+                                },
+                            },
+                            window,
+                            cx,
+                        );
+                    }
+                }
+            },
+        ));
+        input
     }
 
     fn is_expanded(&self, id: &str, searching: bool) -> bool {

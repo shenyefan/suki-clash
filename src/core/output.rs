@@ -16,17 +16,14 @@ pub(super) fn capture(
     stderr: ChildStderr,
     redactions: Vec<String>,
     limits: (u32, u64),
+    suppressed: std::sync::Arc<std::sync::atomic::AtomicBool>,
 ) -> (
     JoinHandle<Result<(), String>>,
     tokio::sync::watch::Sender<LogSettings>,
 ) {
     let (settings, mut updates) = tokio::sync::watch::channel((redactions, limits));
     let task = tokio::spawn(async move {
-        let mut output = Output {
-            sink: None,
-            feed,
-            failure: None,
-        };
+        let mut output = Output::new(feed, suppressed);
         match Sink::new(&paths, Source::Core, limits.0, limits.1) {
             Ok(sink) => output.sink = Some(sink),
             Err(error) => output.fail(format!("无法创建内核日志文件：{error}")),
@@ -61,12 +58,37 @@ pub(super) fn capture(
     });
     (task, settings)
 }
-struct Output {
+pub(super) struct Output {
     sink: Option<Sink>,
     feed: Feed,
     failure: Option<String>,
+    suppressed: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 impl Output {
+    pub(super) fn new(
+        feed: Feed,
+        suppressed: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    ) -> Self {
+        Self {
+            sink: None,
+            feed,
+            failure: None,
+            suppressed,
+        }
+    }
+    pub(super) fn configure(&mut self, paths: &AppPaths, limits: (u32, u64)) {
+        if self.sink.is_none() {
+            match Sink::new(paths, Source::Core, limits.0, limits.1) {
+                Ok(sink) => self.sink = Some(sink),
+                Err(error) => self.fail(format!("无法创建内核日志文件：{error}")),
+            }
+        } else if let Some(sink) = &mut self.sink
+            && let Err(error) = sink.configure(limits.0, limits.1)
+        {
+            self.fail(format!("无法设置内核日志策略：{error}"));
+        }
+    }
+
     fn fail(&mut self, error: String) {
         if self.failure.is_none() {
             self.feed
@@ -74,7 +96,10 @@ impl Output {
             self.failure = Some(error);
         }
     }
-    fn write(&mut self, bytes: &[u8], secrets: &[String], stderr: bool) {
+    pub(super) fn write(&mut self, bytes: &[u8], secrets: &[String], stderr: bool) {
+        if self.suppressed.load(std::sync::atomic::Ordering::Acquire) {
+            return;
+        }
         let mut line = String::from_utf8_lossy(bytes).into_owned();
         for secret in secrets.iter().filter(|secret| !secret.is_empty()) {
             line = line.replace(secret, "[REDACTED]");
@@ -156,6 +181,7 @@ mod tests {
             child.stderr.take().unwrap(),
             vec![],
             (7, 1024),
+            Default::default(),
         );
         drop(settings);
         child.wait().await.unwrap();
@@ -182,6 +208,7 @@ mod tests {
             sink: Some(Sink::new(&paths, Source::Core, 7, 1024 * 1024).unwrap()),
             feed: feed.clone(),
             failure: None,
+            suppressed: Default::default(),
         };
         let mut lines = Lines::default();
         let secrets = vec!["secret-token".into()];
@@ -219,6 +246,7 @@ mod tests {
             sink: None,
             feed: feed.clone(),
             failure: None,
+            suppressed: Default::default(),
         };
         let mut lines = Lines::default();
         lines.append(&mut output, &vec![b'x'; 64 * 1024 + 1], false, &[], false);

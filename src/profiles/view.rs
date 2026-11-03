@@ -23,62 +23,17 @@ use gpui_kit::{
 };
 
 impl ProfilesPage {
-    fn document_details(document: &Document, window: &mut Window, cx: &mut App) {
-        ui::detail_dialog(
-            document.name.clone(),
-            format!(
-                "来源\t{}\n格式\t{}\n更新方式\t{}\n更新间隔\t{} 分钟\n下载超时\t{} 秒\n配置大小\t{} B\n文件行数\t{}\n订阅地址\t{}\n最后更新\t{}",
-                if document.is_remote() {
-                    "远程"
-                } else {
-                    "本地"
-                },
-                document.kind.label(),
-                if document.automatic_updates() {
-                    "自动"
-                } else {
-                    "手动"
-                },
-                document.interval,
-                document.timeout,
-                document.content.len(),
-                document.content.lines().count(),
-                if document.url.is_empty() {
-                    "—"
-                } else {
-                    &document.url
-                },
-                document
-                    .updated_at
-                    .and_then(|time| chrono::DateTime::from_timestamp(time, 0))
-                    .map(|time| time
-                        .with_timezone(&chrono::Local)
-                        .format("%Y-%m-%d %H:%M:%S")
-                        .to_string())
-                    .unwrap_or_else(|| "—".into()),
-            ),
-            window,
-            cx,
-        );
-    }
-
     fn card(&self, document: &Document, cx: &mut Context<Self>) -> AnyElement {
         let id = document.id;
         let active = !self.overrides && self.session.read(cx).active_profile_id() == Some(id);
         let owner = cx.entity();
-        let details = document.clone();
+        let js = document.kind == DocumentKind::JavaScript;
+        let remote = document.is_remote();
         let overrides = self.overrides;
         let home = document.home.clone();
         let menu = ui::icon_button(("document-menu", id), IconName::Ellipsis, "订阅操作")
             .dropdown_menu(move |menu, _, _| {
-                let details = details.clone();
-                let js = details.kind == DocumentKind::JavaScript;
-                let remote = details.is_remote();
-                let mut menu = menu.item(
-                    crate::ui::actions::menu("查看详情")
-                        .icon(IconName::Info)
-                        .on_click(move |_, w, cx| Self::document_details(&details, w, cx)),
-                );
+                let mut menu = menu;
                 for action in ["编辑信息", "编辑文件", "打开文件"] {
                     let owner = owner.clone();
                     menu = menu.item(crate::ui::actions::menu(action).on_click(move |_, w, cx| {
@@ -103,14 +58,16 @@ impl ProfilesPage {
                     );
                 }
                 if !overrides {
-                    for action in ["编辑规则", "编辑代理", "编辑代理组"] {
-                        let owner = owner.clone();
-                        menu = menu.item(crate::ui::actions::menu(action).on_click(
-                            move |_, w, cx| {
-                                owner.update(cx, |this, cx| this.document_action(id, action, w, cx))
-                            },
-                        ));
-                    }
+                    let owner = owner.clone();
+                    menu = menu.item(
+                        crate::ui::actions::menu("订阅增强")
+                            .icon(IconName::SlidersHorizontal)
+                            .on_click(move |_, w, cx| {
+                                owner.update(cx, |this, cx| {
+                                    this.document_action(id, "订阅增强", w, cx)
+                                });
+                            }),
+                    );
                 }
                 if js {
                     let owner = owner.clone();
@@ -131,15 +88,10 @@ impl ProfilesPage {
                 )
             });
         let source = if document.is_remote() {
-            document
-                .url
-                .split("://")
-                .nth(1)
-                .unwrap_or(&document.url)
-                .split('/')
-                .next()
+            url::Url::parse(&document.url)
+                .ok()
+                .map(|url| url[url::Position::BeforeHost..url::Position::AfterPort].to_owned())
                 .unwrap_or_default()
-                .to_owned()
         } else {
             "本地文件".into()
         };
@@ -480,18 +432,20 @@ impl Render for ProfilesPage {
         ui::workspace()
             .child(
                 ui::workspace_header(if self.overrides { "覆写" } else { "订阅" }, "", cx)
-                    .child(
-                        Button::new("profile-batch")
-                            .icon(gpui_kit::assets::IconName::ListChecks)
-                            .ghost()
-                            .with_size(control::STANDARD)
-                            .label(if self.batch { "完成" } else { "批量管理" })
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.batch = !this.batch;
-                                this.selected.clear();
-                                cx.notify();
-                            })),
-                    )
+                    .when(!self.batch, |header| {
+                        header.child(
+                            Button::new("profile-batch")
+                                .icon(gpui_kit::assets::IconName::ListChecks)
+                                .ghost()
+                                .with_size(control::STANDARD)
+                                .label("批量管理")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.batch = !this.batch;
+                                    this.selected.clear();
+                                    cx.notify();
+                                })),
+                        )
+                    })
                     .child(
                         Button::new("update-or-apply")
                             .ghost()
@@ -627,6 +581,19 @@ impl Render for ProfilesPage {
                         row.child(
                             ui::muted(format!("当前配置 · {current}"), cx).text_size(text::CAPTION),
                         )
+                    })
+                    .when(self.batch, |row| {
+                        row.child(
+                            Button::new("finish-profile-batch")
+                                .icon(IconName::Check)
+                                .with_size(control::STANDARD)
+                                .label("完成")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.batch = false;
+                                    this.selected.clear();
+                                    cx.notify();
+                                })),
+                        )
                     }),
             )
     }
@@ -647,7 +614,7 @@ mod interaction_tests {
         cx: &mut TestAppContext,
     ) {
         use gpui_kit::component::WindowExt as _;
-        use gpui_kit::{Bounds, WindowBounds, px, size};
+        use gpui_kit::{Bounds, ScrollDelta, WindowBounds, point, px, size};
         let root = tempfile::tempdir().unwrap();
         let service = crate::integration::Service::start(
             crate::integration::Repository::open(crate::integration::AppPaths::isolated(
@@ -658,7 +625,7 @@ mod interaction_tests {
         .unwrap();
         cx.update(|cx| {
             gpui_kit::init(cx);
-            crate::integration::init(service, cx);
+            crate::integration::init(service, None, cx);
             cx.set_reduce_motion(true);
         });
         let (handle, page) = cx.update(|cx| {
@@ -681,6 +648,16 @@ mod interaction_tests {
         cx.run_until_parked();
         cx.update_window(handle, |_, window, cx| {
             window.render_frame(cx);
+            window.click("profile-batch", cx);
+            assert!(page.read(cx).batch);
+            let done = window.find("finish-profile-batch").bounds();
+            let import = window.within("import-subscription").find("popup").bounds();
+            assert!((done.right() - import.right()).abs() <= px(1.));
+            assert!(done.bottom() <= window.viewport_size().height);
+            assert!(done.top() > window.viewport_size().height * 0.8);
+            assert!(done.size.width < window.viewport_size().width / 3.);
+            window.click("finish-profile-batch", cx);
+            assert!(!page.read(cx).batch);
             window.click("import-url", cx);
         })
         .unwrap();
@@ -710,6 +687,21 @@ mod interaction_tests {
             assert!(insecure.top() >= kernel.bottom());
             assert_eq!(system.right(), kernel.right());
             assert_eq!(kernel.right(), insecure.right());
+            window.scroll(
+                "document-name",
+                ScrollDelta::Pixels(point(px(0.), px(-500.))),
+                cx,
+            );
+            window.render_frame(cx);
+            assert!(window.find("with-proxy").visible());
+            window.click("with-proxy", cx);
+            window.render_frame(cx);
+            assert_eq!(window.find("with-proxy").checked(), Some(true));
+            assert_eq!(window.find("self-proxy").checked(), Some(false));
+            window.click("self-proxy", cx);
+            window.render_frame(cx);
+            assert_eq!(window.find("with-proxy").checked(), Some(false));
+            assert_eq!(window.find("self-proxy").checked(), Some(true));
             window.close_dialog(cx);
         })
         .unwrap();
@@ -788,6 +780,7 @@ mod interaction_tests {
     }
     #[gpui_kit::test]
     fn native_card_keyboard_and_inner_checkbox_change_selection_once(cx: &mut TestAppContext) {
+        use gpui_kit::test::TestQueryExt as _;
         let root = tempfile::tempdir().unwrap();
         let repository = crate::integration::Repository::open(
             crate::integration::AppPaths::isolated(root.path()),
@@ -795,7 +788,7 @@ mod interaction_tests {
         .unwrap();
         let service = crate::integration::Service::start(repository).unwrap();
         cx.update(|cx| {
-            crate::integration::init(service, cx);
+            crate::integration::init(service, None, cx);
             gpui_kit::init(cx);
             cx.set_reduce_motion(true);
         });
@@ -834,6 +827,22 @@ mod interaction_tests {
             assert!(page.read(cx).selected.contains(&42));
             window.press("space", cx);
             assert!(!page.read(cx).selected.contains(&42));
+            window.click(("document-menu", 42u64), cx);
+            for removed in ["查看详情", "编辑规则", "编辑代理", "编辑代理组"] {
+                assert!(window.try_find_by_label(removed).is_none());
+            }
+            assert_eq!(window.find_all_by_label("订阅增强").len(), 1);
+            let action = window
+                .find_by_label("订阅增强")
+                .path()
+                .last()
+                .unwrap()
+                .clone();
+            window.click(action, cx);
+            assert!(window.find("enhance-mode").visible());
+            assert!(window.within("enhance-property").find(0usize).visible());
+            assert!(window.within("enhance-property").find(1usize).visible());
+            assert!(window.within("enhance-property").find(2usize).visible());
         })
         .unwrap();
         crate::integration::finish_test_services(cx);
@@ -848,7 +857,7 @@ mod interaction_tests {
         .unwrap();
         let service = crate::integration::Service::start(repository).unwrap();
         cx.update(|cx| {
-            crate::integration::init(service, cx);
+            crate::integration::init(service, None, cx);
             gpui_kit::init(cx);
             cx.set_reduce_motion(true);
         });
