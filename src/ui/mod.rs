@@ -275,7 +275,6 @@ pub(crate) fn dialog_footer_pending(commit: &str, pending: bool) -> impl IntoEle
     modal_footer()
         .child(
             Button::new("dialog-cancel")
-                .icon(gpui_kit::assets::IconName::X)
                 .with_size(control::STANDARD)
                 .label("取消")
                 .on_click(|_, window, cx| window.close_dialog(cx)),

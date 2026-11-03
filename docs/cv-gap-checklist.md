@@ -2,7 +2,7 @@
 
 上游版本另见 [版本与同步记录](cv-upstream-sync.md)（2026-11-03）：本地已同步为dev 2.5.10（5b7e876），旧目录精确匹配2.5.9快照eefd025；官方稳定版2.5.9。新增U01服务SSH私钥暂存、U02服务Geo反向同步、U03全局模式普通组展示，本轮均已补齐；这是R01–R61之后的上游增量适配。
 
-同步后的39个提交已作功能增量对照，见[更新差异复核](cv-update-comparison-2026-11-03.md)。自动备份／WebDAV继续暂缓；Muse AI列入用户决定的仪表盘能力；交付变更留给成熟工具集成。没有把新参考文件自动算作原逐文件审计覆盖。
+同步后的39个提交已作功能增量对照，见[更新差异复核](cv-update-comparison-2026-11-03.md)。WebDAV已按用户决定移除；自动备份继续暂缓；Muse AI列入用户决定的仪表盘能力；交付变更留给成熟工具集成。没有把新参考文件自动算作原逐文件审计覆盖。
 
 更新日期：2026-11-03。历史对照基线为CV 2.5.9快照eefd025；当前参考目录已同步到dev 2.5.10／5b7e876，新增文件变化未自动计入原审计覆盖。对照本轮 Suki 实现（含系统代理、重置、代理来源／搜索／测速、代理链、诊断与界面修正），不能据此推断已发布版本。参考目录现有独立 Git 身份，版本以其自身HEAD为准，不使用父仓库SHA。
 
@@ -24,10 +24,14 @@ S01的8项无消费者设置入口／默认值／枚举依赖已清理，保留�
 
 | 分类 | 后续范围 |
 | --- | --- |
-| 暂缓 | 通知诊断复制、完整配置合成报告、仪表盘定制、本地图标入口；原先WebDAV、自动备份和多语言继续暂缓 |
-| 待用户决定的仪表盘能力 | 网络测试、内存、解锁检测；独立提出，不归入暂缓 |
+| 暂缓 | 通知诊断复制、完整配置合成报告、仪表盘定制、本地图标入口；自动备份和多语言继续暂缓；WebDAV明确不支持 |
+| 待用户决定的仪表盘能力 | 网络测试、解锁检测；独立提出，不归入暂缓 |
 | 后续成熟工具集成 | 应用升级、打包、签名／公证及发布；独立提出 |
 | 仍需验收 | 真实Gist／安全凭据、三平台服务／TUN／代理／退出恢复、原生窗口与大列表性能；Provider物化／系统DNS语义已确认并适配；高级Provider表达式物化的明确限制见下述补充记录 |
+
+## 设置精简与接入复核（2026-11-03）
+
+按用户决定，删除 WebDAV、托盘自定义图标及颜色模式、代理组工具位置、通用设置重复服务入口、版本复制及开发者工具。同步与维护合为一个页签；移除未实现的自动备份空入口。来源选择改为官方多选下拉，User-Agent 默认首先标识 Clash Verge，其次标识 Suki Clash。另删除连接详情“复制详情”按钮（右键菜单复制保留）和开机自启“修正注册”按钮；托盘使用彩色应用图标，仪表盘排行顺序为域名、进程、代理。全部设置 Toggle 和仪表盘以外 Switch 的执行链见[开关接入复核](settings-switch-wiring.md)，源码接入不代替真实平台验收。
 
 ## 范围与状态
 
@@ -54,15 +58,23 @@ S01的8项无消费者设置入口／默认值／枚举依赖已清理，保留�
 
 本地完整历史／导入导出已接，三类待确认项均已闭合证据并处理，见[补全记录](local-backup-and-parity.md)。Provider常规覆盖和重命名已实现；高级regexp2／override-expr／部分特殊替换仍明确拒绝链物化，属于已确认的能力限制，不能归为全部完成。macOS采用Mihomo原生临时DNS，不改用户服务DNS。下载／TLS按既定严格策略保留设计差异；自动测速等专项回归已补。
 
+## Velopack首次接入（2026-11-03）
+
+应用更新与交付工具已选用Velopack并接通首版执行和GitHub配置，见[交付说明](velopack.md)。这是代码／配置接入，不是已发布或已完成跨平台安装验证；不自动加入Linux deb/rpm、更新渠道切换等额外设计。
+
+## 仪表盘数据对照（2026-11-03）
+
+顶部仅外部 IP，详细信息移至下方；加入真实内核内存。移除日／月、小时分布及代理／直连自定义统计；按用户后续决定恢复仅当前生命周期的代理／域名／进程排行，不持久化，累计量显示内核计数而非本应用采样账本。数据来源、保留策略见[仪表盘数据说明](dashboard-data.md)。DNS 仅当前模式，不编造请求计数。
+
 ## 当前重点缺项
 
 | 类别 | 尚缺能力 |
 | --- | --- |
 | 系统网络 | 第一、二批已修复TUN标识、服务归属与补偿、代理分路等代码缺口；剩余真实服务／TUN／UWP／防火墙及系统网络平台验收 |
 | 桌面生命周期 | 第六批已修登录注册协调、初始静默和原生重开；剩余托盘视觉、跨平台登录任务及正式包URI验收 |
-| 备份与更新 | Gist及独立本地备份管理已有，WebDAV／自动备份暂缓，应用升级与交付改列工具集成 |
+| 备份与更新 | Gist及独立本地备份管理已有，WebDAV明确不支持；自动备份暂缓，应用升级与交付改列工具集成 |
 | 代理与订阅 | Provider同步及恢复第四批已修；第五批修复测速参数／原值／首页组选取与URL共享、搜索筛选；增强表单与嵌套组展示本批已补；剩余真实来源重绑验收 |
-| 观测与工具 | 完整合成报告／诊断复制暂缓；网络测试、内存、解锁检测独立待用户决定；仪表盘定制暂缓，真实查询服务验收另列 |
+| 观测与工具 | 完整合成报告／诊断复制暂缓；网络测试、解锁检测独立待用户决定；仪表盘定制暂缓，真实查询服务验收另列 |
 | 验收与其他差异 | Windows/Linux 原生运行与真实凭据读写、服务日志及故障恢复；多语言暂缓，不增加双列表 |
 
 下表 C01–C40 共 40 个能力项，不是 40 个独立缺失功能，也不能换算成完成百分比。已有主体、部分覆盖、未接入和待验收分别保留。
@@ -81,11 +93,11 @@ S01的8项无消费者设置入口／默认值／枚举依赖已清理，保留�
 | C06 | 部分 | 启动与窗口生命周期 | 自启动、静默、关闭到托盘、启动脚本及清理后重启已接。启动协调GUI登录注册与期望值；设置显示OS实际状态、刷新和修正漂移，重置清GUI登录注册，不动helper注册。静默建窗隐藏且不聚焦，托盘失败显示主窗。Windows登录任务权限及回退保留原XML。剩余三平台原生生命周期验收。 | [autostart.rs](../clash-verge-rev-dev/src-tauri/src/core/autostart.rs) | [autostart_windows.rs](../src/desktop/autostart_windows.rs) |
 | C07 | 部分 | 单实例与外部导入 | 当前用户实例锁、认证回环端点、第二实例唤起／订阅导入、明确URI名称、有界队列及协议注册已接。macOS官方on_reopen、单实例与托盘共用显示主窗口入口。cargo run不代替正式应用包URI注册验收；正式跨平台激活仍待验收。 | [server.rs](../clash-verge-rev-dev/src-tauri/src/utils/server.rs) | [main.rs](../src/main.rs) |
 | C08 | 部分 | 托盘 | OS原生附着菜单、点击行为、普通／系统代理／TUN三态和自定义图标、macOS网速、模式／订阅／组／节点及维护动作已接。组图标按组／来源／代次绑定，拒绝迟到；同目标原生写入失败暂停，明确点击可重试。无独立窗口或自绘滚动条，TUN优先级与CV一致。Quit清本应用效果并保留空闲helper。剩余原生菜单完整视觉、跨平台和故障验收。 | [tray](../clash-verge-rev-dev/src-tauri/src/core/tray) | [tray](../src/tray) |
-| C09 | 工具集成 | 应用升级 | 按用户决定，应用升级交由后续选定的成熟工具实现；从当前功能开发清单独立提出。现有Mihomo内核升级不等于应用升级。 | [updater.rs](../clash-verge-rev-dev/src-tauri/src/core/updater.rs) | [integration.rs](../src/integration.rs) |
-| C10 | 工具集成 | 打包签名与发布 | 按用户决定，完整打包、签名／公证、更新验签及发布通道由后续成熟工具承担，独立列为工具集成任务。现有packaging服务材料不表示完整应用发布链已交付。 | [tauri.conf.json](../clash-verge-rev-dev/src-tauri/tauri.conf.json) | [bootstrap](../src/bootstrap/mod.rs) |
+| C09 | 部分 | 应用升级 | 已接Velopack 1.2.161：检查／共享客户端下载／SHA-256校验／确认安装，先清代理与内核再由SDK等待退出替换；非安装包打开GitHub发布页。真实发布源与端到端更新仍待验收。现有Mihomo内核升级仍独立。 | [updater.rs](../clash-verge-rev-dev/src-tauri/src/core/updater.rs) | [integration.rs](../src/integration.rs) |
+| C10 | 部分 | 打包签名与发布 | 已增加GitHub六平台原生构建及Velopack固定版本打包；Windows安装+便携、macOS pkg、Linux AppImage，各架构独立feed。全矩阵成功后单一草稿Release，支持可选签名／公证，无证书标未签名。真实Actions构建与签名／安装验收仍待完成，不宣称已发布。 | [tauri.conf.json](../clash-verge-rev-dev/src-tauri/tauri.conf.json) | [bootstrap](../src/bootstrap/mod.rs) |
 | C11 | 部分 | 完整备份 | 完整当前配置／订阅／覆写／增强归档、校验及恢复已接入Gist备份。Gist可创建独立历史、分页、下载、恢复、删除与可选Age加密；本地完整历史、文件导入／导出、恢复和删除现已接入维护，共用同一归档与恢复工作流。 | [backup.rs](../clash-verge-rev-dev/src-tauri/src/core/backup.rs) | [storage.rs](../src/storage.rs) |
-| C12 | 暂缓 | WebDAV | 凭据安全保存、连接配置、远程备份创建/列表/删除/下载/恢复及失败恢复。现有凭据字段明确拒绝保存。 | [backup.rs](../clash-verge-rev-dev/src-tauri/src/core/backup.rs) | [core_apply.rs](../src/settings/core_apply.rs) |
-| C13 | 暂缓 | 自动备份 | 定时备份、配置变化触发、保留数量及本地/远程历史策略执行；字段仅持久化。 | [auto_backup.rs](../clash-verge-rev-dev/src-tauri/src/core/auto_backup.rs) | [schema.rs](../src/preferences/schema.rs) |
+| C12 | 产品取舍 | WebDAV | 用户明确仅使用 Gist，完整删除 WebDAV 设置及操作入口，不纳入待实现范围。 | [backup.rs](../clash-verge-rev-dev/src-tauri/src/core/backup.rs) | [core_apply.rs](../src/settings/core_apply.rs) |
+| C13 | 暂缓 | 自动备份 | 定时备份、配置变化触发、保留数量及本地/远程历史策略执行；未实现入口已移除，不以仅持久化的设置宣称支持。 | [auto_backup.rs](../clash-verge-rev-dev/src-tauri/src/core/auto_backup.rs) | [schema.rs](../src/preferences/schema.rs) |
 | C14 | 部分 | JavaScript 增强 | QuickJS同步main、后台合成、中断／取消、内存／栈／输入输出／日志预算及语法检查已接；执行失败保留有效配置，外部源码文件为唯一正文来源。用户内容无恢复默认。真实跨平台引擎验收待补。 | [script.rs](../clash-verge-rev-dev/src-tauri/src/enhance/script.rs) | [mod.rs](../src/configuration/mod.rs) |
 | C15 | 已有主体 | 增强与远程覆写 | 已接远程YAML／JS及增强编辑；本批补组use、健康检查、筛选／include-all／接口／路由／隐藏等字段及真实来源候选。固定类型中文展示、英文保存，未知字段无损。代理URI批量解析支持前置／追加，原子报行号错误；同名不同内容拒绝，不静默丢弃。按当前协议解析，不增加旧客户端兼容变体。 | [prfitem.rs](../clash-verge-rev-dev/src-tauri/src/config/prfitem.rs) | [mod.rs](../src/profiles/mod.rs) |
 | C16 | 部分 | 订阅下载选项 | 逐订阅系统／内核代理及忽略证书选项已接，开关互斥且位于表单末尾；按明确策略下载，无自动传输回退，TLS客户端隔离。明确间隔优先和远程结构校验已修。剩余真实跨平台网络／证书验收。 | [prfitem.rs](../clash-verge-rev-dev/src-tauri/src/config/prfitem.rs) | [remote.rs](../src/profiles/remote.rs) |
@@ -100,8 +112,8 @@ S01的8项无消费者设置入口／默认值／枚举依赖已清理，保留�
 | C25 | 部分 | 链式节点编排 | 入口／中继／出口单行拖排、类型靠右、删除最右、清空撤销与完整YAML已接，无箭头／延迟。Provider按来源及occurrence实例化；有界缓存同步后走原候选流重绑，未知来源拒绝；仅use/include-all的合法目标组可加入物化出口。R05/R32/R37已修；真实平台及来源更新端到端验收仍待补。 | [proxy-chain.tsx](../clash-verge-rev-dev/src/components/proxy/proxy-chain.tsx) | [chain.rs](../src/proxies/chain.rs) |
 | C26 | 部分 | 链式状态对齐 | Selector／URLTest应用、重启恢复、既有dialer反解、循环／缺失检查已有；固定出口与实际now分别报告。断开后按目标连接ID核对，已提交后清理失败仍同步编辑器expected／epoch；受控重启后重新取当前Client。R36已修，持久链按确认的缓存来源恢复；真实服务交接验收仍待完成。 | [proxy-groups.tsx](../clash-verge-rev-dev/src/components/proxy/proxy-groups.tsx) | [chain.rs](../src/core/chain.rs) |
 | C27 | 待产品决定 | 仪表盘网络测试 | 从当前开发任务独立提出。用户计划之后融入仪表盘，具体测试对象、入口、频率及操作由用户决定；不列为暂缓，也不擅自实现。 | [test-card.tsx](../clash-verge-rev-dev/src/components/home/test-card.tsx) | [view.rs](../src/overview/view.rs) |
-| C28 | 部分 | 出口 IP 信息 | 已接国家/旗帜、ASN、组织、地理位置、经纬度、IP 隐藏/显示、独立刷新及 300 秒自动刷新控制。刷新走独立监测通道，不重启内核；失败保留上次信息。元数据／偏好／失败保留专项回归已补，真实查询服务与生命周期验收仍待补。 第五批：自动刷新偏好持久化，手动刷新不覆盖开关，时区解析与展示已接，失败保留旧元数据及实际原因；后台可见性绘制策略仍归C30。 | [ip-info-card.tsx](../clash-verge-rev-dev/src/components/home/ip-info-card.tsx) | [monitor.rs](../src/core/monitor.rs) |
-| C29 | 待产品决定 | 仪表盘内存采集 | 从当前开发任务独立提出。之后融入仪表盘的内容与操作由用户决定；不列为暂缓，不自行接入内存流或新增控件。 | [use-memory-data.ts](../clash-verge-rev-dev/src/hooks/use-memory-data.ts) | [monitor.rs](../src/core/monitor.rs) |
+| C28 | 部分 | 出口 IP 信息 | 已接国家/旗帜、ASN、组织、地理位置、经纬度、IP 隐藏/显示、独立刷新及进入仪表盘时刷新。刷新走独立监测通道，不重启内核；失败保留上次信息。元数据／偏好／失败保留专项回归已补，真实查询服务与生命周期验收仍待补。 第五批：自动刷新偏好是第五批历史实现，现按用户决定移除，改为进入页面刷新，时区解析与展示已接，失败保留旧元数据及实际原因；后台可见性绘制策略仍归C30。 | [ip-info-card.tsx](../clash-verge-rev-dev/src/components/home/ip-info-card.tsx) | [monitor.rs](../src/core/monitor.rs) |
+| C29 | 已有主体 | 仪表盘内存采集 | 本轮按用户决定接入私有 /memory WebSocket，显示 Mihomo inuse 字节值。复用有界刷新、有限重连、心跳、代次隔离及退出清理；断流保留上次真实值并标记非实时，换代清空。解析／断流／旧结果回归已有，真实内核运行验收待补。 | [use-memory-data.ts](../clash-verge-rev-dev/src/hooks/use-memory-data.ts) | [monitor.rs](../src/core/monitor.rs) |
 | C30 | 暂缓 | 仪表盘定制 | 仪表盘定制、布局／卡片组合与可见性绘制策略按用户决定暂缓；不据此新增网络／内存／解锁功能。 | [layout-viewer.tsx](../clash-verge-rev-dev/src/components/setting/mods/layout-viewer.tsx) | [view.rs](../src/overview/view.rs) |
 | C31 | 部分 | 连接界面 | 保留单一表格，不增加双布局；已接 remoteDestination 回退、完整进程路径、格式化本地完整时间。详情按连接/流量/路由/进程与时间两列分组，可复制完整详情，长值换行。实时/历史、关闭、暂停、列设置和搜索沿用现有能力。 第五批已统一正则优先级及无效表达式行为；连接按完整时间戳排序，关闭后的详情和复制共用零速率投影。 | [connections.tsx](../clash-verge-rev-dev/src/pages/connections.tsx) | [traffic](../src/traffic) |
 | C32 | 部分 | 实时规则页 | 已接入 /rules、代次/修订绑定、真实顺序/内容/类型/策略、刷新、虚拟化、类型筛选、高级搜索、复制和详情；失败保留上次数据，不生成命中统计。 第五批已统一共用正则搜索：正则优先整词，无效表达式不回退字面量。 | [rules.tsx](../clash-verge-rev-dev/src/pages/rules.tsx) | [mod.rs](../src/traffic/mod.rs) |
@@ -111,7 +123,7 @@ S01的8项无消费者设置入口／默认值／枚举依赖已清理，保留�
 | C36 | 部分 | 内核网络/设置完整性 | 端口、listeners、外部控制、DNS／嗅探、TUN、资源和Linux routing-mark已接。TUN标识、bind-address、路由联动、服务Geo暂存和升级回退已修。路由由Mihomo拥有，不另造脚本。剩余真实权限／网卡／防火墙／DNS及故障验收。 | [manager](../clash-verge-rev-dev/src-tauri/src/core/manager) | [launch.rs](../src/core/launch.rs) |
 | C37 | 部分 | 日志的服务模式 | Local复用私有/logs WebSocket及子进程补充；Service采用鉴权会话日志窗口补启动历史，250ms有界增量采集，按服务启动身份／代次／序号去重并标记覆盖缺口，保留stderr级别。连续三次失败暂停，目标变化重试；会话绑定拒绝迟到结果。剩余真实服务日志与重启／长时间覆盖验收。 | [use-log-data.ts](../clash-verge-rev-dev/src/hooks/use-log-data.ts) | [output.rs](../src/core/output.rs) |
 | C38 | 部分 | 故障恢复与通知 | R01–R61／L01–L05代码修复及S01入口清理完成，已有诊断ZIP及故障上下文。通知诊断复制按用户决定暂缓；真实平台故障恢复验收保留。 | [notify](../clash-verge-rev-dev/src-tauri/src/core/notify) | [service.rs](../src/core/service.rs) |
-| C39 | 部分 | 安全凭据跨平台 | 订阅／覆写凭据使用macOS钥匙串、Windows Credential Manager、Linux oo7 Secret Service；Keep／Replace／Clear明确意图，单项编辑不清另一项。跨平台适配器编译已有，真实桌面凭据读写验收待补。WebDAV暂缓。 | [config](../clash-verge-rev-dev/src-tauri/src/config) | [credentials.rs](../src/profiles/credentials.rs) |
+| C39 | 部分 | 安全凭据跨平台 | 订阅／覆写凭据使用macOS钥匙串、Windows Credential Manager、Linux oo7 Secret Service；Keep／Replace／Clear明确意图，单项编辑不清另一项。跨平台适配器编译已有，真实桌面凭据读写验收待补。WebDAV明确不支持。 | [config](../clash-verge-rev-dev/src-tauri/src/config) | [credentials.rs](../src/profiles/credentials.rs) |
 | C40 | 待验收 | 跨平台与性能验收 | Windows/Linux 原生运行、权限/服务/TUN/托盘/安装包；macOS 完整窗口工作流、大规模组/连接性能、真实钥匙串、应用更新与退出网络恢复均需单列验收。构建和虚拟化测试不能替代实机验证。 | [src-tauri](../clash-verge-rev-dev/src-tauri) | [系统代理验证范围](system-proxy.md#验证) |
 | X01 | 按要求不做 | 偏好裁剪 | 字体、侧栏偏好/折叠导航定制、全局快捷键、轻量模式、自定义调色板；不列为待开发任务。 | [verge.rs](../clash-verge-rev-dev/src-tauri/src/config/verge.rs) | [AGENTS.md](../AGENTS.md) |
 | X02 | 设计差异 | 配置与失败契约 | 内核原生 YAML/程序偏好 JSON/默认值/数组、无 applied.json、无旧格式兼容与迁移；不复制 CV 自动换端口、改设置、静默修复/回退。内置 meta_guard/meta_hy_alpn 脚本涉及旧字段修正，也不作为兼容任务加入。 | [builtin](../clash-verge-rev-dev/src-tauri/src/enhance/builtin) | [AGENTS.md](../AGENTS.md) |
@@ -120,7 +132,7 @@ S01的8项无消费者设置入口／默认值／枚举依赖已清理，保留�
 | B02 | 已有主体 | 订阅与增强 | 订阅导入、元数据、下载、定时更新、排序／删除／撤销／激活、增强及有序覆写已有；正文文件唯一来源、明确凭据意图、提交后UI同步、首份激活及URL脱敏已修。表单和批量能力剩余见C15。 | [profiles.tsx](../clash-verge-rev-dev/src/pages/profiles.tsx) | [profiles.rs](../src/core/profiles.rs) |
 | B03 | 已有主体 | 代理选择与测速 | 真实分组／节点、模式、固定／取消固定、按订阅记忆、独立测速与缓存图标主体已有；R18冷启动有界恢复已修。第五批已修测速输入／执行范围、原始延迟、同批去重及首页组／URL共享，见C20–C26；真实来源与网络验收仍单列。 | [proxies.tsx](../clash-verge-rev-dev/src/pages/proxies.tsx) | [proxy_control.rs](../src/core/proxy_control.rs) |
 | B04 | 已有主体 | 资源与内核升级 | GeoIP/GeoSite/MMDB/ASN 更新、规则/代理集合读取更新、内核发行频道/版本下载安装和取消清理。不是应用升级。 | [provider-button.tsx](../clash-verge-rev-dev/src/components/rule/provider-button.tsx) | [resources.rs](../src/core/resources.rs) |
-| B05 | 已有主体 | 实时采集与列表 | traffic/connections 私有 WS、监督重连/代次隔离、有界批次、流量统计持久化、连接历史、虚拟表格与选中/滚动分离。缺项见 C29/C31/C32。 | [connections.tsx](../clash-verge-rev-dev/src/pages/connections.tsx) | [streams.rs](../src/core/streams.rs) |
+| B05 | 已有主体 | 实时采集与列表 | traffic/connections 私有 WS、监督重连/代次隔离、有界批次、有界会话速率曲线及内核累计量、连接历史、虚拟表格与选中/滚动分离。缺项见 C29/C31/C32。 | [connections.tsx](../clash-verge-rev-dev/src/pages/connections.tsx) | [streams.rs](../src/core/streams.rs) |
 | B06 | 已有主体 | 日志与通知 | 日志独立级别／保存、有界列表、倒序及搜索已有；第六批补齐URL及字段定点脱敏、文件错误内存降级、恢复后重试、完整UTF8记录轮转和服务历史游标。toast自动关闭含撤销，持续下载保留。通知诊断复制尚缺。 | [logs.tsx](../clash-verge-rev-dev/src/pages/logs.tsx) | [logging.rs](../src/logging.rs) |
 | B07 | 已有主体 | 设置和公共操作 | 原生YAML／程序JSON、默认值／坏文件保护、自动保存、主题／背景、目录／网卡已有。环境变量复制按HTTP／SOCKS有效端口生成并清不可用协议变量，无监听明确报错；状态卡搜索已修。S01入口清理已完成。 | [verge.rs](../clash-verge-rev-dev/src-tauri/src/config/verge.rs) | [mod.rs](../src/preferences/mod.rs) |
 | B08 | 已有主体 | Gist完整备份 | 设置→同步提供配置／创建／历史入口。完整当前配置及正文归档、内容摘要／版本／路径校验、私有Gist独立历史／分页／下载／恢复／删除，Age可选；Token与私钥安全存储，备份排除凭据库／本机同步，恢复保留本机登录注册。失败补偿文件、凭据和代理；删除／恢复／凭据清除执行前5秒可撤销。仅隔离模拟验证，未真实上传。 | [GitHub Gist API](https://docs.github.com/en/rest/gists/gists?apiVersion=2026-03-10) | [backup](../src/backup) |
@@ -173,7 +185,7 @@ Suki 的内核、外部资源、覆写、DNS、嗅探、系统代理和 TUN 分�
 | `start_page` | 已有主体 | B07 |
 | `startup_script` | 已有主体 | C06 |
 | `traffic_graph` | 部分 | C30 |
-| `enable_memory_usage` | 未接入 | C29 |
+| `enable_memory_usage` | 设计差异 | C29：固定展示内存，不新增显示开关 |
 | `enable_group_icon` | 已有主体 | B03 |
 | `pause_render_traffic_stats_on_blur` | 部分 | C30 |
 | `common_tray_icon` | 部分 | C08 |
@@ -349,7 +361,7 @@ Suki 的内核、外部资源、覆写、DNS、嗅探、系统代理和 TUN 分�
 1. 完善设置故障隔离与原始诊断，维持界面、日志、存储/内核命令可用；已增加坏 JSON 与修正重试回归。
 2. 系统代理与 PAC、TUN、平台服务/权限及退出恢复，随后托盘/自启/单实例。
 3. JS/远程覆写、全局 DNS、实时规则主体已接入；继续完整来源身份/测速工具/链式编排。
-4. 完整备份/WebDAV/调度、应用升级/签名交付。
+4. 自动备份调度、应用升级/签名交付；WebDAV不纳入产品范围。
 5. 网站/解锁/IP/内存/诊断及界面工具补全，分平台完成验收。
 
 ## 本轮已补齐及验证范围

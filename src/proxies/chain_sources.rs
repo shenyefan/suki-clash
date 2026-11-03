@@ -4,6 +4,9 @@ use serde_yaml_ng::{Mapping, Value};
 use sha2::{Digest as _, Sha256};
 use std::{collections::BTreeMap, path::Path};
 
+/// Rule-set providers routinely exceed the configuration input limit.
+pub(crate) const PROVIDER_CACHE_LIMIT: u64 = 64 * 1024 * 1024;
+
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct CacheSource {
@@ -290,10 +293,10 @@ fn raw_provider_nodes(provider: &Value, directory: &Path) -> Result<Vec<Value>, 
     let mut bytes = Vec::new();
     std::fs::File::open(&path)
         .map_err(|_| "Provider 缓存尚不可用")?
-        .take(crate::configuration::INPUT_LIMIT + 1)
+        .take(PROVIDER_CACHE_LIMIT + 1)
         .read_to_end(&mut bytes)
         .map_err(|_| "无法读取 Provider 缓存")?;
-    if bytes.len() as u64 > crate::configuration::INPUT_LIMIT {
+    if bytes.len() as u64 > PROVIDER_CACHE_LIMIT {
         return Err("Provider 缓存超过读取上限".into());
     }
     if provider.get("type").and_then(Value::as_str) == Some("http") {

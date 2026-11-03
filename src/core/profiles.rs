@@ -377,7 +377,7 @@ impl Actor {
             .get("UserAgent")
             .filter(|value| !value.is_empty())
             .map(String::as_str)
-            .unwrap_or("SukiClash/0.1");
+            .unwrap_or(crate::network::DEFAULT_USER_AGENT);
         use super::download::SubscriptionTransport;
         let local = self
             .running

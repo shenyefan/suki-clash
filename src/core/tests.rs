@@ -2078,6 +2078,36 @@ async fn remote_import_downloads_metadata_and_failed_update_keeps_previous_sourc
 }
 
 #[tokio::test]
+async fn default_subscription_agent_identifies_clash_verge_before_suki() {
+    use crate::profiles::model::{Document, DocumentKind};
+    let (_root, paths) = fixture(None);
+    let mut owner = actor(paths);
+    let (url, server) = subscription_server("proxies: []\nrules: ['MATCH,DIRECT']\n", "").await;
+    let mut document = Document::new(1, DocumentKind::Profile);
+    document.url = url;
+    document.content.clear();
+    owner
+        .profiles(super::super::ProfileCommand::Save {
+            expected: Default::default(),
+            documents: vec![document],
+        })
+        .await
+        .unwrap();
+    let request = server.await.unwrap();
+    let agent = request
+        .lines()
+        .find_map(|line| {
+            line.split_once(':')
+                .filter(|(key, _)| key.eq_ignore_ascii_case("user-agent"))
+                .map(|(_, value)| value.trim())
+        })
+        .unwrap();
+    assert_eq!(agent, crate::network::DEFAULT_USER_AGENT);
+    assert!(agent.starts_with("clash-verge/v"));
+    assert!(agent.contains(" Suki-Clash/"));
+}
+
+#[tokio::test]
 async fn subscription_authorization_uses_typed_headers_and_logs_never_include_it() {
     use crate::profiles::model::{Document, DocumentKind};
     let (_root, paths) = fixture(None);
@@ -3235,43 +3265,6 @@ async fn proxy_observation_does_not_retry_failed_startup_intent() {
 }
 
 #[tokio::test]
-async fn ip_auto_refresh_settings_publish_only_after_persistence() {
-    use crate::preferences::{self, SettingsKind};
-    let (_root, paths) = fixture(None);
-    let mut actor = actor(paths.clone());
-    let (controls, observed) =
-        tokio::sync::watch::channel(crate::core::monitor::ProbeControl::default());
-    actor.probe_controls = Some(controls);
-    actor
-        .save_settings(
-            SettingsKind::General,
-            crate::storage::Values::from([("IpAutoRefresh".into(), "false".into())]),
-        )
-        .await
-        .unwrap();
-    assert_eq!(observed.borrow().auto_refresh, Some(false));
-    let repository = Repository::open(paths).unwrap();
-    assert_eq!(
-        preferences::values(&repository, SettingsKind::General).unwrap()["IpAutoRefresh"],
-        "false"
-    );
-    assert!(
-        actor
-            .save_settings(
-                SettingsKind::General,
-                crate::storage::Values::from([("IpAutoRefresh".into(), "invalid".into())])
-            )
-            .await
-            .is_err()
-    );
-    assert_eq!(observed.borrow().auto_refresh, Some(false));
-    assert_eq!(
-        preferences::values(&repository, SettingsKind::General).unwrap()["IpAutoRefresh"],
-        "false"
-    );
-}
-
-#[tokio::test]
 async fn gui_login_registration_reconciles_startup_and_explicit_same_value_save() {
     let (_root, paths) = fixture(None);
     let mut owner = actor(paths.clone());
@@ -3477,4 +3470,22 @@ async fn local_backup_import_export_restore_use_the_complete_archive_without_sta
         .unwrap(),
         original
     );
+}
+
+#[tokio::test]
+async fn unmanaged_update_check_returns_manual_release_link_without_failing_core() {
+    let (_root, paths) = fixture(None);
+    let mut owner = actor(paths);
+    let (_sender, shutdown) = tokio::sync::watch::channel(false);
+    owner
+        .app_update(super::super::app_update::Command::Check, shutdown)
+        .await
+        .unwrap();
+    assert_eq!(owner.snapshot.phase, Phase::Stopped);
+    assert!(owner.snapshot.error.is_none());
+    assert_eq!(
+        owner.snapshot.app_update.manual_url.as_deref(),
+        Some(crate::updates::manual_releases_url().unwrap().as_str())
+    );
+    assert!(owner.running.is_none());
 }

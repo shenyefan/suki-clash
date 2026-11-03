@@ -2,7 +2,7 @@
 
 ## 本批清理结果（2026-11-03）
 
-原155项为当时审计基线，以下逐项表保留来源证据，不代表当前仍有全部入口。S01已删除8项无消费者入口、默认值与依赖：AutoCheckUpdate、PriorityIndex、DiffWorkDir、UseHotReloadProfile、HotReloadProfileAutoCloseConnection、TestProfileOnStart、PauseSsidText、DisableDnsOnPauseSsid。AutoCloseConnection及绕过设置保留。Gist旧运行配置同步字段替换为完整备份管理入口；Token／Age私钥使用独立安全存储，备份配置保存于settings.json的backup分组，未增加明文凭据入口。WebDAV／自动备份等明确暂缓范围不因保留字段而宣称已实现。
+原155项为当时审计基线，以下逐项表保留来源证据，不代表当前仍有全部入口。S01已删除8项无消费者入口、默认值与依赖：AutoCheckUpdate、PriorityIndex、DiffWorkDir、UseHotReloadProfile、HotReloadProfileAutoCloseConnection、TestProfileOnStart、PauseSsidText、DisableDnsOnPauseSsid。AutoCloseConnection及绕过设置保留。Gist旧运行配置同步字段替换为完整备份管理入口；Token／Age私钥使用独立安全存储，备份配置保存于settings.json的backup分组，未增加明文凭据入口。本次进一步删除 WebDAV、未接入自动备份、托盘自定义图标／颜色模式、代理组工具位置、重复服务入口和版本复制。同步仅保留 Gist，并与维护合并。当前全部开关的执行消费者另见[开关接入复核](settings-switch-wiring.md)。
 
 ## 原始结论
 
@@ -30,7 +30,7 @@
 
 - 全局 DNS 开关与原生 YAML、嗅探配置开关；不是照搬 CV 的按订阅 DNS。
 - 外观仅保留主题和支持的窗口背景；字体、侧栏偏好、全局快捷键、轻量模式、自定义调色板没有设置入口。
-- 托盘和同步设置按项目约定先保留；不能因此声称它们已经接入。
+- 托盘保留已接入的速率、点击方式和菜单模式；同步仅保留已接入的 Gist。
 - WebUI、隧道内嵌管理，统一失焦自动保存和弹出编辑。
 - 系统代理手动／PAC 放右上角；绕过地址和 PAC 脚本均可弹出编辑；不展示多余的实际状态、服务器地址行。
 - 代理延迟逐条显示颜色，批次结束才调整排序。

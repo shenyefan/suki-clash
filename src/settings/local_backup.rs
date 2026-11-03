@@ -214,7 +214,7 @@ impl Render for History {
                     .gap(space::SM)
                     .child(
                         Button::new("local-import")
-                            .label("导入…")
+                            .label("导入备份")
                             .disabled(disabled)
                             .on_click(cx.listener(|this, _, window, cx| this.import(window, cx))),
                     )

@@ -82,7 +82,7 @@ impl Configuration {
         let recipient = cx.new(|cx| {
             InputState::new(window, cx)
                 .default_value(state.settings.recipient.clone())
-                .placeholder("age1…")
+                .placeholder("Age 接收方公钥")
         });
         let subscriptions = [&token, &key, &recipient]
             .into_iter()
@@ -215,16 +215,17 @@ impl Render for Configuration {
                     .mask_toggle()
                     .disabled(self.busy || self.pending.is_some())
                     .w_full()
-                    .aria_label("GitHub Token"),
-            ))
-            .child(
-                h_flex().child(
-                    Button::new("gist-token-clear")
-                        .label("清除 Token")
+                    .aria_label("GitHub Token")
+                    .suffix(
+                        ui::icon_button(
+                            "gist-token-clear",
+                            gpui_kit::assets::IconName::Trash,
+                            "清除令牌",
+                        )
                         .disabled(self.busy || self.pending.is_some() || !self.token_saved)
                         .on_click(cx.listener(|this, _, window, cx| this.clear(true, window, cx))),
-                ),
-            )
+                    ),
+            ))
             .child(ui::muted(
                 "Token 需要 gist 权限；凭据保存在系统安全存储中",
                 cx,
@@ -246,52 +247,70 @@ impl Render for Configuration {
                     .mask_toggle()
                     .disabled(self.busy || self.pending.is_some())
                     .w_full()
-                    .aria_label("Age 私钥"),
-            ))
-            .child(
-                h_flex().child(
-                    Button::new("gist-key-clear")
-                        .label("清除私钥")
-                        .disabled(self.busy || self.pending.is_some() || !self.key_saved)
-                        .on_click(cx.listener(|this, _, window, cx| this.clear(false, window, cx))),
-                ),
-            )
-            .child(
-                h_flex().child(
-                    Button::new("gist-age-generate")
-                        .label("生成 Age 密钥")
-                        .disabled(self.busy || self.pending.is_some())
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            use age::secrecy::ExposeSecret as _;
-                            let key = age::x25519::Identity::generate();
-                            this.recipient.update(cx, |input, cx| {
-                                input.set_value(key.to_public().to_string(), window, cx)
-                            });
-                            this.key.update(cx, |input, cx| {
-                                input.set_value(
-                                    key.to_string().expose_secret().to_owned(),
-                                    window,
-                                    cx,
+                    .aria_label("Age 私钥")
+                    .suffix(
+                        h_flex()
+                            .gap(space::XS)
+                            .child(
+                                ui::icon_button(
+                                    "gist-age-generate",
+                                    gpui_kit::assets::IconName::KeyRound,
+                                    "生成密钥",
                                 )
-                            });
-                            // Keep the generated draft visible for explicit copying before blur commits it.
-                            cx.notify();
-                        })),
-                ),
-            )
+                                .disabled(self.busy || self.pending.is_some())
+                                .on_click(cx.listener(
+                                    |this, _, window, cx| {
+                                        use age::secrecy::ExposeSecret as _;
+                                        let key = age::x25519::Identity::generate();
+                                        this.recipient.update(cx, |input, cx| {
+                                            input.set_value(key.to_public().to_string(), window, cx)
+                                        });
+                                        this.key.update(cx, |input, cx| {
+                                            input.set_value(
+                                                key.to_string().expose_secret().to_owned(),
+                                                window,
+                                                cx,
+                                            )
+                                        });
+                                        cx.notify();
+                                    },
+                                )),
+                            )
+                            .child(
+                                ui::icon_button(
+                                    "gist-key-clear",
+                                    gpui_kit::assets::IconName::Trash,
+                                    "清除私钥",
+                                )
+                                .disabled(self.busy || self.pending.is_some() || !self.key_saved)
+                                .on_click(
+                                    cx.listener(|this, _, window, cx| {
+                                        this.clear(false, window, cx)
+                                    }),
+                                ),
+                            ),
+                    ),
+            ))
             .child(ui::muted(
                 "未加密备份包含代理配置；请单独保管 Age 私钥。Token、私钥和本机同步设置不入备份",
                 cx,
             ))
             .child(
-                Switch::new("gist-encrypt")
-                    .label("加密备份")
-                    .checked(self.encrypt)
-                    .disabled(self.busy || self.pending.is_some())
-                    .on_change(cx.listener(|this, enabled, window, cx| {
-                        this.encrypt = *enabled;
-                        this.commit(window, cx);
-                    })),
+                ui::form_row()
+                    .items_center()
+                    .justify_between()
+                    .child("加密备份")
+                    .child(
+                        Switch::new("gist-encrypt")
+                            .with_size(control::STANDARD)
+                            .accessibility_label("加密备份")
+                            .checked(self.encrypt)
+                            .disabled(self.busy || self.pending.is_some())
+                            .on_change(cx.listener(|this, enabled, window, cx| {
+                                this.encrypt = *enabled;
+                                this.commit(window, cx);
+                            })),
+                    ),
             )
     }
 }
@@ -414,7 +433,7 @@ impl History {
         h_flex().w_full().gap(space::SM)
             .child(v_flex().flex_1().min_w(space::NONE).child(entry.created_at.clone()).child(ui::muted(entry.description.clone(), cx).truncate()))
             .child(ui::icon_button(SharedString::from(format!("gist-download-{}", entry.id)), gpui_kit::assets::IconName::Download, "下载备份").disabled(disabled).on_click(cx.listener(move |this, _, window, cx| this.run(Command::Download(download.clone()), window, cx))))
-            .child(Button::new(SharedString::from(format!("gist-restore-{}", entry.id))).label("恢复…").disabled(disabled).on_click(cx.listener(move |_, _, window, cx| {
+            .child(Button::new(SharedString::from(format!("gist-restore-{}", entry.id))).label("恢复备份").disabled(disabled).on_click(cx.listener(move |_, _, window, cx| {
                 let owner = cx.weak_entity(); let restore = restore.clone();
                 window.open_alert_dialog(cx, move |dialog, window, cx| {
                     let owner = owner.clone(); let restore = restore.clone();

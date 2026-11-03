@@ -79,27 +79,25 @@ pub(crate) fn init(service: Service, startup_error: Option<String>, cx: &mut App
 }
 pub(crate) fn read(page: &str, cx: &App) -> Values {
     if matches!(page, "core" | "resources" | "tun")
-        && let Some(preferences) = crate::core::controller(cx)
-            .read(cx)
-            .snapshot()
-            .preferences()
+        && let Some(ctrl) = crate::core::try_controller(cx)
+        && let Some(preferences) = ctrl.read(cx).snapshot().preferences()
     {
-        return preferences.values();
+        return choices::decode(preferences.values());
     }
     if (crate::preferences::kind_for_page(page).is_some()
         || matches!(page, "profile-index" | "override-index")
         || page.starts_with("profile-enhance-"))
-        && let Some(values) = crate::core::controller(cx)
-            .read(cx)
-            .snapshot()
-            .settings(page)
+        && let Some(ctrl) = crate::core::try_controller(cx)
+        && let Some(values) = ctrl.read(cx).snapshot().settings(page)
     {
         return choices::decode(values.clone());
     }
     let Ok(namespace) = Namespace::parse(page) else {
         return Values::new();
     };
-    choices::decode(cx.global::<Bridge>().service.read(&namespace))
+    cx.try_global::<Bridge>()
+        .map(|b| choices::decode(b.service.read(&namespace)))
+        .unwrap_or_default()
 }
 pub(crate) fn document_path(
     overrides: bool,

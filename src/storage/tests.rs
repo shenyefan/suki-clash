@@ -82,7 +82,6 @@ fn credential_fields_are_not_written_into_settings() {
     let values = Values::from([
         ("ThemeIndex".into(), "深色".into()),
         ("GitHubToken".into(), "private-token".into()),
-        ("WebDavPassword".into(), "private-password".into()),
         ("Secret".into(), "controller-secret".into()),
         ("GistAgeSecretKey".into(), "private-key".into()),
     ]);

@@ -1,0 +1,171 @@
+name: Build desktop packages
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_INCREMENTAL: "0"
+  CARGO_BUILD_JOBS: "2"
+  CARGO_PROFILE_RELEASE_DEBUG: "0"
+  SUKI_UPDATE_REPOSITORY: ${{ github.repository }}
+  VELOPACK_VERSION: "1.2.161"
+
+jobs:
+  version:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: version
+        name: Validate version and tag
+        shell: python
+        run: |
+          import os, pathlib, tomllib
+          version = tomllib.loads(pathlib.Path("Cargo.toml").read_text())["package"]["version"]
+          assert "-" not in version and "+" not in version, "this initial workflow accepts stable versions only"
+          if os.environ["GITHUB_REF"].startswith("refs/tags/"):
+              assert os.environ["GITHUB_REF_NAME"] == "v" + version, "tag must match Cargo.toml version"
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              output.write("version=" + version + "\n")
+
+  build:
+    needs: version
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-2025
+            target: x86_64-pc-windows-msvc
+            channel: win-x64
+            msvc_arch: x64
+          - runner: windows-11-arm
+            target: aarch64-pc-windows-msvc
+            channel: win-arm64
+            msvc_arch: arm64
+          - runner: macos-15-intel
+            target: x86_64-apple-darwin
+            channel: osx-x64
+          - runner: macos-15
+            target: aarch64-apple-darwin
+            channel: osx-arm64
+          - runner: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            channel: linux-x64
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            channel: linux-arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    steps:
+      - name: Enable Windows checkout long paths
+        if: runner.os == 'Windows'
+        run: git config --global core.longpaths true
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+      - name: Select matching MSVC toolchain
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: ${{ matrix.msvc_arch }}
+      - name: Link the Windows runtime statically for portable builds
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: '"RUSTFLAGS=-C target-feature=+crt-static" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8'
+      - name: Install Linux native dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang cmake ninja-build pkg-config libfontconfig1-dev libfreetype6-dev libxkbcommon-dev libxkbcommon-x11-dev libxcb1-dev libxcb-xkb-dev libwayland-dev libssl-dev libasound2-dev libudev-dev libvulkan-dev libgit2-dev patchelf file
+          if [ "${{ matrix.channel }}" = "linux-arm64" ]; then
+            sudo apt-get install -y libfuse2t64
+          else
+            sudo apt-get install -y libfuse2
+          fi
+      - name: Install pinned Velopack CLI
+        shell: bash
+        run: dotnet tool install vpk --version "$VELOPACK_VERSION" --tool-path .tools
+      - name: Build application
+        run: cargo build --locked --release --target ${{ matrix.target }} --bin suki-clash
+      - name: Build service and management tools
+        run: cargo build --locked --release --manifest-path platform-service/Cargo.toml --target ${{ matrix.target }} --features standalone,client --bin suki-clash-service --bin suki-clash-service-install --bin suki-clash-service-uninstall
+      - name: Prepare optional signing identities
+        env:
+          SUKI_WINDOWS_CERTIFICATE_P12: ${{ secrets.SUKI_WINDOWS_CERTIFICATE_P12 }}
+          SUKI_WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.SUKI_WINDOWS_CERTIFICATE_PASSWORD }}
+          SUKI_MACOS_CERTIFICATE_P12: ${{ secrets.SUKI_MACOS_CERTIFICATE_P12 }}
+          SUKI_MACOS_CERTIFICATE_PASSWORD: ${{ secrets.SUKI_MACOS_CERTIFICATE_PASSWORD }}
+          SUKI_MACOS_APPLICATION_IDENTITY: ${{ secrets.SUKI_MACOS_APPLICATION_IDENTITY }}
+          SUKI_MACOS_INSTALLER_IDENTITY: ${{ secrets.SUKI_MACOS_INSTALLER_IDENTITY }}
+          SUKI_APPLE_API_KEY_P8: ${{ secrets.SUKI_APPLE_API_KEY_P8 }}
+          SUKI_APPLE_API_KEY_ID: ${{ secrets.SUKI_APPLE_API_KEY_ID }}
+          SUKI_APPLE_API_ISSUER: ${{ secrets.SUKI_APPLE_API_ISSUER }}
+        run: python packaging/signing.py
+      - name: Package native outputs
+        shell: bash
+        env:
+          BUILD_TARGET: ${{ matrix.target }}
+        run: |
+          python packaging/velopack.py --target "$BUILD_TARGET" --app-dir "target/$BUILD_TARGET/release" --service-dir "platform-service/target/$BUILD_TARGET/release" --work "$RUNNER_TEMP/package" --vpk "$GITHUB_WORKSPACE/.tools/vpk"
+      - name: Upload packages and isolated release feed
+        uses: actions/upload-artifact@v4
+        with:
+          name: packages-${{ matrix.channel }}
+          path: ${{ runner.temp }}/package/Releases/*
+          if-no-files-found: error
+          retention-days: 14
+      - name: Remove temporary signing material
+        if: always()
+        run: python packaging/signing.py --cleanup
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: [version, build]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: packages-*
+          path: packages
+      - name: Assemble all architectures without overwriting feeds
+        shell: python
+        run: |
+          import pathlib, shutil
+          output = pathlib.Path("Releases")
+          output.mkdir()
+          for source in pathlib.Path("packages").glob("*/*"):
+              target = output / source.name
+              assert not target.exists(), "duplicate release asset: " + source.name
+              shutil.copy2(source, target)
+          assert len(list(output.glob("releases.*.json"))) == 6, "all six architecture feeds are required"
+      - name: Create or update one draft GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          if gh release view "$RELEASE_TAG" --json isDraft > release.json; then
+            python3 -c 'import json; assert json.load(open("release.json"))["isDraft"], "refusing to change a published release"'
+          else
+            gh release create "$RELEASE_TAG" --verify-tag --draft --title "Suki Clash $RELEASE_TAG" --notes "Multi-platform candidate packages. Review build.*.json signing status and complete native installation/update acceptance before publishing."
+          fi
+          gh release upload "$RELEASE_TAG" Releases/* --clobber

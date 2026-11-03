@@ -188,4 +188,31 @@ mod tests {
         std::fs::remove_file(&body).unwrap();
         assert!(read(&paths).err().unwrap().contains("9.yaml"));
     }
+
+    #[test]
+    fn inline_override_body_reports_the_index_without_rewriting_either_file() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = AppPaths::isolated(root.path());
+        let repository = Repository::open(paths.clone()).unwrap();
+        let mut document = Document::new(9, DocumentKind::Yaml);
+        document.name = "test override".into();
+        document.content = "mode: direct\n".into();
+        let values = store::values(std::slice::from_ref(&document), None);
+        let index = Namespace::parse("override-index").unwrap();
+        repository.save(&index, &values).unwrap();
+        atomic_write(&path(&paths, &document), document.content.as_bytes()).unwrap();
+        let original = std::fs::read(paths.records().join("override-index.json")).unwrap();
+        let error = read(&paths).err().unwrap();
+        assert!(error.contains("override-index.json"));
+        assert!(error.contains("保留独立正文文件"));
+        assert!(!error.contains("mode: direct"));
+        assert_eq!(
+            std::fs::read(paths.records().join("override-index.json")).unwrap(),
+            original
+        );
+        assert_eq!(
+            std::fs::read(path(&paths, &document)).unwrap(),
+            document.content.as_bytes()
+        );
+    }
 }

@@ -11,6 +11,13 @@ pub(crate) enum Transport {
     },
     System,
 }
+/// Subscription servers recognize Clash Verge first; retain this application's identity as well.
+pub(crate) const DEFAULT_USER_AGENT: &str = concat!(
+    "clash-verge/v",
+    env!("CARGO_PKG_VERSION"),
+    " Suki-Clash/",
+    env!("CARGO_PKG_VERSION")
+);
 type ClientCache = Vec<(Transport, bool, bool, Client)>;
 #[derive(Clone, Default)]
 pub(crate) struct Http {
@@ -36,6 +43,7 @@ impl Http {
             return Ok(client.clone());
         }
         let mut builder = Client::builder()
+            .user_agent(DEFAULT_USER_AGENT)
             .connect_timeout(Duration::from_secs(15))
             .https_only(https_only)
             .tls_danger_accept_invalid_certs(accept_invalid_certs)

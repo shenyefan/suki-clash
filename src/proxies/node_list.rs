@@ -296,9 +296,6 @@ impl ProxiesPage {
             .any(|(name, _)| name == &group.name);
         let reset_group = group.name.clone();
         let url_group = group.name.clone();
-        let tools_on_left = crate::integration::read("settings", cx)
-            .get("ProxyGroupToolsPosition")
-            .is_some_and(|position| position == "左侧");
         let drag_target = group.id.clone();
         let header = h_flex()
             .bg(cx.theme().muted)
@@ -320,13 +317,6 @@ impl ProxiesPage {
                     cx.notify();
                 }
             }))
-            .map(|row| {
-                if tools_on_left {
-                    row.flex_row_reverse()
-                } else {
-                    row
-                }
-            })
             .when(self.url_editing.contains(&group.name), |row| {
                 if let Some(input) = self.group_urls.get(&group.name) {
                     row.child(gpui_kit::component::input::Input::new(input).w_full())

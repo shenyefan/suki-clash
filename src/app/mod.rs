@@ -156,6 +156,19 @@ impl SukiApp {
 
     fn navigate(&mut self, page: Page, cx: &mut Context<Self>) {
         if self.page != page {
+            if page == Page::Overview
+                && let Some(window) = cx.active_window()
+            {
+                cx.defer(move |cx| {
+                    let _ = window.update(cx, |_, window, cx| {
+                        if crate::core::controller(cx).read(cx).snapshot().phase()
+                            == crate::core::Phase::Ready
+                        {
+                            crate::core::refresh_ip(window, cx);
+                        }
+                    });
+                });
+            }
             if page == Page::Override {
                 self.overrides.update(cx, |page, cx| page.reopen(cx));
             }
@@ -673,12 +686,7 @@ mod tests {
                 cx.update_window(window.into(), |_, window, cx| {
                     window.render_frame(cx);
                     if page == Page::Overview {
-                        for id in [
-                            "upload-empty-plot",
-                            "download-empty-plot",
-                            "hourly-empty-plot",
-                            "traffic-ranking-empty",
-                        ] {
+                        for id in ["upload-empty-plot", "download-empty-plot"] {
                             let bounds = window.find(id).bounds();
                             assert!(
                                 bounds.size.width > px(0.) && bounds.size.height > px(0.),

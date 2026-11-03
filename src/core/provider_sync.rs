@@ -155,7 +155,7 @@ where
         else {
             return Ok(None);
         };
-        if len > crate::configuration::INPUT_LIMIT {
+        if len > crate::proxies::chain_sources::PROVIDER_CACHE_LIMIT {
             return Err("Provider 缓存超过读取上限".into());
         }
         if len == 0 || !settled(mtime_ns, now) {

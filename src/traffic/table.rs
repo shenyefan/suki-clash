@@ -345,15 +345,21 @@ impl TableDelegate for RecordsTable {
             ("复制规则", 6),
         ] {
             let value = record.cells[index].clone();
-            menu = menu.item(crate::ui::actions::menu(label).on_click(move |_, _, cx| {
-                cx.write_to_clipboard(ClipboardItem::new_string(value.clone()))
-            }));
+            menu = menu.item(
+                crate::ui::actions::menu(label)
+                    .icon(IconName::Copy)
+                    .on_click(move |_, _, cx| {
+                        cx.write_to_clipboard(ClipboardItem::new_string(value.clone()))
+                    }),
+            );
         }
         let details = record.details.clone();
         menu = menu.item(
-            crate::ui::actions::menu("复制全部详情").on_click(move |_, _, cx| {
-                cx.write_to_clipboard(ClipboardItem::new_string(details.clone()))
-            }),
+            crate::ui::actions::menu("复制全部详情")
+                .icon(IconName::Copy)
+                .on_click(move |_, _, cx| {
+                    cx.write_to_clipboard(ClipboardItem::new_string(details.clone()))
+                }),
         );
         let target = record.connection.clone();
         menu.separator().item(

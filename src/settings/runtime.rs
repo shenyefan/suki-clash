@@ -27,8 +27,7 @@ impl DeferredAction {
         match self {
             Self::ResetProgram => "重置程序",
             Self::FlushFakeIp => "清空 Fake-IP 缓存",
-            Self::Service(crate::core::ServiceAction::Uninstall) => "卸载服务",
-            Self::Service(_) => "转为子进程",
+            Self::Service(_) => "卸载服务",
         }
     }
 }
@@ -42,8 +41,8 @@ impl SettingsPage {
             SettingsKind::Dns => &["常规", "服务器", "Fake-IP", "解析策略", "Hosts"],
             SettingsKind::Sniffer => &["常规", "协议", "过滤"],
             SettingsKind::Resources => &["数据库", "代理集合", "规则集合"],
-            SettingsKind::Tun => &["常规", "路由与 DNS", "高级"],
-            _ => &["常规", "外观", "托盘", "网络", "同步", "维护"],
+            SettingsKind::Tun => &["常规", "路由与 DNS"],
+            _ => &["常规", "外观", "托盘", "网络", "同步与维护"],
         };
         let query = self.filter.read(cx).value().to_lowercase();
         let heading = if matches!(self.kind, SettingsKind::Dns | SettingsKind::Sniffer) {

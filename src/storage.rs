@@ -289,12 +289,7 @@ pub(crate) fn contains_session_credentials(values: &Values) -> bool {
         .iter()
         .any(|key| values.get(*key).is_some_and(|value| !value.is_empty()))
 }
-const SESSION_CREDENTIALS: [&str; 4] = [
-    "Secret",
-    "WebDavPassword",
-    "GitHubToken",
-    "GistAgeSecretKey",
-];
+const SESSION_CREDENTIALS: [&str; 3] = ["Secret", "GitHubToken", "GistAgeSecretKey"];
 fn persistent_values(values: &Values) -> Values {
     let mut values = values.clone();
     for key in SESSION_CREDENTIALS {

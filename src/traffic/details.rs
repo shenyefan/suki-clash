@@ -140,7 +140,6 @@ impl TrafficPage {
                         ))
                 }))
         };
-        let copy = record.details.replace('\t', "：");
         ui::bottom_details(cx)
             .child(
                 h_flex()
@@ -167,16 +166,6 @@ impl TrafficPage {
                                     })),
                             )
                             .child(ui::muted(record.cells[0].clone(), cx).truncate()),
-                    )
-                    .child(
-                        Button::new("copy-connection-details")
-                            .ghost()
-                            .with_size(control::STANDARD)
-                            .icon(IconName::Copy)
-                            .label("复制详情")
-                            .on_click(move |_, _, cx| {
-                                cx.write_to_clipboard(ClipboardItem::new_string(copy.clone()))
-                            }),
                     )
                     .child(
                         Button::new("close-selected-connection")

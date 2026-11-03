@@ -12,12 +12,10 @@ pub(crate) struct Preferences {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Profile {
-    pub(crate) dashboard_group: Option<String>,
     pub(crate) test_urls: BTreeMap<String, String>,
 }
 #[derive(Clone)]
 pub(crate) enum Change {
-    DashboardGroup(String),
     TestUrl { group: String, url: String },
 }
 impl Preferences {
@@ -36,7 +34,6 @@ impl Preferences {
     pub(crate) fn update(&mut self, id: Option<u64>, change: Change) -> Result<(), String> {
         let profile = self.profiles.entry(id.unwrap_or(0)).or_default();
         match change {
-            Change::DashboardGroup(group) => profile.dashboard_group = Some(group),
             Change::TestUrl { group, url } => {
                 let url = url.trim();
                 if !url.is_empty() && !crate::profiles::model::valid_remote_url(url) {
@@ -74,13 +71,10 @@ impl Profile {
             .collect::<Vec<_>>();
         groups
             .iter()
-            .find(|name| self.dashboard_group.as_ref() == Some(**name))
-            .or_else(|| {
-                groups.iter().find(|name| {
-                    ["auto", "select", "proxy", "节点选择", "自动选择"]
-                        .iter()
-                        .any(|word| name.to_lowercase().contains(word))
-                })
+            .find(|name| {
+                ["auto", "select", "proxy", "节点选择", "自动选择"]
+                    .iter()
+                    .any(|word| name.to_lowercase().contains(word))
             })
             .or_else(|| groups.first())
             .map(|name| name.as_str())
@@ -90,16 +84,12 @@ impl Profile {
 mod tests {
     use super::*;
     #[test]
-    fn group_choice_uses_profile_memory_and_explicit_modes() {
+    fn group_choice_prefers_named_groups_and_follows_explicit_modes() {
         let proxies = Proxies::parse(br#"{"proxies":{"first":{"name":"first","type":"Selector","all":["DIRECT"],"now":"DIRECT"},"proxy":{"name":"proxy","type":"Selector","all":["DIRECT"],"now":"DIRECT"},"other":{"name":"other","type":"URLTest","all":["DIRECT"],"now":"DIRECT"},"GLOBAL":{"name":"GLOBAL","type":"Selector","all":["proxy"],"now":"proxy"},"DIRECT":{"name":"DIRECT","type":"Direct"}}}"#, &["first".into(), "proxy".into(), "other".into()]).unwrap();
-        let mut profile = Profile::default();
+        let profile = Profile::default();
         assert_eq!(profile.group(&proxies, ProxyMode::Rule), Some("proxy"));
-        profile.dashboard_group = Some("other".into());
-        assert_eq!(profile.group(&proxies, ProxyMode::Rule), Some("other"));
         assert_eq!(profile.group(&proxies, ProxyMode::Global), Some("GLOBAL"));
         assert_eq!(profile.group(&proxies, ProxyMode::Direct), None);
-        profile.dashboard_group = Some("removed".into());
-        assert_eq!(profile.group(&proxies, ProxyMode::Rule), Some("proxy"));
     }
     #[test]
     fn profile_choices_survive_reload_without_overwriting_other_sections() {
@@ -109,9 +99,6 @@ mod tests {
         crate::preferences::app::write(&paths, "other", &true).unwrap();
         let mut prefs = Preferences::default();
         prefs
-            .update(Some(1), Change::DashboardGroup("a".into()))
-            .unwrap();
-        prefs
             .update(
                 Some(1),
                 Change::TestUrl {
@@ -120,16 +107,10 @@ mod tests {
                 },
             )
             .unwrap();
-        prefs
-            .update(Some(2), Change::DashboardGroup("b".into()))
-            .unwrap();
+        prefs.profiles.insert(2, Profile::default());
         prefs.save(&paths).unwrap();
         let loaded = Preferences::load(&paths).unwrap();
         assert_eq!(loaded, prefs);
-        assert_eq!(
-            loaded.profile(Some(2)).dashboard_group.as_deref(),
-            Some("b")
-        );
         assert!(loaded.profile(Some(2)).test_urls.is_empty());
         assert!(crate::preferences::app::read::<bool>(&paths, "other").unwrap());
         assert!(

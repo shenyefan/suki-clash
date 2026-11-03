@@ -2,7 +2,6 @@
 use crate::storage::Values;
 fn options(key: &str) -> &'static [(&'static str, &'static str)] {
     match key {
-        "ProxyGroupToolsPosition" => &[("左侧", "left"), ("右侧", "right")],
         "SystemProxyModeIndex" => &[("手动", "manual"), ("PAC", "pac")],
         "StackIndex" => &[
             ("System", "system"),
@@ -33,7 +32,6 @@ fn options(key: &str) -> &'static [(&'static str, &'static str)] {
             ("左下角", "bottom_left"),
             ("左上角", "top_left"),
         ],
-        "TrayIcon" => &[("单色", "monochrome"), ("彩色", "color")],
         "TrayProxyGroups" => &[("默认", "default"), ("内联", "inline"), ("隐藏", "hidden")],
         "AutoLogClean" => &[
             ("不清理", "never"),

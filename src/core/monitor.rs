@@ -57,6 +57,12 @@ impl IpInfo {
             .join(" · ")
     }
 }
+/// Mihomo's /memory snapshot reports the core's allocation in bytes.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize)]
+pub(crate) struct MemoryUsage {
+    pub(crate) inuse: u64,
+    pub(crate) oslimit: Option<u64>,
+}
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Runtime {
     pub(crate) generation: u64,
@@ -64,6 +70,9 @@ pub(crate) struct Runtime {
     pub(crate) connected: bool,
     pub(crate) connections_live: bool,
     pub(crate) traffic_live: bool,
+    pub(crate) memory: Option<MemoryUsage>,
+    pub(crate) memory_live: bool,
+    pub(crate) memory_error: Option<String>,
     pub(crate) connections: Arc<Connections>,
     pub(crate) connections_at: Option<Instant>,
     pub(crate) stream_error: Option<String>,
@@ -78,13 +87,34 @@ pub(crate) struct Runtime {
     pub(crate) latency: Option<u32>,
     pub(crate) external_ip: Option<String>,
     pub(crate) ip_info: Option<IpInfo>,
-    pub(crate) ip_loading: bool,
-    pub(crate) ip_auto_refresh: Option<bool>,
     pub(crate) error: Option<String>,
     pub(crate) probe_error: Option<String>,
-    pub(crate) storage_error: Option<String>,
 }
 impl Runtime {
+    fn apply_memory(&mut self, state: super::streams::State) {
+        if (state.generation, state.epoch) != (self.generation, self.epoch) {
+            return;
+        }
+        if let Some(packet) = state.packet {
+            if (packet.generation, packet.epoch) != (self.generation, self.epoch) {
+                return;
+            }
+            match serde_json::from_slice::<MemoryUsage>(&packet.bytes) {
+                Ok(memory) => {
+                    self.memory = Some(memory);
+                    self.memory_live = true;
+                    self.memory_error = None;
+                }
+                Err(_) => {
+                    self.memory_live = false;
+                    self.memory_error = Some("内存流响应无效".into());
+                }
+            }
+        } else if let Some(error) = state.error {
+            self.memory_live = false;
+            self.memory_error = Some(error);
+        }
+    }
     fn apply_probe(&mut self, result: Probe) {
         self.latency = result.latency;
         if let Some(info) = result.ip_info {
@@ -108,7 +138,6 @@ fn send(
 #[derive(Clone, Default)]
 pub(super) struct ProbeControl {
     pub(super) revision: u64,
-    pub(super) auto_refresh: Option<bool>,
 }
 pub(super) async fn run(
     paths: AppPaths,
@@ -137,41 +166,20 @@ pub(super) async fn run(
         icons,
         shutdown.clone(),
     ));
-    let loaded = Recorder::load(&paths);
-    let storage_error = loaded.as_ref().err().cloned();
-    let mut recorder = loaded.unwrap_or_default();
-    let writable = storage_error.is_none();
-    let ip_preference = crate::storage::Repository::open(paths.clone())
-        .map_err(|error| error.to_string())
-        .and_then(|repository| {
-            crate::preferences::values(&repository, crate::preferences::SettingsKind::General)
-                .map_err(|error| error.to_string())
-        })
-        .map(|values| {
-            values
-                .get("IpAutoRefresh")
-                .is_some_and(|value| value == "true")
-        });
-    let mut runtime = Runtime {
-        statistics: recorder.summary(chrono::Local::now()),
-        storage_error,
-        ip_auto_refresh: ip_preference.as_ref().ok().copied(),
-        probe_error: ip_preference.err(),
-        ..Default::default()
-    };
+    let mut recorder = Recorder::default();
+    let mut runtime = Runtime::default();
     let mut connections = super::streams::Feed::start(
         "/connections?interval=1000",
         target.clone(),
         shutdown.clone(),
     );
     let mut traffic = super::streams::Feed::start("/traffic", target.clone(), shutdown.clone());
+    let mut memory = super::streams::Feed::start("/memory", target.clone(), shutdown.clone());
     let mut timer = tokio::time::interval(Duration::from_secs(1));
     timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    let mut last_save = Instant::now();
     let mut last_control: Option<Instant> = None;
     let mut control_failures = 0u8;
-    let mut last_probe: Option<Instant> = None;
-    let mut auto_refresh = runtime.ip_auto_refresh == Some(true);
+    let mut probe_requested = true;
     let mut probe_revision = refresh
         .as_ref()
         .map_or(0, |control| control.borrow().revision);
@@ -197,21 +205,18 @@ pub(super) async fn run(
                 let _ = task.await;
             }
             icon_requests.send_replace(None);
-            if scope.is_some() {
-                recorder.gap();
-            }
+            recorder.set_scope(next_scope);
             scope = next_scope;
             last_control = None;
             control_failures = 0;
-            last_probe = None;
+            probe_requested = true;
             connection_error = None;
             traffic_error = None;
-            let statistics = recorder.summary(chrono::Local::now());
-            let storage_error = runtime.storage_error.take();
             runtime = Runtime {
-                statistics,
-                storage_error,
-                ip_auto_refresh: runtime.ip_auto_refresh,
+                statistics: Summary {
+                    rankings: recorder.rankings(),
+                    ..Default::default()
+                },
                 ..Default::default()
             };
             if let Some((generation, epoch)) = scope {
@@ -227,11 +232,7 @@ pub(super) async fn run(
                             if receiver.has_changed().is_err() { refresh=None; }
                             else {
                                 let request = receiver.borrow_and_update().clone();
-                                if let Some(enabled) = request.auto_refresh {
-                                    auto_refresh=enabled;
-                                    runtime.ip_auto_refresh=Some(enabled);
-                                }
-                                if probe_revision != request.revision { last_probe=None; probe_revision=request.revision; }
+                                if probe_revision != request.revision { probe_requested=true; probe_revision=request.revision; }
                                 send(&runtime,&updates,&observer);
                             }
                         }
@@ -259,15 +260,15 @@ pub(super) async fn run(
                             if scope!=Some((packet.generation,packet.epoch)){continue;}
                             match decode_connections(&packet.bytes) {
                                 Ok(current)=> {
-                                    let mut statistics=recorder.sample(packet.generation,&current,chrono::Local::now(),packet.at);
-                                    statistics.upload_rate=runtime.statistics.upload_rate;statistics.download_rate=runtime.statistics.download_rate;
-                                    runtime.statistics=statistics;runtime.connections=Arc::new(current);runtime.connections_at=Some(packet.at);runtime.connections_live=true;connection_error=None;
+                                    runtime.statistics.connections=Some(current.connections.len());
+                                    runtime.statistics.rankings=recorder.sample_connections(&current);
+
+                                    runtime.connections=Arc::new(current);runtime.connections_at=Some(packet.at);runtime.connections_live=true;connection_error=None;
                                 },
-                                Err(error)=> {connection_error=Some(error);runtime.connections_live=false;recorder.gap();}
+                                Err(error)=> {connection_error=Some(error);runtime.connections_live=false;runtime.statistics.connections=None;recorder.connection_gap();}
                             }
                         } else if let Some(error)=state.error {
-                            if runtime.connections_live {recorder.gap();}
-                            runtime.connections_live=false;runtime.statistics.connections=None;connection_error=Some(error);
+                            runtime.connections_live=false;runtime.statistics.connections=None;connection_error=Some(error);recorder.connection_gap();
                         }
                     },
                     changed=traffic.events.changed()=> {
@@ -278,9 +279,13 @@ pub(super) async fn run(
                             #[derive(serde::Deserialize)] struct Traffic {up:u64,down:u64}
                             match serde_json::from_slice::<Traffic>(&packet.bytes) {
                                 Ok(rate)=> {runtime.statistics.upload_rate=Some(rate.up);runtime.statistics.download_rate=Some(rate.down);runtime.statistics.rates=recorder.record_rate(chrono::Local::now(),rate.up,rate.down);runtime.traffic_live=true;traffic_error=None;},
-                                Err(_)=>{traffic_error=Some("流量流响应无效".into());runtime.traffic_live=false;}
+                                Err(_)=>{traffic_error=Some("流量流响应无效".into());runtime.traffic_live=false;runtime.statistics.upload_rate=None;runtime.statistics.download_rate=None;runtime.statistics.rates.clear();recorder.gap();}
                             }
                         } else if let Some(error)=state.error {recorder.gap();runtime.statistics.rates.clear();runtime.traffic_live=false;runtime.statistics.upload_rate=None;runtime.statistics.download_rate=None;traffic_error=Some(error);}
+                    },
+                    changed=memory.events.changed()=> {
+                        if changed.is_err(){break;}
+                        runtime.apply_memory(memory.events.borrow_and_update().clone());
                     },
                     _=timer.tick()=> {
                         let Some(current)=target.borrow().clone() else {continue;};
@@ -299,17 +304,16 @@ pub(super) async fn run(
                                 Err(error)=>{control_failures+=1;runtime.connected=false;runtime.error=Some(if control_failures>=3 {format!("{error}；已停止自动重试")}else{error});}
                             }
                         }
-                        if writable && last_save.elapsed()>=Duration::from_secs(30) {runtime.storage_error=recorder.save(&paths).err();last_save=Instant::now();}
                         if let Some(task)=probe.as_ref() && task.is_finished() && let Some(task)=probe.take() {
-                            runtime.ip_loading=false;
                             match task.await {
                                 Ok(result) if scope==Some((result.generation,result.epoch)) => runtime.apply_probe(result),
                                 Err(error) => runtime.probe_error=Some(format!("出口 IP 查询任务异常：{error}")),
                                 _ => {},
                             }
                         }
-                        if !cfg!(test) && runtime.connected && runtime.proxy_port.is_some() && probe.is_none() && last_probe.is_none_or(|last|auto_refresh && last.elapsed()>=Duration::from_secs(300)) {
-                            last_probe=Some(Instant::now());runtime.ip_loading=true;let mut observed=current;observed.proxy_port=runtime.proxy_port.unwrap_or(0);probe=Some(tokio::spawn(probe_exit(paths.clone(),observed,target.clone(),shutdown.clone())));
+                        if !cfg!(test) && runtime.connected && runtime.proxy_port.is_some() && probe.is_none() && probe_requested {
+                            probe_requested=false;
+                            let mut observed=current;observed.proxy_port=runtime.proxy_port.unwrap_or(0);probe=Some(tokio::spawn(probe_exit(paths.clone(),observed,target.clone(),shutdown.clone())));
                         }
                     }
                 }
@@ -317,7 +321,8 @@ pub(super) async fn run(
             .clone()
             .map(|error| ("连接流", error))
             .into_iter()
-            .chain(traffic_error.clone().map(|error| ("流量流", error)));
+            .chain(traffic_error.clone().map(|error| ("流量流", error)))
+            .chain(runtime.memory_error.clone().map(|error| ("内存流", error)));
         let error = crate::failure::scoped(errors);
         runtime.stream_error = (!error.is_empty()).then_some(error);
         dirty = true;
@@ -332,10 +337,7 @@ pub(super) async fn run(
     let _ = icon_task.await;
     connections.finish().await;
     traffic.finish().await;
-    if writable && let Err(error) = recorder.save(&paths) {
-        runtime.storage_error = Some(error);
-        send(&runtime, &updates, &observer);
-    }
+    memory.finish().await;
     updates.close();
 }
 fn decode_connections(bytes: &[u8]) -> Result<Connections, String> {
@@ -645,44 +647,6 @@ mod tests {
         assert_eq!(runtime.probe_error.as_deref(), Some("IP 服务返回 HTTP 503"));
     }
 
-    #[tokio::test]
-    async fn ip_refresh_preference_survives_reload_and_manual_refresh() {
-        let root = tempfile::tempdir().unwrap();
-        let paths = crate::storage::AppPaths::isolated(root.path());
-        let repository = crate::storage::Repository::open(paths.clone()).unwrap();
-        let kind = crate::preferences::SettingsKind::General;
-        let mut values = crate::preferences::defaults(kind);
-        values.insert("IpAutoRefresh".into(), "false".into());
-        repository
-            .save(
-                &crate::storage::Namespace::parse(kind.id()).unwrap(),
-                &values,
-            )
-            .unwrap();
-        let (_targets, target) = tokio::sync::watch::channel(None);
-        let (updates, events) = async_channel::bounded(1);
-        let observer = events.clone();
-        let (stop, shutdown) = tokio::sync::watch::channel(false);
-        let (controls, refresh) = tokio::sync::watch::channel(super::ProbeControl::default());
-        let task = tokio::spawn(super::run(
-            paths,
-            target,
-            updates,
-            observer,
-            shutdown,
-            None,
-            Some(refresh),
-        ));
-        assert_eq!(events.recv().await.unwrap().ip_auto_refresh, Some(false));
-        controls.send_modify(|control| control.revision += 1);
-        assert_eq!(events.recv().await.unwrap().ip_auto_refresh, Some(false));
-        controls.send_modify(|control| control.auto_refresh = Some(true));
-        assert_eq!(events.recv().await.unwrap().ip_auto_refresh, Some(true));
-        stop.send_replace(true);
-        task.await.unwrap();
-        let reloaded = crate::preferences::values(&repository, kind).unwrap();
-        assert_eq!(reloaded["IpAutoRefresh"], "false");
-    }
     use super::*;
     use crate::core::client::Endpoint;
     #[tokio::test]
@@ -842,5 +806,86 @@ mod tests {
         .await
         .unwrap();
         assert!(events.is_closed());
+    }
+}
+
+#[cfg(test)]
+mod memory_tests {
+    use super::*;
+
+    fn packet(generation: u64, epoch: u64, body: &'static [u8]) -> super::super::streams::State {
+        super::super::streams::State {
+            generation,
+            epoch,
+            packet: Some(Arc::new(super::super::streams::Packet {
+                generation,
+                epoch,
+                bytes: hyper::body::Bytes::from_static(body),
+                at: Instant::now(),
+            })),
+            error: None,
+        }
+    }
+
+    #[test]
+    fn memory_preserves_last_sample_on_failure_and_rejects_other_runtime_scopes() {
+        let mut runtime = Runtime {
+            generation: 2,
+            epoch: 3,
+            ..Default::default()
+        };
+        runtime.apply_memory(packet(2, 3, br#"{"inuse":4096,"oslimit":8192}"#));
+        assert_eq!(
+            runtime.memory,
+            Some(MemoryUsage {
+                inuse: 4096,
+                oslimit: Some(8192)
+            })
+        );
+        assert!(runtime.memory_live);
+        runtime.apply_memory(packet(1, 3, br#"{"inuse":1}"#));
+        runtime.apply_memory(packet(2, 2, br#"{"inuse":1}"#));
+        assert_eq!(runtime.memory.as_ref().unwrap().inuse, 4096);
+        runtime.apply_memory(packet(2, 3, br#"{"inuse":"invalid"}"#));
+        assert!(!runtime.memory_live);
+        assert_eq!(runtime.memory.as_ref().unwrap().inuse, 4096);
+        assert!(runtime.memory_error.is_some());
+        runtime.apply_memory(super::super::streams::State {
+            generation: 2,
+            epoch: 3,
+            packet: None,
+            error: Some("连接中断".into()),
+        });
+        assert_eq!(runtime.memory_error.as_deref(), Some("连接中断"));
+        runtime.apply_memory(packet(2, 3, br#"{"inuse":0}"#));
+        assert_eq!(
+            runtime.memory,
+            Some(MemoryUsage {
+                inuse: 0,
+                oslimit: None
+            })
+        );
+        assert!(runtime.memory_live);
+        assert!(runtime.memory_error.is_none());
+    }
+
+    #[test]
+    fn memory_requires_a_nonnegative_integral_native_measurement() {
+        for body in [
+            br#"{}"#.as_slice(),
+            br#"{"inuse":null}"#,
+            br#"{"inuse":-1}"#,
+            br#"{"inuse":1.5}"#,
+        ] {
+            let mut runtime = Runtime {
+                generation: 1,
+                epoch: 1,
+                ..Default::default()
+            };
+            runtime.apply_memory(packet(1, 1, body));
+            assert!(runtime.memory.is_none());
+            assert!(!runtime.memory_live);
+            assert!(runtime.memory_error.is_some());
+        }
     }
 }

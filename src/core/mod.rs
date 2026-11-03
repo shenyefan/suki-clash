@@ -6,6 +6,7 @@ mod log_stream;
 mod monitor;
 mod streams;
 pub(crate) use monitor::Runtime;
+pub(crate) mod app_update;
 mod chain;
 mod client;
 mod connections;
@@ -39,10 +40,10 @@ pub(crate) use profiles::ProfileCommand;
 mod service;
 
 pub(crate) use bridge::{
-    attach_window, controller, execute, init, init_unavailable, quit, refresh_ip, request,
-    reset_program, restart_program, submit,
+    apply_app_update, attach_window, controller, execute, init, init_unavailable, quit, refresh_ip,
+    request, reset_program, restart_program, submit, try_controller,
 };
-pub(crate) use privileged::Action as ServiceAction;
+pub(crate) use privileged::{Action as ServiceAction, State as ServiceState};
 pub(crate) use service::{Command, Service, ServiceError};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -114,6 +115,7 @@ pub(crate) struct Snapshot {
     revision: u64,
     pub(crate) gist: gist::State,
     pub(crate) local_backup: local_backup::State,
+    pub(crate) app_update: crate::updates::State,
     pub(crate) proxy_preferences: crate::proxies::preferences::Preferences,
     generation: u64,
     request_id: Option<u64>,
@@ -158,9 +160,6 @@ impl Snapshot {
     }
     pub(crate) fn tun(&self) -> Option<bool> {
         self.tun
-    }
-    pub(crate) fn service_mode(&self) -> bool {
-        self.service_mode
     }
     pub(crate) fn runtime_yaml(&self) -> Option<&str> {
         self.runtime_yaml.as_deref()

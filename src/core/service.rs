@@ -17,6 +17,7 @@ pub(crate) enum Command {
     AutostartStatus,
     Gist(super::gist::Command),
     LocalBackup(super::local_backup::Command),
+    AppUpdate(super::app_update::Command),
     ProxyPreferences {
         profile: Option<u64>,
         change: crate::proxies::preferences::Change,
@@ -119,14 +120,12 @@ impl Service {
             watch::channel(super::monitor::ProbeControl::default());
         let (runtime_updates, runtime_events) = async_channel::bounded(1);
         let runtime_observer = runtime_events.clone();
-        let probe_controls = probe_refresh.clone();
         let worker = std::thread::Builder::new()
             .name("suki-core".into())
             .spawn(move || {
                 let mut actor = Actor::new(paths.clone(), updates, observer);
                 actor.logs = logs;
                 actor.monitor = monitor_target;
-                actor.probe_controls = Some(probe_controls);
                 let terminal_updates = actor.updates.clone();
                 let terminal_observer = actor.observer.clone();
                 runtime.block_on(async move {
@@ -326,6 +325,7 @@ pub(super) struct Actor {
     staging: Option<tempfile::TempDir>,
     recovery: Option<super::install::Recovery>,
     upgrade_previous: Option<Launch>,
+    pub(super) app_release: Option<crate::updates::Release>,
     versions_cached: Option<std::time::Instant>,
     geo_unknown: bool,
     resources_requested: bool,
@@ -335,7 +335,6 @@ pub(super) struct Actor {
     pub(super) profile_attempts: std::collections::BTreeMap<u64, i64>,
     pub(super) profile_schedule_started: i64,
     pub(super) monitor: watch::Sender<Option<super::monitor::Target>>,
-    probe_controls: Option<watch::Sender<super::monitor::ProbeControl>>,
     pub(super) runtime_warning: Option<String>,
     pub(super) deleted_overrides: std::collections::BTreeMap<u64, super::overrides::Deleted>,
     pub(super) deleted_profiles: std::collections::BTreeMap<u64, super::profiles::DeletedProfile>,
@@ -370,6 +369,7 @@ impl Actor {
             staging: None,
             recovery: None,
             upgrade_previous: None,
+            app_release: None,
             versions_cached: None,
             geo_unknown: false,
             resources_requested: false,
@@ -381,7 +381,6 @@ impl Actor {
             deleted_profiles: Default::default(),
             deleted_overrides: Default::default(),
             monitor: watch::channel(None).0,
-            probe_controls: None,
             runtime_warning: None,
             system_proxy: crate::system_proxy::Controller::new(paths),
             exit_prepared: false,
@@ -562,6 +561,7 @@ impl Actor {
                     self.snapshot.information=None;
                     self.runtime_warning=None;
                     let chain_candidates=matches!(&request.command,Command::ChainCandidates);
+                    let update_shutdown = shutdown.clone();
                     let operation = async {
                         if self.running.is_some()
                             && self.snapshot.chain.enabled
@@ -592,6 +592,7 @@ impl Actor {
                             Command::AutostartStatus => { let actual = crate::desktop::autostart::enabled(); self.snapshot.autostart = Some(actual.clone()); actual.map(|_| ()) },
                             Command::Gist(command) => self.gist(command).await,
                             Command::LocalBackup(command) => self.local_backup(command).await,
+                            Command::AppUpdate(command) => self.app_update(command, update_shutdown).await,
                             Command::ToggleSystemProxy => self.toggle_system_proxy().await,
                             Command::ToggleTun => {
                                 let current=self.running.as_ref().ok_or("内核未就绪，无法切换虚拟网卡")?.launch.client.tun_enabled().await?;
@@ -658,7 +659,7 @@ impl Actor {
                     };
                     // Service installation and machine network writes have an external commit point.
                     // Finish their acknowledged result before exit cleanup instead of abandoning the owner.
-                    let result = if matches!(&request.command,Command::PlatformService(_)|Command::WindowsNetwork(_)|Command::LocalBackup(_)|Command::Gist(super::gist::Command::Restore(_) | super::gist::Command::Create | super::gist::Command::Delete(_) | super::gist::Command::Configure { .. })) {
+                    let result = if matches!(&request.command,Command::PlatformService(_)|Command::WindowsNetwork(_)|Command::AppUpdate(_)|Command::LocalBackup(_)|Command::Gist(super::gist::Command::Restore(_) | super::gist::Command::Create | super::gist::Command::Delete(_) | super::gist::Command::Configure { .. })) {
                         operation.await
                     }else{tokio::select! {
                         biased;
@@ -675,7 +676,7 @@ impl Actor {
                     self.snapshot.progress=None;
                     if let Err(error) = result {
                         // Preparation failure must preserve an existing ready child.
-                        let phase = if matches!(&request.command, Command::Gist(_) | Command::LocalBackup(_)) { self.snapshot.phase } else if self.running.is_some() && self.snapshot.phase == Phase::Ready { Phase::Ready } else { Phase::Failed };
+                        let phase = if matches!(&request.command, Command::Gist(_) | Command::LocalBackup(_) | Command::AppUpdate(_)) { self.snapshot.phase } else if self.running.is_some() && self.snapshot.phase == Phase::Ready { Phase::Ready } else { Phase::Failed };
                         self.publish(phase, Some(error));
                     } else {self.publish(self.snapshot.phase,None);}
                     drop(request);
@@ -1719,17 +1720,6 @@ impl Actor {
         if kind == SettingsKind::General && native_patch.contains_key("AutoRun") {
             self.snapshot.autostart = Some(crate::desktop::autostart::enabled());
         }
-        if kind == SettingsKind::General
-            && let Some(controls) = &self.probe_controls
-        {
-            controls.send_modify(|control| {
-                control.auto_refresh = Some(
-                    desired
-                        .get("IpAutoRefresh")
-                        .is_some_and(|value| value == "true"),
-                );
-            });
-        }
         self.snapshot
             .settings
             .insert(kind.id().into(), desired.clone());
@@ -1755,10 +1745,7 @@ impl Actor {
 
     async fn platform_action(&mut self, action: super::privileged::Action) -> Result<(), String> {
         use super::privileged::Action;
-        if matches!(action, Action::Stop) {
-            return self.stop().await;
-        }
-        let sidecar = matches!(action, Action::Uninstall | Action::Sidecar);
+        let sidecar = matches!(action, Action::Uninstall);
         let previous_preferences = super::Preferences::load(&self.paths)?;
         let mut desired = previous_preferences.clone();
         let mut replacement = None;
@@ -1785,7 +1772,6 @@ impl Actor {
         self.snapshot.service_mode = false;
         let operation = match &action {
             Action::Uninstall => super::privileged::uninstall().await.map(|()| Vec::new()),
-            Action::Sidecar => Ok(Vec::new()),
             _ => super::privileged::manage(&self.paths).await,
         };
         self.snapshot.service_state = super::privileged::probe().await;

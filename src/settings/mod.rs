@@ -12,6 +12,7 @@ mod preferences;
 mod resources;
 mod runtime;
 mod sysproxy;
+mod update;
 mod uwp;
 use crate::preferences::schema;
 mod view;
@@ -77,6 +78,7 @@ pub(crate) struct SettingsPage {
     filter: Entity<InputState>,
     runtime_tab: usize,
     dirty: bool,
+    synced_values: crate::storage::Values,
     saving: bool,
     pending_action: Option<Task<()>>,
     core_syncing: bool,
@@ -139,6 +141,23 @@ impl SettingsPage {
                                         .is_some_and(|v| v == "指定版本")
                                 {
                                     this.runtime_command("加载版本列表", window, cx);
+                                }
+                            });
+                        });
+                    });
+                }
+                if !observed_busy
+                    && !this.saving
+                    && !this.dirty
+                    && this.error.is_none()
+                    && store::read(this.kind.id(), cx) != this.synced_values
+                {
+                    let owner = cx.weak_entity();
+                    cx.defer(move |cx| {
+                        let _ = settings_window.update(cx, |_, window, cx| {
+                            let _ = owner.update(cx, |this, cx| {
+                                if !this.saving && !this.dirty && this.error.is_none() {
+                                    this.sync_committed_settings(window, cx);
                                 }
                             });
                         });
@@ -367,6 +386,7 @@ impl SettingsPage {
             filter,
             runtime_tab: 0,
             dirty: false,
+            synced_values: saved.clone(),
             saving: false,
             pending_action: None,
             core_syncing: false,
@@ -491,17 +511,12 @@ impl SettingsPage {
         if self.kind == SettingsKind::General && !self.session.read(cx).core_busy() {
             crate::core::request(crate::core::Command::AutostartStatus, window, cx);
         }
-        if self.error.is_none() || self.saving {
+        if self.saving {
             return;
         }
         self.error = None;
         self.dns_raw = false;
-        let touched = self
-            .fields
-            .keys()
-            .map(|key| ((*key).to_owned(), String::new()))
-            .collect();
-        self.restore_core_fields(&touched, window, cx);
+        self.sync_committed_settings(window, cx);
     }
     fn toggle(
         &mut self,
@@ -614,26 +629,11 @@ impl SettingsPage {
             }
         } else if matches!(
             action,
-            "重置程序"
-                | "退出应用"
-                | "复制版本号"
-                | "复制环境变量"
-                | "复制代理地址"
-                | "复制 PAC 地址"
+            "重置程序" | "退出应用" | "复制环境变量" | "复制代理地址" | "复制 PAC 地址"
         ) {
             self.action(action, window, cx);
         } else {
             let values = self.command_values(cx);
-            if matches!(
-                action,
-                "测试 WebDAV 连接" | "上传备份" | "获取远程备份" | "远程备份历史"
-            ) && ["WebDavUrl", "WebDavUsername", "WebDavPassword"]
-                .iter()
-                .any(|key| values.get(*key).is_none_or(|value| value.trim().is_empty()))
-            {
-                ui::show_error("填写 WebDAV 地址、用户名和密码后再操作".into(), window, cx);
-                return;
-            }
             if let Some(error) = validate(&self.sections, &values) {
                 ui::show_error(error, window, cx);
                 return;

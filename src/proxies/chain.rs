@@ -548,6 +548,7 @@ impl Render for ChainEditor {
                 ui::form()
                     .child(
                         ui::form_row()
+                            .items_center()
                             .justify_between()
                             .child("启用链式代理")
                             .child(

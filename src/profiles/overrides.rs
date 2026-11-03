@@ -48,7 +48,13 @@ impl ProfilesPage {
         let drag_owner = cx.entity();
         let menu = ui::icon_button(("override-menu", id), IconName::Ellipsis, "覆写操作")
             .dropdown_menu(move |mut menu, _, _| {
-                for action in ["更新", "编辑信息", "打开文件", "执行日志", "删除"] {
+                for (action, icon) in [
+                    ("更新", IconName::RefreshCw),
+                    ("编辑信息", IconName::Pencil),
+                    ("打开文件", IconName::FolderOpen),
+                    ("执行日志", IconName::Info),
+                    ("删除", IconName::Trash),
+                ] {
                     if action == "更新" && !remote {
                         continue;
                     }
@@ -56,9 +62,11 @@ impl ProfilesPage {
                         continue;
                     }
                     let owner = owner.clone();
-                    menu = menu.item(crate::ui::actions::menu(action).on_click(move |_, w, cx| {
-                        owner.update(cx, |this, cx| this.document_action(id, action, w, cx));
-                    }));
+                    menu = menu.item(crate::ui::actions::menu(action).icon(icon).on_click(
+                        move |_, w, cx| {
+                            owner.update(cx, |this, cx| this.document_action(id, action, w, cx));
+                        },
+                    ));
                 }
                 menu
             });

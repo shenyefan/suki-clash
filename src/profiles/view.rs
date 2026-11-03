@@ -34,16 +34,25 @@ impl ProfilesPage {
         let menu = ui::icon_button(("document-menu", id), IconName::Ellipsis, "订阅操作")
             .dropdown_menu(move |menu, _, _| {
                 let mut menu = menu;
-                for action in ["编辑信息", "编辑文件", "打开文件"] {
+                for (action, icon) in [
+                    ("编辑信息", IconName::Pencil),
+                    ("编辑文件", IconName::FileCode),
+                    ("打开文件", IconName::FolderOpen),
+                ] {
                     let owner = owner.clone();
-                    menu = menu.item(crate::ui::actions::menu(action).on_click(move |_, w, cx| {
-                        owner.update(cx, |this, cx| this.document_action(id, action, w, cx));
-                    }));
+                    menu = menu.item(crate::ui::actions::menu(action).icon(icon).on_click(
+                        move |_, w, cx| {
+                            owner.update(cx, |this, cx| this.document_action(id, action, w, cx));
+                        },
+                    ));
                 }
                 if !overrides && remote {
-                    for action in ["分享二维码", "复制链接"] {
+                    for (action, icon) in [
+                        ("分享二维码", IconName::QrCode),
+                        ("复制链接", IconName::Copy),
+                    ] {
                         let owner = owner.clone();
-                        menu = menu.item(crate::ui::actions::menu(action).on_click(
+                        menu = menu.item(crate::ui::actions::menu(action).icon(icon).on_click(
                             move |_, w, cx| {
                                 owner.update(cx, |this, cx| this.document_action(id, action, w, cx))
                             },
@@ -54,6 +63,7 @@ impl ProfilesPage {
                     let home = home.clone();
                     menu = menu.item(
                         crate::ui::actions::menu("订阅主页")
+                            .icon(IconName::Link)
                             .on_click(move |_, _, cx| cx.open_url(&home)),
                     );
                 }
@@ -71,12 +81,15 @@ impl ProfilesPage {
                 }
                 if js {
                     let owner = owner.clone();
-                    menu = menu.item(crate::ui::actions::menu("执行日志").on_click(
-                        move |_, w, cx| {
-                            owner
-                                .update(cx, |this, cx| this.document_action(id, "执行日志", w, cx));
-                        },
-                    ));
+                    menu = menu.item(
+                        crate::ui::actions::menu("执行日志")
+                            .icon(IconName::Info)
+                            .on_click(move |_, w, cx| {
+                                owner.update(cx, |this, cx| {
+                                    this.document_action(id, "执行日志", w, cx)
+                                });
+                            }),
+                    );
                 }
                 let owner = owner.clone();
                 menu.separator().item(

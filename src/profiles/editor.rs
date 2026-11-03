@@ -4,6 +4,7 @@ use super::{
 };
 use crate::ui;
 use crate::ui::theme::{control, layout, space};
+use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     assets::IconName,
     component::{
@@ -441,31 +442,42 @@ impl Render for DocumentEditor {
                         .mask_toggle()
                         .with_size(control::STANDARD)
                         .w_full()
-                        .aria_label("访问令牌"),
+                        .aria_label("访问令牌")
+                        .when(self.mode == EditorMode::Information, |input| {
+                            input.suffix(
+                                ui::icon_button(
+                                    "clear-saved-token",
+                                    if self.cleared_token.is_some() {
+                                        IconName::RotateCcw
+                                    } else {
+                                        IconName::Trash
+                                    },
+                                    if self.cleared_token.is_some() {
+                                        "撤销清除令牌"
+                                    } else {
+                                        "清除已保存令牌"
+                                    },
+                                )
+                                .on_click(cx.listener(
+                                    |this, _, window, cx| {
+                                        let value =
+                                            if let Some(previous) = this.cleared_token.take() {
+                                                previous
+                                            } else {
+                                                this.cleared_token =
+                                                    Some(this.token.read(cx).value().to_string());
+                                                String::new()
+                                            };
+                                        this.token.update(cx, |state, cx| {
+                                            state.set_value(value, window, cx)
+                                        });
+                                        cx.notify();
+                                    },
+                                )),
+                            )
+                        }),
                 ));
-            if self.mode == EditorMode::Information {
-                form = form.child(
-                    Button::new("clear-saved-token")
-                        .ghost()
-                        .with_size(control::STANDARD)
-                        .label(if self.cleared_token.is_some() {
-                            "撤销清除令牌"
-                        } else {
-                            "清除已保存令牌"
-                        })
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            let value = if let Some(previous) = this.cleared_token.take() {
-                                previous
-                            } else {
-                                this.cleared_token = Some(this.token.read(cx).value().to_string());
-                                String::new()
-                            };
-                            this.token
-                                .update(cx, |state, cx| state.set_value(value, window, cx));
-                            cx.notify();
-                        })),
-                );
-            }
+
             if self.document.kind == DocumentKind::Profile {
                 form = form.child(ui::field_label(
                     "Age 私钥",
@@ -474,31 +486,41 @@ impl Render for DocumentEditor {
                         .mask_toggle()
                         .with_size(control::STANDARD)
                         .w_full()
-                        .aria_label("Age 私钥"),
+                        .aria_label("Age 私钥")
+                        .when(self.mode == EditorMode::Information, |input| {
+                            input.suffix(
+                                ui::icon_button(
+                                    "clear-saved-age",
+                                    if self.cleared_age.is_some() {
+                                        IconName::RotateCcw
+                                    } else {
+                                        IconName::Trash
+                                    },
+                                    if self.cleared_age.is_some() {
+                                        "撤销清除私钥"
+                                    } else {
+                                        "清除已保存私钥"
+                                    },
+                                )
+                                .on_click(cx.listener(
+                                    |this, _, window, cx| {
+                                        let value = if let Some(previous) = this.cleared_age.take()
+                                        {
+                                            previous
+                                        } else {
+                                            this.cleared_age =
+                                                Some(this.age.read(cx).value().to_string());
+                                            String::new()
+                                        };
+                                        this.age.update(cx, |state, cx| {
+                                            state.set_value(value, window, cx)
+                                        });
+                                        cx.notify();
+                                    },
+                                )),
+                            )
+                        }),
                 ));
-                if self.mode == EditorMode::Information {
-                    form = form.child(
-                        Button::new("clear-saved-age")
-                            .ghost()
-                            .with_size(control::STANDARD)
-                            .label(if self.cleared_age.is_some() {
-                                "撤销清除私钥"
-                            } else {
-                                "清除已保存私钥"
-                            })
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                let value = if let Some(previous) = this.cleared_age.take() {
-                                    previous
-                                } else {
-                                    this.cleared_age = Some(this.age.read(cx).value().to_string());
-                                    String::new()
-                                };
-                                this.age
-                                    .update(cx, |state, cx| state.set_value(value, window, cx));
-                                cx.notify();
-                            })),
-                    );
-                }
             }
         }
         if self.document.kind != DocumentKind::Profile {
@@ -511,16 +533,20 @@ impl Render for DocumentEditor {
                         .accessibility_label("覆写作用范围"),
                 ))
                 .child(
-                    ui::form_row().justify_between().child("启用此覆写").child(
-                        Switch::new("editor-enabled")
-                            .with_size(control::STANDARD)
-                            .checked(self.document.enabled)
-                            .accessibility_label("启用此覆写")
-                            .on_change(cx.listener(|this, value, _, cx| {
-                                this.document.enabled = *value;
-                                cx.notify();
-                            })),
-                    ),
+                    ui::form_row()
+                        .items_center()
+                        .justify_between()
+                        .child("启用此覆写")
+                        .child(
+                            Switch::new("editor-enabled")
+                                .with_size(control::STANDARD)
+                                .checked(self.document.enabled)
+                                .accessibility_label("启用此覆写")
+                                .on_change(cx.listener(|this, value, _, cx| {
+                                    this.document.enabled = *value;
+                                    cx.notify();
+                                })),
+                        ),
                 );
         }
         if remote {
@@ -530,30 +556,34 @@ impl Render for DocumentEditor {
                 ("invalid-certs", "忽略证书错误", self.accept_invalid_certs),
             ] {
                 form = form.child(
-                    ui::form_row().justify_between().child(label).child(
-                        Switch::new(key)
-                            .with_size(control::STANDARD)
-                            .checked(checked)
-                            .accessibility_label(label)
-                            .on_change(cx.listener(move |this, checked, _, cx| {
-                                match key {
-                                    "with-proxy" => {
-                                        this.with_proxy = *checked;
-                                        if *checked {
-                                            this.self_proxy = false;
+                    ui::form_row()
+                        .items_center()
+                        .justify_between()
+                        .child(label)
+                        .child(
+                            Switch::new(key)
+                                .with_size(control::STANDARD)
+                                .checked(checked)
+                                .accessibility_label(label)
+                                .on_change(cx.listener(move |this, checked, _, cx| {
+                                    match key {
+                                        "with-proxy" => {
+                                            this.with_proxy = *checked;
+                                            if *checked {
+                                                this.self_proxy = false;
+                                            }
                                         }
-                                    }
-                                    "self-proxy" => {
-                                        this.self_proxy = *checked;
-                                        if *checked {
-                                            this.with_proxy = false;
+                                        "self-proxy" => {
+                                            this.self_proxy = *checked;
+                                            if *checked {
+                                                this.with_proxy = false;
+                                            }
                                         }
+                                        _ => this.accept_invalid_certs = *checked,
                                     }
-                                    _ => this.accept_invalid_certs = *checked,
-                                }
-                                cx.notify();
-                            })),
-                    ),
+                                    cx.notify();
+                                })),
+                        ),
                 );
             }
         }

@@ -87,11 +87,7 @@ fn sync_key(name: &str) -> bool {
         .filter(|ch| ch.is_ascii_alphanumeric())
         .collect::<String>()
         .to_ascii_lowercase();
-    name.contains("gist")
-        || name.contains("github")
-        || name.contains("webdav")
-        || name.contains("sync")
-        || name == "autorun"
+    name.contains("gist") || name.contains("github") || name.contains("sync") || name == "autorun"
 }
 fn sanitized_settings(bytes: &[u8], local: Option<&[u8]>) -> Result<Vec<u8>, String> {
     let mut root: serde_json::Map<String, serde_json::Value> =

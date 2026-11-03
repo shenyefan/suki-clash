@@ -221,9 +221,7 @@ fn session_token() -> Result<String, String> {
 pub(crate) enum Action {
     Install,
     Repair,
-    Stop,
     Uninstall,
-    Sidecar,
 }
 pub(super) async fn manage(
     paths: &AppPaths,
@@ -239,7 +237,7 @@ pub(super) async fn uninstall() -> Result<(), String> {
                 std::env::consts::EXE_SUFFIX
             ));
         if !tool.is_file() {
-            return Err("服务卸载工具不存在".into());
+            return Err("服务卸载工具不存在，请使用包含后台服务的完整应用包".into());
         }
         suki_service::management::uninstall(&tool).map_err(|error| error.to_string())
     })

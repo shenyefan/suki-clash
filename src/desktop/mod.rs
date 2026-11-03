@@ -3,7 +3,6 @@ pub(crate) mod autostart;
 pub(crate) mod instance;
 #[cfg(not(target_os = "macos"))]
 pub(crate) mod scheme;
-pub(crate) mod system;
 
 pub(crate) async fn startup_script(paths: &crate::storage::AppPaths) -> Result<(), String> {
     let repository =

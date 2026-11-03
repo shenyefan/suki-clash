@@ -84,6 +84,10 @@ pub(crate) fn controller(cx: &App) -> Entity<Controller> {
     cx.global::<Handle>().0.clone()
 }
 
+pub(crate) fn try_controller(cx: &App) -> Option<Entity<Controller>> {
+    cx.try_global::<Handle>().map(|h| h.0.clone())
+}
+
 /// Register the first window before asynchronous startup results arrive. A
 /// failure produced before window construction is replayed once as a toast.
 pub(crate) fn attach_window(window: &Window, cx: &mut App) {
@@ -184,7 +188,6 @@ fn install(service: Option<Service>, snapshot: Snapshot, cx: &mut App) {
                                 (&runtime.error, &this.runtime.error, "ERROR"),
                                 (&runtime.stream_error, &this.runtime.stream_error, "WARNING"),
                                 (&runtime.probe_error, &this.runtime.probe_error, "WARNING"),
-                                (&runtime.storage_error, &this.runtime.storage_error, "ERROR"),
                             ] {
                                 if current != previous
                                     && let Some(error) = current
@@ -461,8 +464,12 @@ pub(crate) fn reset_program(window: &mut Window, cx: &mut App) {
     };
     finish(Exit::Reset(paths), cx);
 }
+pub(crate) fn apply_app_update(expected: String, cx: &mut App) {
+    finish(Exit::Update(expected), cx);
+}
 enum Exit {
     Quit,
+    Update(String),
     Restart,
     Reset(AppPaths),
 }
@@ -472,9 +479,24 @@ fn finish(exit: Exit, cx: &mut App) {
         if this.quitting.is_some() {
             return;
         }
-        let preparation = this.service.as_mut().map(Service::prepare_exit).transpose();
         this.quitting = Some(cx.spawn(async move |owner, cx| {
             let joined = async {
+                let installer = if let Exit::Update(expected) = &exit {
+                    let expected = expected.clone();
+                    Some(
+                        cx.background_spawn(
+                            async move { crate::updates::prepare_installer(&expected) },
+                        )
+                        .await?,
+                    )
+                } else {
+                    None
+                };
+                let preparation = owner
+                    .update(cx, |this, _| {
+                        this.service.as_mut().map(Service::prepare_exit).transpose()
+                    })
+                    .map_err(|error| error.to_string())?;
                 if let Some(reply) = preparation.map_err(|error| error.to_string())? {
                     reply.recv().await.map_err(|_| "内核退出准备应答中断")??;
                 }
@@ -490,6 +512,10 @@ fn finish(exit: Exit, cx: &mut App) {
                         crate::desktop::autostart::reset_configuration(&paths)
                     })
                     .await?;
+                }
+                if let Some(installer) = installer {
+                    cx.background_spawn(async move { installer.launch() })
+                        .await?;
                 }
                 if let Exit::Restart = exit {
                     // Resolve the executable before giving up instance ownership.
@@ -720,6 +746,99 @@ mod startup_notice_tests {
         window
             .update(cx, |_, window, cx| {
                 assert_eq!(crate::ui::notifications::current(window, cx).len(), 2)
+            })
+            .unwrap();
+        crate::integration::finish_test_services(cx);
+    }
+}
+
+#[cfg(test)]
+mod settings_sync_tests {
+    use gpui_kit::{AppContext, TestAppContext, WindowOptions, test::TestWindowExt};
+
+    #[gpui_kit::test]
+    fn settings_follow_external_commits_preserve_failed_drafts_and_refresh_on_reentry(
+        cx: &mut TestAppContext,
+    ) {
+        let root = tempfile::tempdir().unwrap();
+        let service = crate::integration::Service::start(
+            crate::storage::Repository::open(crate::storage::AppPaths::isolated(root.path()))
+                .unwrap(),
+        )
+        .unwrap();
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            crate::integration::init(service, None, cx);
+            cx.set_reduce_motion(true);
+        });
+        cx.update(|cx| {
+            let preferences =
+                super::super::Preferences::load(&crate::storage::AppPaths::isolated(root.path()))
+                    .unwrap();
+            super::controller(cx).update(cx, |controller, _| {
+                controller.snapshot.preferences = Some(preferences);
+            });
+            assert_eq!(crate::integration::read("tun", cx)["StackIndex"], "Mips");
+        });
+        let (window, page) = cx.update(|cx| {
+            gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
+                let session = cx.new(crate::session::Session::new);
+                cx.new(|cx| {
+                    crate::settings::SettingsPage::new(
+                        crate::preferences::SettingsKind::General,
+                        session,
+                        window,
+                        cx,
+                    )
+                })
+            })
+            .unwrap()
+        });
+        cx.run_until_parked();
+        cx.update(|cx| {
+            super::controller(cx).update(cx, |controller, cx| {
+                let mut values =
+                    crate::preferences::defaults(crate::preferences::SettingsKind::General);
+                values.insert("SilentStart".into(), "true".into());
+                controller
+                    .snapshot
+                    .settings
+                    .insert("settings".into(), values);
+                cx.notify();
+            });
+        });
+        cx.run_until_parked();
+        window
+            .update(cx, |_, window, cx| {
+                window.render_frame(cx);
+                assert_eq!(window.find("setting-SilentStart").checked(), Some(true));
+                // The isolated UI executor rejects the change: retain the requested
+                // draft instead of replacing it when another committed field changes.
+                window.click("setting-SilentStart", cx);
+            })
+            .unwrap();
+        cx.run_until_parked();
+        cx.update(|cx| {
+            super::controller(cx).update(cx, |controller, cx| {
+                controller
+                    .snapshot
+                    .settings
+                    .get_mut("settings")
+                    .unwrap()
+                    .insert("ProfileUseProxy".into(), "true".into());
+                cx.notify();
+            });
+        });
+        cx.run_until_parked();
+        window
+            .update(cx, |_, window, cx| {
+                window.render_frame(cx);
+                assert_eq!(window.find("setting-SilentStart").checked(), Some(false));
+                // Leaving and re-entering discards the rejected draft and reads the
+                // latest committed source for every settings destination.
+                page.update(cx, |page, cx| page.reopen(window, cx));
+                window.render_frame(cx);
+                assert_eq!(window.find("setting-SilentStart").checked(), Some(true));
             })
             .unwrap();
         crate::integration::finish_test_services(cx);

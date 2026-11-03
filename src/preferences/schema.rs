@@ -224,6 +224,15 @@ fn tun_sections() -> Vec<SectionSpec> {
                     actions: &[],
                 },
                 FieldSpec {
+                    key: "TunService",
+                    label: "后台服务",
+                    description: "虚拟网卡需要系统网络权限",
+                    kind: FieldKind::ReadOnly,
+                    default: "",
+                    options: &[],
+                    actions: &["安装服务", "修复服务", "卸载服务"],
+                },
+                FieldSpec {
                     key: "StackIndex",
                     label: "协议栈",
                     description: "",
@@ -320,32 +329,15 @@ fn tun_sections() -> Vec<SectionSpec> {
         },
         SectionSpec {
             title: "服务与权限",
-            fields: vec![
-                FieldSpec {
-                    key: "TunService",
-                    label: "后台服务",
-                    description: "虚拟网卡需要系统网络权限",
-                    kind: FieldKind::ReadOnly,
-                    default: "",
-                    options: &[],
-                    actions: &[
-                        "安装服务",
-                        "修复服务",
-                        "停止服务内核",
-                        "转为子进程",
-                        "卸载服务",
-                    ],
-                },
-                FieldSpec {
-                    key: "TunAction1",
-                    label: "防火墙规则",
-                    description: "仅适用于 Windows",
-                    kind: FieldKind::ReadOnly,
-                    default: "",
-                    options: &[],
-                    actions: &["重建防火墙规则"],
-                },
-            ],
+            fields: vec![FieldSpec {
+                key: "TunAction1",
+                label: "防火墙规则",
+                description: "仅适用于 Windows",
+                kind: FieldKind::ReadOnly,
+                default: "",
+                options: &[],
+                actions: &["重建防火墙规则"],
+            }],
         },
     ]
 }
@@ -355,15 +347,6 @@ fn general_extensions() -> Vec<SectionSpec> {
         SectionSpec {
             title: "启动与行为",
             fields: vec![
-                FieldSpec {
-                    key: "IpAutoRefresh",
-                    label: "自动刷新出口 IP",
-                    description: "",
-                    kind: FieldKind::Toggle,
-                    default: "true",
-                    options: &[],
-                    actions: &[],
-                },
                 FieldSpec {
                     key: "StartPage",
                     label: "启动页面",
@@ -406,15 +389,6 @@ fn general_extensions() -> Vec<SectionSpec> {
             title: "托盘",
             fields: vec![
                 FieldSpec {
-                    key: "TrayIcon",
-                    label: "托盘图标",
-                    description: "",
-                    kind: FieldKind::Select,
-                    default: "单色",
-                    options: &["单色", "彩色"],
-                    actions: &[],
-                },
-                FieldSpec {
                     key: "EnableTraySpeed",
                     label: "显示托盘网速",
                     description: "",
@@ -441,29 +415,11 @@ fn general_extensions() -> Vec<SectionSpec> {
                     options: &[],
                     actions: &[],
                 },
-                FieldSpec {
-                    key: "CustomTrayIcons",
-                    label: "自定义托盘图标",
-                    description: "",
-                    kind: FieldKind::ReadOnly,
-                    default: "",
-                    options: &[],
-                    actions: &["选择普通图标", "选择系统代理图标", "选择虚拟网卡图标"],
-                },
             ],
         },
         SectionSpec {
             title: "测速与日志",
             fields: vec![
-                FieldSpec {
-                    key: "ProxyGroupToolsPosition",
-                    label: "代理组工具位置",
-                    description: "",
-                    kind: FieldKind::Select,
-                    default: "右侧",
-                    options: &["左侧", "右侧"],
-                    actions: &[],
-                },
                 FieldSpec {
                     key: "EnableAutoDelay",
                     label: "自动检测延迟",
@@ -527,91 +483,6 @@ fn general_extensions() -> Vec<SectionSpec> {
             ],
         },
         SectionSpec {
-            title: "备份文件",
-            fields: vec![FieldSpec {
-                key: "RemoteBackupHistory",
-                label: "远程备份",
-                description: "查看、恢复、下载或删除 WebDAV 备份",
-                kind: FieldKind::ReadOnly,
-                default: "",
-                options: &[],
-                actions: &["远程备份历史"],
-            }],
-        },
-        SectionSpec {
-            title: "自动备份",
-            fields: vec![
-                FieldSpec {
-                    key: "AutoBackupSchedule",
-                    label: "定时备份",
-                    description: "",
-                    kind: FieldKind::Toggle,
-                    default: "false",
-                    options: &[],
-                    actions: &[],
-                },
-                FieldSpec {
-                    key: "AutoBackupInterval",
-                    label: "备份间隔（小时）",
-                    description: "允许范围 1–168",
-                    kind: FieldKind::Number,
-                    default: "24",
-                    options: &[],
-                    actions: &[],
-                },
-                FieldSpec {
-                    key: "AutoBackupOnChange",
-                    label: "配置变更时备份",
-                    description: "",
-                    kind: FieldKind::Toggle,
-                    default: "true",
-                    options: &[],
-                    actions: &[],
-                },
-            ],
-        },
-        SectionSpec {
-            title: "WebDAV",
-            fields: vec![
-                FieldSpec {
-                    key: "WebDavUrl",
-                    label: "服务器地址",
-                    description: "",
-                    kind: FieldKind::Text,
-                    default: "",
-                    options: &[],
-                    actions: &[],
-                },
-                FieldSpec {
-                    key: "WebDavUsername",
-                    label: "用户名",
-                    description: "",
-                    kind: FieldKind::Text,
-                    default: "",
-                    options: &[],
-                    actions: &[],
-                },
-                FieldSpec {
-                    key: "WebDavPassword",
-                    label: "密码",
-                    description: "",
-                    kind: FieldKind::Secret,
-                    default: "",
-                    options: &[],
-                    actions: &[],
-                },
-                FieldSpec {
-                    key: "WebDavAction",
-                    label: "远程备份",
-                    description: "",
-                    kind: FieldKind::ReadOnly,
-                    default: "",
-                    options: &[],
-                    actions: &["测试 WebDAV 连接", "上传备份", "获取远程备份"],
-                },
-            ],
-        },
-        SectionSpec {
             title: "工具与更新",
             fields: vec![
                 FieldSpec {
@@ -648,22 +519,7 @@ fn general_extensions() -> Vec<SectionSpec> {
                     kind: FieldKind::ReadOnly,
                     default: "",
                     options: &[],
-                    actions: &["导出诊断信息", "打开开发工具"],
-                },
-                FieldSpec {
-                    key: "ServiceMode",
-                    label: "后台服务",
-                    description: "",
-                    kind: FieldKind::ReadOnly,
-                    default: "",
-                    options: &[],
-                    actions: &[
-                        "安装服务",
-                        "修复服务",
-                        "停止服务内核",
-                        "转为子进程",
-                        "卸载服务",
-                    ],
+                    actions: &["导出诊断信息"],
                 },
                 FieldSpec {
                     key: "AppVersion",
@@ -672,7 +528,7 @@ fn general_extensions() -> Vec<SectionSpec> {
                     kind: FieldKind::ReadOnly,
                     default: "",
                     options: &[],
-                    actions: &["复制版本号"],
+                    actions: &[],
                 },
             ],
         },
@@ -1587,7 +1443,7 @@ fn original_sections(kind: SettingsKind) -> Vec<SectionSpec> {
                         label: "订阅 User-Agent",
                         description: "单个订阅未设置时使用",
                         kind: FieldKind::Text,
-                        default: "SukiClash",
+                        default: crate::network::DEFAULT_USER_AGENT,
                         options: &[],
                         actions: &[],
                     },
@@ -1720,18 +1576,17 @@ pub(crate) fn section_tab(kind: SettingsKind, title: &str, key: &str) -> usize {
         },
         SettingsKind::Tun => match title {
             "路由" | "DNS" => 1,
-            "服务与权限" => 2,
+            "服务与权限" => 0,
             _ => 0,
         },
         SettingsKind::General => match title {
             "常规" if matches!(key, "ThemeIndex" | "BackdropIndex") => 1,
             "常规" if key == "CloseToTray" => 2,
-            "常规" if key == "SettingsAction6" => 5,
-            "备份文件" if key == "RemoteBackupHistory" => 4,
+            "常规" if key == "SettingsAction6" => 4,
             "托盘" => 2,
             "网络与订阅" | "内核与配置" => 3,
-            "Gist 同步" | "WebDAV" => 4,
-            "维护" | "备份文件" | "自动备份" | "工具与更新" | "测速与日志" => 5,
+            "Gist 同步" => 4,
+            "维护" | "工具与更新" | "测速与日志" => 4,
             _ => 0,
         },
         _ => 0,
@@ -1748,7 +1603,6 @@ pub(crate) fn field_visible(kind: SettingsKind, key: &str) -> bool {
         (SettingsKind::General, "BackdropIndex") => {
             cfg!(any(target_os = "macos", target_os = "windows"))
         }
-        (SettingsKind::General, "IpAutoRefresh") => false,
         (SettingsKind::General, "TrayEvent") => !cfg!(target_os = "linux"),
         _ => true,
     }
@@ -1791,7 +1645,6 @@ pub(crate) fn field_enabled(
             .is_some_and(|value| value == "PAC"),
         (SettingsKind::Tun, "AutoRedirect" | "RouteExcludeAddress") => enabled("AutoRoute"),
         (SettingsKind::General, "AutoDelayInterval") => enabled("EnableAutoDelay"),
-        (SettingsKind::General, "AutoBackupInterval") => enabled("AutoBackupSchedule"),
         (SettingsKind::Core, "RedirPort") => !cfg!(windows),
         (SettingsKind::Core, "TproxyPort") => cfg!(target_os = "linux"),
         _ => true,
@@ -1883,7 +1736,7 @@ fn validate_preferences(values: &BTreeMap<String, String>) -> Option<String> {
     {
         return Some("DNS 劫持需使用 host:port 格式，例如 any:53".into());
     }
-    for key in ["WebDavUrl", "DelayTestUrl", "GitHubProxy"] {
+    for key in ["DelayTestUrl", "GitHubProxy"] {
         if let Some(value) = values.get(key)
             && !value.trim().is_empty()
             && !valid_web_url(value)
@@ -1993,7 +1846,6 @@ pub(crate) fn validate(
             };
             let range = match field.key {
                 "Mtu" => Some((576, 65535)),
-                "AutoBackupInterval" => Some((1, 168)),
                 "DelayTestTimeout" => Some((100, 60000)),
                 "DelayTestConcurrency" => Some((1, 10)),
                 "ProxyGuardDuration"
@@ -2045,6 +1897,13 @@ mod tests {
         let general = sections(SettingsKind::General);
         let fields: Vec<_> = general.iter().flat_map(|section| &section.fields).collect();
         for key in [
+            "TrayIcon",
+            "CustomTrayIcons",
+            "ProxyGroupToolsPosition",
+            "ServiceMode",
+            "WebDavUrl",
+            "WebDavPassword",
+            "AutoBackupSchedule",
             "FontFamily",
             "CollapseNavbar",
             "EnableGlobalHotkey",
@@ -2067,12 +1926,9 @@ mod tests {
         assert!(!fields.iter().any(|field| field.key.starts_with("Hotkey")));
         for key in [
             "TrayEvent",
-            "TrayIcon",
             "TrayProxyGroups",
             "EnableTraySpeed",
             "GistBackup",
-            "WebDavUrl",
-            "WebDavPassword",
         ] {
             assert!(
                 fields.iter().any(|field| field.key == key),

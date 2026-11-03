@@ -9,9 +9,9 @@ use gpui_kit::{
     component::{
         ActiveTheme, Disableable, Icon, IndexPath, Sizable, WindowExt,
         button::{Button, ButtonVariants},
+        combobox::{Combobox, ComboboxState},
         h_flex,
         input::{Editor, EditorState, Input, InputState},
-        menu::DropdownMenu,
         searchable_list::SearchableListItem,
         select::{Select, SelectState},
         switch::Switch,
@@ -470,7 +470,26 @@ impl EnhancementEditor {
                     .await;
                 let _ = owner.update_in(cx, |this, window, cx| {
                     match result {
-                        Ok(candidates) => this.candidates = candidates,
+                        Ok((members, providers)) => {
+                            for (state, candidates) in
+                                [(&this.members, members), (&this.providers, providers)]
+                            {
+                                state.update(cx, |state, cx| {
+                                    let selected = state.selected_values();
+                                    let mut items = candidates
+                                        .into_iter()
+                                        .map(SharedString::from)
+                                        .collect::<Vec<_>>();
+                                    for value in &selected {
+                                        if !items.contains(value) {
+                                            items.push(value.clone());
+                                        }
+                                    }
+                                    state.set_items(items, window, cx);
+                                    state.set_selected_values(&selected, window, cx);
+                                });
+                            }
+                        }
                         Err(error) => ui::show_error(error, window, cx),
                     }
                     cx.notify();
@@ -904,7 +923,7 @@ impl Render for EnhancementEditor {
                                 Button::new("enhancement-import")
                                     .outline()
                                     .with_size(control::STANDARD)
-                                    .label("批量导入…")
+                                    .label("批量导入")
                                     .disabled(self.saving || self.importing)
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         this.import_proxies(window, cx)
@@ -1202,12 +1221,11 @@ struct EntryEditor {
     fields: BTreeMap<&'static str, Entity<InputState>>,
     types: Entity<SelectState<Vec<EntryType>>>,
     switches: BTreeMap<&'static str, bool>,
-    providers: Entity<EditorState>,
-    candidates: (Vec<String>, Vec<String>),
+    providers: Entity<ComboboxState<Vec<SharedString>>>,
     sources_task: Option<Task<()>>,
     no_resolve: bool,
     rule_suffix: Vec<String>,
-    members: Entity<EditorState>,
+    members: Entity<ComboboxState<Vec<SharedString>>>,
     _types: Subscription,
 }
 impl EntryEditor {
@@ -1314,30 +1332,24 @@ impl EntryEditor {
         let suffix = rule.get(suffix_start..).unwrap_or_default();
         let no_resolve = suffix.iter().any(|part| part.trim() == "no-resolve");
         let rule_suffix = suffix.iter().map(|value| (*value).to_owned()).collect();
-        let text = original
-            .get("proxies")
-            .and_then(Value::as_sequence)
-            .map(|values| {
-                values
-                    .iter()
-                    .filter_map(Value::as_str)
-                    .collect::<Vec<_>>()
-                    .join("\n")
+        let selection = |key: &str, window: &mut Window, cx: &mut Context<Self>| {
+            let items = original
+                .get(key)
+                .and_then(Value::as_sequence)
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .map(SharedString::from)
+                .collect::<Vec<_>>();
+            let selected = (0..items.len()).map(IndexPath::new).collect();
+            cx.new(|cx| {
+                ComboboxState::new(items, selected, window, cx)
+                    .multiple(true)
+                    .searchable(true)
             })
-            .unwrap_or_default();
-        let members = cx.new(|cx| ui::editor::state("text", text, false, window, cx));
-        let provider_text = original
-            .get("use")
-            .and_then(Value::as_sequence)
-            .map(|values| {
-                values
-                    .iter()
-                    .filter_map(Value::as_str)
-                    .collect::<Vec<_>>()
-                    .join("\n")
-            })
-            .unwrap_or_default();
-        let providers = cx.new(|cx| ui::editor::state("text", provider_text, false, window, cx));
+        };
+        let members = selection("proxies", window, cx);
+        let providers = selection("use", window, cx);
         let switches = GROUP_SWITCHES
             .iter()
             .map(|(key, _)| {
@@ -1355,7 +1367,6 @@ impl EntryEditor {
             types,
             switches,
             providers,
-            candidates: Default::default(),
             sources_task: None,
             no_resolve,
             rule_suffix,
@@ -1458,11 +1469,9 @@ impl EntryEditor {
             for (key, editor) in [("proxies", &self.members), ("use", &self.providers)] {
                 let values = editor
                     .read(cx)
-                    .value()
-                    .lines()
-                    .map(str::trim)
-                    .filter(|v| !v.is_empty())
-                    .map(|v| Value::String(v.into()))
+                    .selected_values()
+                    .into_iter()
+                    .map(|value| Value::String(value.to_string()))
                     .collect::<Vec<_>>();
                 if values.is_empty() && !map.contains_key(Value::String(key.into())) {
                     continue;
@@ -1499,87 +1508,22 @@ fn group_field_label(key: &str) -> &'static str {
     }
 }
 impl EntryEditor {
-    fn source_editor(&self, provider: bool, cx: &mut Context<Self>) -> impl IntoElement {
-        let state = if provider {
-            self.providers.clone()
-        } else {
-            self.members.clone()
-        };
-        let candidates = if provider {
-            self.candidates.1.clone()
-        } else {
-            self.candidates.0.clone()
-        };
-        let owner = cx.entity();
+    fn source_editor(&self, provider: bool) -> impl IntoElement {
         ui::field_label(
             if provider {
                 "代理集合来源"
             } else {
                 "代理组成员"
             },
-            gpui_kit::component::v_flex()
-                .gap(space::SM)
-                .child(
-                    Button::new(if provider {
-                        "provider-candidates"
-                    } else {
-                        "member-candidates"
-                    })
-                    .outline()
-                    .label("选择来源…")
-                    .disabled(candidates.is_empty())
-                    .dropdown_menu(move |mut menu, _, cx| {
-                        let editor = owner.read(cx);
-                        let current = if provider {
-                            editor.providers.read(cx).value().to_string()
-                        } else {
-                            editor.members.read(cx).value().to_string()
-                        };
-                        for name in &candidates {
-                            let owner = owner.clone();
-                            let name = name.clone();
-                            let selected = current.lines().any(|value| value == name);
-                            menu = menu.item(
-                                ui::actions::menu(name.clone()).checked(selected).on_click(
-                                    move |_, window, cx| {
-                                        owner.update(cx, |this, cx| {
-                                            let state = if provider {
-                                                &this.providers
-                                            } else {
-                                                &this.members
-                                            };
-                                            let mut values = state
-                                                .read(cx)
-                                                .value()
-                                                .lines()
-                                                .map(str::to_owned)
-                                                .collect::<Vec<_>>();
-                                            if selected {
-                                                values.retain(|value| value != &name);
-                                            } else {
-                                                values.push(name.clone());
-                                            }
-                                            state.update(cx, |state, cx| {
-                                                state.set_value(values.join("\n"), window, cx)
-                                            });
-                                        });
-                                    },
-                                ),
-                            );
-                        }
-                        menu
-                    }),
-                )
-                .child(
-                    Editor::new(&state)
-                        .w_full()
-                        .h(layout::TEXTAREA_HEIGHT)
-                        .aria_label(if provider {
-                            "代理集合来源，每行一个"
-                        } else {
-                            "代理组成员，每行一个"
-                        }),
-                ),
+            Combobox::new(if provider {
+                &self.providers
+            } else {
+                &self.members
+            })
+            .w_full()
+            .with_size(control::STANDARD)
+            .placeholder("选择来源")
+            .search_placeholder("搜索来源"),
         )
     }
 }
@@ -1619,6 +1563,7 @@ impl Render for EntryEditor {
                 if !matches_all {
                     form = form.child(
                         ui::form_row()
+                            .items_center()
                             .justify_between()
                             .child("不解析域名（no-resolve）")
                             .child(
@@ -1656,8 +1601,8 @@ impl Render for EntryEditor {
             }
             _ => {
                 form = form
-                    .child(self.source_editor(false, cx))
-                    .child(self.source_editor(true, cx));
+                    .child(self.source_editor(false))
+                    .child(self.source_editor(true));
                 for (key, _) in GROUP_FIELDS
                     .iter()
                     .filter(|(key, _)| !matches!(*key, "name" | "type"))
@@ -1667,16 +1612,20 @@ impl Render for EntryEditor {
                 for (key, label) in GROUP_SWITCHES {
                     let key = *key;
                     form = form.child(
-                        ui::form_row().justify_between().child(*label).child(
-                            Switch::new(SharedString::from(format!("enhance-{key}")))
-                                .with_size(control::STANDARD)
-                                .checked(self.switches[&key])
-                                .accessibility_label(*label)
-                                .on_change(cx.listener(move |this, value, _, cx| {
-                                    this.switches.insert(key, *value);
-                                    cx.notify();
-                                })),
-                        ),
+                        ui::form_row()
+                            .items_center()
+                            .justify_between()
+                            .child(*label)
+                            .child(
+                                Switch::new(SharedString::from(format!("enhance-{key}")))
+                                    .with_size(control::STANDARD)
+                                    .checked(self.switches[&key])
+                                    .accessibility_label(*label)
+                                    .on_change(cx.listener(move |this, value, _, cx| {
+                                        this.switches.insert(key, *value);
+                                        cx.notify();
+                                    })),
+                            ),
                     );
                 }
             }
@@ -1795,7 +1744,7 @@ mod ui_tests {
             editor.read(cx).fields["timeout"].clone().update(cx,|state,cx|state.set_value("bad",window,cx));
             assert!(editor.read(cx).value(cx).is_err());
             editor.read(cx).fields["timeout"].clone().update(cx,|state,cx|state.set_value("1200",window,cx));
-            editor.update(cx,|this,cx| { this.providers.update(cx,|state,cx|state.set_value("one\ntwo",window,cx));this.switches.insert("hidden",true); });
+            editor.update(cx,|this,cx| { this.providers.update(cx,|state,cx|{ state.set_items(vec!["one".into(), "two".into()],window,cx); state.set_selected_values(&["one".into(), "two".into()],window,cx); });this.switches.insert("hidden",true); });
             let result=editor.read(cx).value(cx).unwrap();assert_eq!(result["timeout"],1200);assert_eq!(result["use"][1],"two");assert_eq!(result["hidden"],true);
         }).unwrap();
     }

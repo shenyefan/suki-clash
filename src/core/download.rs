@@ -42,7 +42,7 @@ impl Transfer {
             paths,
             Request {
                 url,
-                agent: "SukiClash/0.1",
+                agent: crate::network::DEFAULT_USER_AGENT,
                 authorization: "",
                 timeout: Duration::from_secs(180),
                 limit,
@@ -59,7 +59,7 @@ impl Transfer {
             paths,
             Request {
                 url,
-                agent: "SukiClash/0.1",
+                agent: crate::network::DEFAULT_USER_AGENT,
                 authorization: "",
                 timeout: Duration::from_secs(15),
                 limit: 2 * 1024 * 1024,
@@ -81,7 +81,7 @@ impl Transfer {
             paths,
             Request {
                 url,
-                agent: "SukiClash/0.1",
+                agent: crate::network::DEFAULT_USER_AGENT,
                 authorization: "",
                 timeout: Duration::from_secs(180),
                 limit,
@@ -132,7 +132,7 @@ impl Transfer {
             paths,
             Request {
                 url,
-                agent: "SukiClash/0.1",
+                agent: crate::network::DEFAULT_USER_AGENT,
                 authorization: "",
                 timeout,
                 limit: 64 * 1024,
@@ -299,7 +299,7 @@ mod tests {
             &paths,
             Request {
                 url: &url,
-                agent: "SukiClash/0.1",
+                agent: crate::network::DEFAULT_USER_AGENT,
                 authorization: "",
                 timeout: Duration::from_secs(2),
                 limit: 6,
@@ -326,7 +326,7 @@ mod tests {
             &paths,
             Request {
                 url: &url,
-                agent: "SukiClash/0.1",
+                agent: crate::network::DEFAULT_USER_AGENT,
                 authorization: "",
                 timeout: Duration::from_secs(2),
                 limit: 6,
@@ -362,7 +362,7 @@ mod tests {
             &paths,
             Request {
                 url: &url,
-                agent: "SukiClash/0.1",
+                agent: crate::network::DEFAULT_USER_AGENT,
                 authorization: "Bearer secret",
                 timeout: Duration::from_secs(2),
                 limit: 1024,
@@ -407,7 +407,7 @@ mod tests {
             &paths,
             Request {
                 url: &url,
-                agent: "SukiClash/0.1",
+                agent: crate::network::DEFAULT_USER_AGENT,
                 authorization: "Bearer secret",
                 timeout: Duration::from_secs(2),
                 limit: 1024,
@@ -456,7 +456,7 @@ mod tests {
             &paths,
             Request {
                 url: &url,
-                agent: "SukiClash/0.1",
+                agent: crate::network::DEFAULT_USER_AGENT,
                 authorization: "",
                 timeout: Duration::from_secs(2),
                 limit: 1024,
@@ -502,7 +502,7 @@ mod tests {
                 &paths,
                 Request {
                     url: &url,
-                    agent: "SukiClash/0.1",
+                    agent: crate::network::DEFAULT_USER_AGENT,
                     authorization: "Bearer private-token",
                     timeout: Duration::from_secs(2),
                     limit: 1024,

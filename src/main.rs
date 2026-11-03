@@ -24,6 +24,7 @@ mod system_proxy;
 mod traffic;
 mod tray;
 mod ui;
+mod updates;
 
 use gpui_kit::{
     base::Root,
@@ -32,6 +33,9 @@ use gpui_kit::{
 };
 
 fn main() {
+    velopack::VelopackApp::build()
+        .set_auto_apply_on_startup(false)
+        .run();
     let (instance, instance_error) = match integration::AppPaths::discover()
         .map_err(|error| error.to_string())
         .and_then(|paths| {
@@ -139,17 +143,22 @@ fn main() {
                 cx.update(|cx| integration::announce_module("WARNING", "desktop", error, cx));
             }
             #[cfg(target_os = "macos")]
-            for scheme in ["clash", "suki-clash"] {
-                let registration = cx.update(|cx| cx.register_url_scheme(scheme));
-                if let Err(error) = registration.await {
-                    cx.update(|cx| {
-                        integration::announce_module(
-                            "WARNING",
-                            "desktop",
-                            format!("无法注册订阅链接处理：{error}"),
-                            cx,
-                        )
-                    });
+            if objc2_foundation::NSBundle::mainBundle()
+                .bundleIdentifier()
+                .is_some()
+            {
+                for scheme in ["clash", "suki-clash"] {
+                    let registration = cx.update(|cx| cx.register_url_scheme(scheme));
+                    if let Err(error) = registration.await {
+                        cx.update(|cx| {
+                            integration::announce_module(
+                                "WARNING",
+                                "desktop",
+                                format!("无法注册订阅链接处理：{error}"),
+                                cx,
+                            )
+                        });
+                    }
                 }
             }
         })

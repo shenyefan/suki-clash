@@ -10,6 +10,7 @@ impl SettingsPage {
         cx: &mut Context<Self>,
     ) -> bool {
         match action {
+            "检查应用更新" => super::update::open(window, cx),
             "创建本地备份" => crate::core::request(
                 crate::core::Command::LocalBackup(crate::core::local_backup::Command::Create),
                 window,
@@ -23,41 +24,25 @@ impl SettingsPage {
                 cx,
             ),
             "Gist 备份历史" => super::gist::history(window, cx),
-            "安装服务" | "修复服务" | "停止服务内核" | "转为子进程" | "卸载服务" =>
-            {
+            "安装服务" | "修复服务" | "卸载服务" => {
                 let action = match action {
                     "安装服务" => crate::core::ServiceAction::Install,
                     "修复服务" => crate::core::ServiceAction::Repair,
-                    "转为子进程" => crate::core::ServiceAction::Sidecar,
                     "卸载服务" => crate::core::ServiceAction::Uninstall,
-                    _ => crate::core::ServiceAction::Stop,
+                    _ => return false,
                 };
-                if matches!(
-                    action,
-                    crate::core::ServiceAction::Sidecar | crate::core::ServiceAction::Uninstall
-                ) {
+                if matches!(action, crate::core::ServiceAction::Uninstall) {
                     use gpui_kit::component::WindowExt;
-                    let title = if matches!(action, crate::core::ServiceAction::Uninstall) {
-                        "卸载服务并关闭虚拟网卡？"
-                    } else {
-                        "转为子进程并关闭虚拟网卡？"
-                    };
                     let owner = cx.weak_entity();
                     window.open_alert_dialog(cx, move |dialog, window, cx| {
                         let action = action.clone();
                         let owner = owner.clone();
                         ui::modal_alert(dialog, window, cx)
-                            .title(title)
+                            .title("卸载服务并关闭虚拟网卡？")
                             .description(
                                 "系统代理设置保留；虚拟网卡将关闭。确认后等待 5 秒，期间可撤销。",
                             )
-                            .footer(ui::dialog_footer(
-                                if matches!(action, crate::core::ServiceAction::Uninstall) {
-                                    "卸载服务"
-                                } else {
-                                    "转为子进程"
-                                },
-                            ))
+                            .footer(ui::dialog_footer("卸载服务"))
                             .on_ok(move |_, window, cx| {
                                 let _ = owner.update(cx, |this, cx| {
                                     this.defer_action(
@@ -80,9 +65,6 @@ impl SettingsPage {
                 window,
                 cx,
             ),
-            "选择普通图标" => crate::tray::choose_icon("common", window, cx),
-            "选择系统代理图标" => crate::tray::choose_icon("system", window, cx),
-            "选择虚拟网卡图标" => crate::tray::choose_icon("tun", window, cx),
             "导出诊断信息" => {
                 storage::execute(
                     storage::Command::Diagnostics,
@@ -121,10 +103,6 @@ impl SettingsPage {
                     ui::show_error(error, window, cx);
                 }
             }
-            "复制版本号" => cx.write_to_clipboard(ClipboardItem::new_string(format!(
-                "Suki Clash v{}",
-                env!("CARGO_PKG_VERSION")
-            ))),
             "复制环境变量" => copy_environment(window, cx),
             _ => return false,
         }

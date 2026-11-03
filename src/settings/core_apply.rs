@@ -157,6 +157,17 @@ impl SettingsPage {
         }
         cx.notify();
     }
+    pub(super) fn sync_committed_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let touched = self
+            .fields
+            .keys()
+            .map(|key| ((*key).to_owned(), String::new()))
+            .collect();
+        self.restore_core_fields(&touched, window, cx);
+        self.synced_values = crate::integration::read(self.kind.id(), cx);
+        self.dirty = false;
+    }
+
     pub(super) fn restore_core_fields(
         &mut self,
         touched: &Values,
@@ -236,8 +247,22 @@ impl SettingsPage {
                     .unwrap_or_else(|| "原生磨砂".into()),
             });
         }
+        for key in touched.keys() {
+            if let Some(value) = values.get(key) {
+                self.synced_values.insert(key.clone(), value.clone());
+            } else {
+                self.synced_values.remove(key);
+            }
+        }
         self.core_syncing = false;
-        self.dirty = false;
+        self.dirty = self.values(cx).iter().any(|(key, value)| {
+            let previous = self
+                .synced_values
+                .get(key)
+                .map(String::as_str)
+                .unwrap_or(self.fields[key.as_str()].spec.default);
+            value != previous
+        });
         cx.notify();
     }
     pub(super) fn commit_panels(&mut self, window: &mut Window, cx: &mut Context<Self>) {

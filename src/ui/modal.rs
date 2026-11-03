@@ -61,7 +61,6 @@ pub(crate) fn modal_content(
 pub(crate) fn modal_close(label: &str) -> DialogFooter {
     modal_footer().child(
         Button::new("modal-close")
-            .icon(gpui_kit::assets::IconName::X)
             .with_size(super::theme::control::STANDARD)
             .label(label.to_owned())
             .on_click(|_, window, cx| window.close_dialog(cx)),

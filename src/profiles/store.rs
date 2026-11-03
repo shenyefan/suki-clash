@@ -35,9 +35,7 @@ pub(crate) fn hydrate(
     if values.is_empty() {
         return Ok(());
     }
-    if values.keys().any(|key| key.ends_with("/content")) {
-        return Err("文档索引不得包含正文；正文只保存在文档文件".into());
-    }
+    validate_metadata(paths, overrides, values)?;
     let ids = values.get("ids").ok_or("文档索引缺少列表")?.clone();
     for id in ids.split(',').filter(|id| !id.is_empty()) {
         let id = id.parse::<u64>().map_err(|_| "文档 ID 无效")?;
@@ -58,6 +56,23 @@ pub(crate) fn hydrate(
             .join(format!("{id}.{extension}"));
         let content = read_body(&path)?;
         values.insert(format!("{id}/content"), content);
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_metadata(
+    paths: &crate::storage::AppPaths,
+    overrides: bool,
+    values: &crate::storage::Values,
+) -> Result<(), String> {
+    if values.keys().any(|key| key.ends_with("/content")) {
+        return Err(format!(
+            "{}：文档索引不得包含正文；请修正索引，保留独立正文文件",
+            paths
+                .records()
+                .join(format!("{}.json", key(overrides)))
+                .display()
+        ));
     }
     Ok(())
 }

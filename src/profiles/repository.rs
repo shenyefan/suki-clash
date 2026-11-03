@@ -286,5 +286,18 @@ mod tests {
             .unwrap();
         assert!(read(&paths).err().unwrap().contains("索引不得包含正文"));
         assert!(!body_path(&paths, 7).exists());
+        let index = paths.records().join("profile-index.json");
+        let original = std::fs::read(&index).unwrap();
+        atomic_write(&body_path(&paths, 7), b"mode: rule").unwrap();
+        let read_error = read(&paths).err().unwrap();
+        let source_error = crate::configuration::Source::from_profile(&paths, 7)
+            .err()
+            .unwrap();
+        assert_eq!(read_error, source_error);
+        assert!(read_error.contains(&index.display().to_string()));
+        assert!(read_error.contains("保留独立正文文件"));
+        assert!(!read_error.contains("mode: rule"));
+        assert_eq!(std::fs::read(index).unwrap(), original);
+        assert_eq!(std::fs::read(body_path(&paths, 7)).unwrap(), b"mode: rule");
     }
 }

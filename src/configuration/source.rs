@@ -74,9 +74,7 @@ impl Source {
                 super::INPUT_LIMIT,
             )
             .map_err(|error| error.to_string())?;
-        if values.keys().any(|key| key.ends_with("/content")) {
-            return Err("文档索引不得包含正文；正文只保存在文档文件".into());
-        }
+        crate::profiles::store::validate_metadata(paths, false, &values)?;
         let content =
             crate::profiles::store::read_body(&crate::profiles::repository::body_path(paths, id))?;
         values.insert(format!("{id}/content"), content);

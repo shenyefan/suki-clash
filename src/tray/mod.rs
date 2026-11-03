@@ -7,7 +7,9 @@ mod platform;
 use crate::{core, integration, ui};
 use gpui_kit::*;
 
-struct Handle(Entity<Tray>);
+struct Handle {
+    _tray: Entity<Tray>,
+}
 impl Global for Handle {}
 struct Tray {
     platform: platform::Platform,
@@ -16,7 +18,6 @@ struct Tray {
     menu_attempt: Option<u64>,
     _events: Option<Task<()>>,
     _observations: Vec<Subscription>,
-    icon_task: Option<Task<()>>,
     group_task: Option<Task<()>>,
     group_key: Option<GroupIconsKey>,
     group_icons: std::collections::BTreeMap<String, tray_icon::menu::Icon>,
@@ -77,15 +78,15 @@ pub(crate) fn init(main: AnyWindowHandle, cx: &mut App) {
         menu_attempt: None,
         _events: None,
         _observations: vec![],
-        icon_task: None,
         group_task: None,
         group_key: None,
         group_icons: Default::default(),
     });
-    cx.set_global(Handle(owner.clone()));
+    cx.set_global(Handle {
+        _tray: owner.clone(),
+    });
     owner.update(cx, |this, cx| {
         this.sync(cx);
-        this.load_icons(cx);
         let controller = core::controller(cx);
         this._observations
             .push(cx.observe(&controller, |this, _, cx| this.sync(cx)));
@@ -142,50 +143,6 @@ fn show_main(main: AnyWindowHandle, cx: &mut App) {
 }
 
 impl Tray {
-    fn load_icons(&mut self, cx: &mut Context<Self>) {
-        let Some(paths) = integration::paths(cx) else {
-            return;
-        };
-        self.icon_task = Some(cx.spawn(async move |owner, cx| {
-            let icons = cx
-                .background_spawn(async move {
-                    let mut icons = std::collections::BTreeMap::new();
-                    for kind in ["common", "system", "tun"] {
-                        let path = paths.settings().join("tray").join(format!("{kind}.image"));
-                        match std::fs::read(&path) {
-                            Ok(bytes) => {
-                                icons.insert(kind.into(), decode_icon(&bytes)?);
-                            }
-                            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                            Err(error) => {
-                                return Err(format!(
-                                    "无法读取托盘图标 {}：{error}",
-                                    path.display()
-                                ));
-                            }
-                        }
-                    }
-                    Ok::<_, String>(icons)
-                })
-                .await;
-            let _ = owner.update(cx, |this, cx| {
-                if let Some(task) = this.icon_task.take() {
-                    task.detach();
-                }
-                match icons {
-                    Ok(icons) => {
-                        this.platform.custom(icons);
-                        this.sync(cx);
-                    }
-                    Err(error) => {
-                        let _ = this
-                            .main
-                            .update(cx, |_, window, cx| ui::show_error(error, window, cx));
-                    }
-                }
-            });
-        }));
-    }
     fn sync(&mut self, cx: &mut Context<Self>) {
         let controller = core::controller(cx);
         let state = controller.read(cx);
@@ -339,13 +296,10 @@ impl Tray {
         } else {
             None
         };
-        if let Err(error) = self.platform.update(
-            general.get("TrayIcon").is_none_or(|value| value != "彩色"),
-            system,
-            tun,
-            &tooltip,
-            speed.as_deref(),
-        ) {
+        if let Err(error) = self
+            .platform
+            .update(system, tun, &tooltip, speed.as_deref())
+        {
             errors.push(error);
         }
         if !errors.is_empty() {
@@ -384,88 +338,6 @@ impl Tray {
             _ => {}
         }
     }
-}
-
-fn decode_icon(bytes: &[u8]) -> Result<tray_icon::Icon, String> {
-    if bytes.len() > 2 * 1024 * 1024 {
-        return Err("托盘图标超过 2 MiB".into());
-    }
-    let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes))
-        .with_guessed_format()
-        .map_err(|_| "无法识别托盘图标")?;
-    let mut limits = image::Limits::default();
-    limits.max_image_width = Some(4096);
-    limits.max_image_height = Some(4096);
-    reader.limits(limits);
-    let image = reader
-        .decode()
-        .map_err(|_| "托盘图标无效，请选择 PNG、ICO 或其他支持的图片")?
-        .resize(32, 32, image::imageops::FilterType::Lanczos3)
-        .into_rgba8();
-    tray_icon::Icon::from_rgba(image.into_raw(), 32, 32).map_err(|error| error.to_string())
-}
-
-pub(crate) fn choose_icon(kind: &'static str, window: &mut Window, cx: &mut App) {
-    let Some(handle) = cx.try_global::<Handle>() else {
-        ui::show_error("托盘不可用".into(), window, cx);
-        return;
-    };
-    let owner = handle.0.clone();
-    if owner.read(cx).icon_task.is_some() {
-        ui::show_error("正在处理托盘图标，请稍后重试".into(), window, cx);
-        return;
-    }
-    let Some(paths) = integration::paths(cx) else {
-        return;
-    };
-    let picker = cx.prompt_for_paths(PathPromptOptions {
-        files: true,
-        directories: false,
-        multiple: false,
-        prompt: Some("选择托盘图标".into()),
-    });
-    let origin = window.window_handle();
-    owner.update(cx, |this, cx| {
-        this.icon_task = Some(cx.spawn(async move |owner, cx| {
-            let result = async {
-                let selected = match picker
-                    .await
-                    .map_err(|error| error.to_string())?
-                    .map_err(|error| error.to_string())?
-                {
-                    Some(mut paths) => paths.pop(),
-                    None => None,
-                };
-                let Some(selected) = selected else {
-                    return Ok(None);
-                };
-                cx.background_spawn(async move {
-                    let bytes = std::fs::read(&selected).map_err(|error| error.to_string())?;
-                    let icon = decode_icon(&bytes)?;
-                    let directory = paths.settings().join("tray");
-                    std::fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
-                    crate::storage::atomic_write(&directory.join(format!("{kind}.image")), &bytes)
-                        .map_err(|error| error.to_string())?;
-                    Ok::<_, String>(Some(icon))
-                })
-                .await
-            }
-            .await;
-            let _ = owner.update(cx, |this, cx| {
-                if let Some(task) = this.icon_task.take() {
-                    task.detach();
-                }
-                match result {
-                    Ok(Some(_)) => this.load_icons(cx),
-                    Ok(None) => {}
-                    Err(error) => {
-                        let _ =
-                            origin.update(cx, |_, window, cx| ui::show_error(error, window, cx));
-                    }
-                }
-            });
-        }));
-    });
 }
 
 /// Dispatch to the long-lived main window so asynchronous feedback survives panel dismissal.

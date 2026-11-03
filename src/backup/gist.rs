@@ -62,10 +62,7 @@ impl Gist {
             .bearer_auth(&self.token)
             .header("Accept", "application/vnd.github+json")
             .header("X-GitHub-Api-Version", "2026-03-10")
-            .header(
-                "User-Agent",
-                concat!("Suki-Clash/", env!("CARGO_PKG_VERSION")),
-            )
+            .header("User-Agent", crate::network::DEFAULT_USER_AGENT)
             .timeout(Duration::from_secs(60))
     }
     async fn response(&self, request: reqwest::RequestBuilder) -> Result<Vec<u8>, String> {
@@ -154,7 +151,7 @@ impl Gist {
             .response(
                 self.client
                     .get(parsed)
-                    .header("User-Agent", "Suki-Clash")
+                    .header("User-Agent", crate::network::DEFAULT_USER_AGENT)
                     .timeout(Duration::from_secs(60)),
             )
             .await?;
