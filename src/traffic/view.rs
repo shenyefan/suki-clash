@@ -99,7 +99,7 @@ impl TrafficPage {
             ]
         };
         DropdownButton::new("connection-sort")
-            .ghost()
+            .outline()
             .with_size(control::STANDARD)
             .menu_accessibility_label(if rules {
                 "规则排序依据"
@@ -234,46 +234,8 @@ impl Render for TrafficPage {
             })
             .when(kind == TrafficKind::Logs, |row| {
                 row.child(
-                    ui::icon_button("copy-logs", IconName::Copy, "复制日志").on_click(cx.listener(
-                        |this, _, _, cx| {
-                            let delegate = this.table.read(cx).delegate();
-                            let value = delegate
-                                .visible
-                                .iter()
-                                .map(|i| delegate.records[*i].cells.join("  "))
-                                .collect::<Vec<_>>()
-                                .join("\n");
-                            cx.write_to_clipboard(ClipboardItem::new_string(value));
-                        },
-                    )),
-                )
-                .child(
-                    ui::icon_button(
-                        "pause-logs",
-                        if self.paused {
-                            IconName::Play
-                        } else {
-                            IconName::Pause
-                        },
-                        if self.paused {
-                            "继续刷新"
-                        } else {
-                            "暂停刷新"
-                        },
-                    )
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.paused = !this.paused;
-                        if !this.paused && this.kind == TrafficKind::Connections {
-                            this.sync_connection_rows(cx);
-                        }
-                        cx.notify();
-                    })),
-                )
-            })
-            .when(kind == TrafficKind::Logs, |row| {
-                row.child(
                     Button::new("clear-records")
-                        .ghost()
+                        .outline()
                         .with_size(control::STANDARD)
                         .icon(IconName::Trash)
                         .label("清空日志")
@@ -408,7 +370,7 @@ impl Render for TrafficPage {
                     .when(kind == TrafficKind::Rules, |row| {
                         row.child(self.sort_button(cx)).child(
                             Button::new("copy-visible-rules")
-                                .ghost()
+                                .outline()
                                 .with_size(control::STANDARD)
                                 .icon(IconName::Copy)
                                 .label("复制")
@@ -485,16 +447,7 @@ impl Render for TrafficPage {
                         )
                         .text_size(text::CAPTION),
                     )
-                    .child(div().flex_1())
-                    .when(kind == TrafficKind::Rules, |row| {
-                        row.child(
-                            ui::muted("按配置顺序匹配，首条命中后停止", cx)
-                                .text_size(text::CAPTION),
-                        )
-                    })
-                    .when(kind == TrafficKind::Logs && self.paused, |row| {
-                        row.child(ui::muted("刷新已暂停", cx).text_size(text::CAPTION))
-                    }),
+                    .child(div().flex_1()),
             )
     }
 }

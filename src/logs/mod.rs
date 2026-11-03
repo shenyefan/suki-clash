@@ -125,9 +125,6 @@ impl LogsPage {
                 }
                 if owner
                     .update_in(cx, |this, window, cx| {
-                        if this.buffer.paused {
-                            return;
-                        }
                         cursor = records.last().map_or(cursor, |record| record.id);
                         for record in &records {
                             if record.origin == "logging"

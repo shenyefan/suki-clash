@@ -27,14 +27,10 @@ impl LogEntry {
 #[derive(Default)]
 pub(super) struct LogBuffer {
     pub(super) entries: Vec<LogEntry>,
-    pub(super) paused: bool,
     next_id: u64,
 }
 impl LogBuffer {
     pub(crate) fn append(&mut self, incoming: impl IntoIterator<Item = LogEntry>) {
-        if self.paused {
-            return;
-        }
         for mut entry in incoming {
             entry.level = match entry.level.to_ascii_lowercase().as_str() {
                 "warn" | "warning" => "WARNING".into(),
@@ -69,10 +65,7 @@ impl LogBuffer {
         self.entries.extend(entries);
         self.entries.sort_by_key(|entry| entry.id);
         self.entries.dedup_by_key(|entry| entry.id);
-        let paused = self.paused;
-        self.paused = false;
         self.append([]);
-        self.paused = paused;
     }
     pub(super) fn clear(&mut self, source: usize) {
         self.entries.retain(|entry| entry.source != source);
@@ -137,10 +130,8 @@ mod tests {
         buffer.clear(0);
         buffer.append(initial_entries());
         let new_id = buffer.entries.last().unwrap().id;
-        buffer.paused = true;
         buffer.restore(removed.clone());
         buffer.restore(removed);
-        assert!(buffer.paused);
         assert!(buffer.entries.iter().any(|entry| entry.id == new_id));
         let ids = buffer
             .entries
@@ -151,7 +142,7 @@ mod tests {
         assert!(buffer.entries.iter().any(|entry| entry.source == 0));
     }
     #[test]
-    fn retention_pause_and_clear_preserve_other_source() {
+    fn retention_and_clear_preserve_other_source() {
         let mut buffer = LogBuffer::default();
         for _ in 0..240 {
             buffer.append(initial_entries());
@@ -166,12 +157,8 @@ mod tests {
                 <= MAX_LOGS
         );
         let last = buffer.entries.last().unwrap().id;
-        buffer.paused = true;
-        buffer.append(initial_entries());
-        assert_eq!(buffer.entries.last().unwrap().id, last);
         buffer.clear(0);
         assert!(buffer.entries.iter().all(|entry| entry.source == 1));
-        buffer.paused = false;
         buffer.append(initial_entries());
         assert!(buffer.entries.last().unwrap().id > last);
     }

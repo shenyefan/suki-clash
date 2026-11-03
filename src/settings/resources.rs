@@ -111,6 +111,7 @@ impl SettingsPage {
                 .child(ui::muted(metadata, cx).text_size(text::CAPTION))
                 .child(
                     Button::new(SharedString::from(format!("resource-update-{key}")))
+                        .outline()
                         .icon(gpui_kit::assets::IconName::RefreshCw)
                         .with_size(control::STANDARD)
                         .label("现在更新")

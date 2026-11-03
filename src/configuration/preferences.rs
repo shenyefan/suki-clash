@@ -164,7 +164,7 @@ impl Preferences {
             &["silent", "error", "warning", "info", "debug"],
         )?;
         let process = enum_value(
-            &get("FindProcessIndex", "关闭（off）"),
+            &get("FindProcessIndex", "严格（strict）"),
             &["off", "strict", "always"],
         )?;
         native.insert("log-level".into(), log.into());
@@ -352,7 +352,7 @@ impl Preferences {
         }
         for (field, key, default) in [
             ("LogLevelIndex", "log-level", "info"),
-            ("FindProcessIndex", "find-process-mode", "off"),
+            ("FindProcessIndex", "find-process-mode", "strict"),
         ] {
             let value = self
                 .native

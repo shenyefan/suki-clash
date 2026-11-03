@@ -8,7 +8,7 @@ use gpui_kit::{
     assets::IconName,
     component::{
         ActiveTheme, Disableable, Icon, IndexPath, Sizable, WindowExt,
-        button::{Button, ButtonVariants},
+        button::Button,
         combobox::{Combobox, ComboboxState},
         h_flex,
         input::{Editor, EditorState, Input, InputState},
@@ -626,7 +626,7 @@ impl EnhancementEditor {
             .child(
                 Button::new(SharedString::from(format!("remove-{identity}")))
                     .icon(gpui_kit::assets::IconName::Minus)
-                    .ghost()
+                    .outline()
                     .small()
                     .disabled(self.saving)
                     .label(if part == "original" {

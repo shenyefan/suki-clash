@@ -85,7 +85,7 @@ impl ProxiesPage {
         let sort = self.sort;
         let reverse = self.reverse;
         DropdownButton::new("proxy-sort")
-            .ghost()
+            .outline()
             .with_size(control::STANDARD)
             .menu_accessibility_label("节点排序依据")
             .button(
@@ -133,7 +133,7 @@ impl ProxiesPage {
         let compact = self.compact;
         let available = self.only_available;
         Button::new("proxy-display")
-            .ghost()
+            .outline()
             .with_size(control::STANDARD)
             .icon(IconName::SlidersHorizontal)
             .label("显示")
@@ -216,16 +216,8 @@ impl ProxiesPage {
             .child(self.sort_button(cx))
             .child(self.display_button(cx))
             .child(
-                ui::icon_button("proxy-return-top", IconName::ArrowUp, "返回顶部").on_click(
-                    cx.listener(|this, _, _, cx| {
-                        this.list_scroll.scroll_to_item(0, ScrollStrategy::Top);
-                        cx.notify();
-                    }),
-                ),
-            )
-            .child(
                 Button::new("proxy-chain")
-                    .ghost()
+                    .outline()
                     .with_size(control::STANDARD)
                     .icon(IconName::Link)
                     .label("链式代理")

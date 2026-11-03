@@ -35,7 +35,6 @@ pub(crate) struct TrafficPage {
     query: Entity<InputState>,
     filter: Entity<SelectState<Vec<SharedString>>>,
     sort_index: usize,
-    paused: bool,
     reverse: bool,
     detail_cache: Option<model::Record>,
     _subscriptions: Vec<Subscription>,
@@ -90,7 +89,7 @@ impl TrafficPage {
                     } else {
                         this.connection_records.update(&runtime)
                     };
-                    if changed && !this.paused {
+                    if changed {
                         this.sync_connection_rows(cx);
                     }
                 }
@@ -198,7 +197,6 @@ impl TrafficPage {
             query,
             filter,
             sort_index: 0,
-            paused: false,
             reverse: false,
             detail_cache: None,
             _subscriptions: subscriptions,

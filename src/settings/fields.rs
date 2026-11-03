@@ -6,7 +6,7 @@ use gpui_kit::{
     assets::IconName,
     component::{
         Disableable, Sizable,
-        button::Button,
+        button::{Button, ButtonVariants},
         h_flex,
         input::{Editor, Input},
         select::Select,
@@ -139,6 +139,7 @@ impl SettingsPage {
                         && matches!(action, "打开内核目录" | "打开配置目录" | "校验配置"))
                 {
                     return Button::new(SharedString::from(format!("action-{key}-{action}")))
+                        .outline()
                         .with_size(control::STANDARD)
                         .label(match action {
                             "配置 Gist 备份" => "Gist 配置",
@@ -155,8 +156,10 @@ impl SettingsPage {
                 }
                 Button::new(SharedString::from(format!("action-{key}-{action}")))
                     .with_size(control::STANDARD)
-                    .when_some(icon, |button, icon| button.icon(icon).tooltip(action))
-                    .when(icon.is_none(), |button| button.label(action))
+                    .when_some(icon, |button, icon| {
+                        button.ghost().icon(icon).tooltip(action)
+                    })
+                    .when(icon.is_none(), |button| button.outline().label(action))
                     .disabled(busy || disabled)
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.field_action(key, action, window, cx)
@@ -242,6 +245,7 @@ impl SettingsPage {
                 .children(actions.iter().map(|action| {
                     let action = *action;
                     Button::new(SharedString::from(format!("service-{action}")))
+                        .outline()
                         .label(action)
                         .with_size(control::STANDARD)
                         .disabled(disabled || checking)

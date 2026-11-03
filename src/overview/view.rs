@@ -15,6 +15,11 @@ use gpui_kit::{
 };
 
 fn bytes(value: u64) -> String {
+    let (number, unit) = split_bytes(value);
+    format!("{number} {unit}")
+}
+
+fn split_bytes(value: u64) -> (String, &'static str) {
     let units = ["B", "KiB", "MiB", "GiB", "TiB"];
     let mut number = value as f64;
     let mut unit = 0;
@@ -22,7 +27,7 @@ fn bytes(value: u64) -> String {
         number /= 1024.;
         unit += 1;
     }
-    format!("{number:.1} {}", units[unit])
+    (format!("{number:.1}"), units[unit])
 }
 impl Overview {
     fn empty_plot(id: &'static str, message: &'static str, cx: &App) -> impl IntoElement + Styled {
@@ -66,7 +71,12 @@ impl Overview {
                             .font_weight(text::EMPHASIS)
                             .child(value.to_owned()),
                     )
-                    .child(div().text_size(text::BODY).child(unit.to_owned())),
+                    .child(
+                        div()
+                            .text_size(text::METRIC)
+                            .font_weight(text::EMPHASIS)
+                            .child(unit.to_owned()),
+                    ),
             )
     }
 
@@ -87,7 +97,12 @@ impl Overview {
         } else {
             statistics.download_rate
         };
-        let value = rate.map(bytes).unwrap_or_else(|| "—".into());
+        let (value, unit) = rate
+            .map(|rate| {
+                let (number, unit) = split_bytes(rate);
+                (number, format!("{unit}/s"))
+            })
+            .unwrap_or_else(|| ("—".into(), String::new()));
         let plot = if statistics.rates.is_empty() {
             Self::empty_plot(
                 if upload {
@@ -144,7 +159,7 @@ impl Overview {
             .child(div().p(space::XL).child(Self::value(
                 if upload { "上传" } else { "下载" },
                 &value,
-                if rate.is_some() { "/s" } else { "" },
+                &unit,
                 cx,
             )))
             .child(
@@ -246,11 +261,17 @@ impl Overview {
                 "—".into()
             }
         };
+        let (total_value, total_unit) = if available {
+            let (number, unit) = split_bytes(total);
+            (number, unit.to_owned())
+        } else {
+            ("—".into(), String::new())
+        };
         v_flex()
             .w_full()
             .h_full()
             .justify_between()
-            .child(Self::value("累计流量", &show(total), "", cx))
+            .child(Self::value("累计流量", &total_value, &total_unit, cx))
             .child(
                 v_flex()
                     .gap(space::SM)

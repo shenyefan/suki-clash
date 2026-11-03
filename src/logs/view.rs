@@ -30,7 +30,7 @@ impl LogsPage {
         const LABELS: [&str; 4] = ["时间", "级别", "来源", "内容"];
         let owner = cx.entity();
         DropdownButton::new("logs-sort")
-            .ghost()
+            .outline()
             .with_size(control::STANDARD)
             .menu_accessibility_label("日志排序依据")
             .button(
@@ -187,54 +187,6 @@ impl Render for LogsPage {
                     )
                     .child(self.sort_button(cx))
                     .child(
-                        Button::new("logs-pause")
-                            .ghost()
-                            .with_size(control::STANDARD)
-                            .flex_shrink_0()
-                            .icon(if self.buffer.paused {
-                                IconName::Play
-                            } else {
-                                IconName::Pause
-                            })
-                            .toggled(self.buffer.paused)
-                            .accessibility_label(if self.buffer.paused {
-                                "继续接收日志"
-                            } else {
-                                "暂停显示日志"
-                            })
-                            .tooltip(if self.buffer.paused {
-                                "继续接收"
-                            } else {
-                                "暂停显示"
-                            })
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.buffer.paused = !this.buffer.paused;
-                                cx.notify();
-                            })),
-                    )
-                    .child(
-                        Button::new("logs-copy")
-                            .ghost()
-                            .with_size(control::STANDARD)
-                            .flex_shrink_0()
-                            .icon(IconName::Copy)
-                            .accessibility_label("复制筛选后的日志")
-                            .tooltip("复制日志")
-                            .disabled(count == 0)
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                let value = this
-                                    .table
-                                    .read(cx)
-                                    .delegate()
-                                    .entries
-                                    .iter()
-                                    .map(LogEntry::text)
-                                    .collect::<Vec<_>>()
-                                    .join("\n");
-                                cx.write_to_clipboard(ClipboardItem::new_string(value));
-                            })),
-                    )
-                    .child(
                         Button::new("logs-clear")
                             .outline()
                             .with_size(control::STANDARD)
@@ -341,22 +293,12 @@ impl Render for LogsPage {
                     )
                     .child(div().flex_1())
                     .child(
-                        ui::muted(
-                            if self.buffer.paused {
-                                "显示已暂停"
-                            } else {
-                                ""
-                            },
-                            cx,
-                        )
-                        .text_size(text::CAPTION),
-                    )
-                    .child(
                         Button::new("logs-latest")
                             .ghost()
                             .small()
                             .icon(IconName::ArrowUp)
-                            .label("跳到最新")
+                            .accessibility_label("跳到最新")
+                            .tooltip("跳到最新")
                             .disabled(count == 0)
                             .on_click(cx.listener(|this, _, w, cx| this.jump_to_latest(w, cx))),
                     ),

@@ -189,8 +189,8 @@ impl History {
         let date: chrono::DateTime<chrono::Local> = entry.modified.into();
         h_flex().w_full().gap(space::SM)
             .child(v_flex().flex_1().min_w(space::NONE).child(date.format("%Y-%m-%d %H:%M:%S %:z").to_string()).child(ui::muted(entry.id.name(),cx).truncate()))
-            .child(Button::new(SharedString::from(format!("export-{}",entry.id.name()))).label("导出").disabled(disabled).on_click(cx.listener(move|this,_,window,cx|this.export(export.clone(),window,cx))))
-            .child(Button::new(SharedString::from(format!("restore-{}",entry.id.name()))).label("恢复").disabled(disabled).on_click(cx.listener(move|_,_,window,cx|{
+            .child(Button::new(SharedString::from(format!("export-{}",entry.id.name()))).outline().label("导出").disabled(disabled).on_click(cx.listener(move|this,_,window,cx|this.export(export.clone(),window,cx))))
+            .child(Button::new(SharedString::from(format!("restore-{}",entry.id.name()))).outline().label("恢复").disabled(disabled).on_click(cx.listener(move|_,_,window,cx|{
                 let owner=cx.weak_entity();let restore=restore.clone();
                 window.open_alert_dialog(cx,move|dialog,window,cx|{
                     let owner=owner.clone();let restore=restore.clone();
@@ -214,12 +214,14 @@ impl Render for History {
                     .gap(space::SM)
                     .child(
                         Button::new("local-import")
+                            .outline()
                             .label("导入备份")
                             .disabled(disabled)
                             .on_click(cx.listener(|this, _, window, cx| this.import(window, cx))),
                     )
                     .child(
                         Button::new("local-create")
+                            .outline()
                             .label("创建备份")
                             .disabled(disabled)
                             .on_click(cx.listener(|this, _, window, cx| {

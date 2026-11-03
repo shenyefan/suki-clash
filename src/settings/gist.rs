@@ -433,7 +433,7 @@ impl History {
         h_flex().w_full().gap(space::SM)
             .child(v_flex().flex_1().min_w(space::NONE).child(entry.created_at.clone()).child(ui::muted(entry.description.clone(), cx).truncate()))
             .child(ui::icon_button(SharedString::from(format!("gist-download-{}", entry.id)), gpui_kit::assets::IconName::Download, "下载备份").disabled(disabled).on_click(cx.listener(move |this, _, window, cx| this.run(Command::Download(download.clone()), window, cx))))
-            .child(Button::new(SharedString::from(format!("gist-restore-{}", entry.id))).label("恢复备份").disabled(disabled).on_click(cx.listener(move |_, _, window, cx| {
+            .child(Button::new(SharedString::from(format!("gist-restore-{}", entry.id))).outline().label("恢复备份").disabled(disabled).on_click(cx.listener(move |_, _, window, cx| {
                 let owner = cx.weak_entity(); let restore = restore.clone();
                 window.open_alert_dialog(cx, move |dialog, window, cx| {
                     let owner = owner.clone(); let restore = restore.clone();
@@ -454,6 +454,7 @@ impl Render for History {
                     .gap(space::SM)
                     .child(
                         Button::new("gist-history-refresh")
+                            .outline()
                             .label("刷新")
                             .disabled(disabled)
                             .on_click(cx.listener(|this, _, window, cx| {
@@ -468,6 +469,7 @@ impl Render for History {
                     )
                     .child(
                         Button::new("gist-history-previous")
+                            .outline()
                             .label("上一页")
                             .disabled(disabled || self.state.page <= 1)
                             .on_click(cx.listener(|this, _, window, cx| {
@@ -482,6 +484,7 @@ impl Render for History {
                     )
                     .child(
                         Button::new("gist-history-next")
+                            .outline()
                             .label("下一页")
                             .disabled(disabled || !self.state.has_more)
                             .on_click(cx.listener(|this, _, window, cx| {

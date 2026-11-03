@@ -610,7 +610,7 @@ impl Render for ChainEditor {
                     )
                     .child(
                         Button::new("chain-clear")
-                            .ghost()
+                            .outline()
                             .label("清空")
                             .disabled(busy || self.nodes.is_empty())
                             .on_click(cx.listener(|this, _, window, cx| {

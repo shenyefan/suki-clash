@@ -211,6 +211,7 @@ impl ProfilesPage {
                         .w_full()
                         .child(
                             Button::new("copy-subscription-url")
+                                .outline()
                                 .icon(gpui_kit::assets::IconName::Copy)
                                 .with_size(control::STANDARD)
                                 .label("复制链接")

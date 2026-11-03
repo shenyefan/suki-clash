@@ -7,13 +7,8 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     assets::IconName,
     component::{
-        ActiveTheme, Disableable, Sizable,
-        button::{Button, ButtonVariants},
-        h_flex,
-        list::ListItem,
-        menu::DropdownMenu,
-        switch::Switch,
-        v_flex,
+        ActiveTheme, Disableable, Sizable, button::Button, h_flex, list::ListItem,
+        menu::DropdownMenu, switch::Switch, v_flex,
     },
     *,
 };
@@ -189,7 +184,7 @@ impl ProfilesPage {
                     )
                     .child(
                         Button::new(("override-edit", id))
-                            .ghost()
+                            .outline()
                             .with_size(control::STANDARD)
                             .icon(IconName::Pencil)
                             .label("编辑")
@@ -328,16 +323,13 @@ impl ProfilesPage {
                     }),
             )
             .child(
-                ui::workspace_footer()
-                    .child(
-                        ui::muted(
-                            format!("{} 个文件 · {enabled} 个已启用", self.documents.len()),
-                            cx,
-                        )
-                        .text_size(text::CAPTION),
+                ui::workspace_footer().child(
+                    ui::muted(
+                        format!("{} 个文件 · {enabled} 个已启用", self.documents.len()),
+                        cx,
                     )
-                    .child(div().flex_1())
-                    .child(ui::muted("作用范围在编辑信息中设置", cx).text_size(text::CAPTION)),
+                    .text_size(text::CAPTION),
+                ),
             )
     }
 }

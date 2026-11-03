@@ -6,13 +6,8 @@ use crate::ui::{
 use gpui_kit::{
     assets::IconName,
     component::{
-        Disableable, Sizable,
-        button::{Button, ButtonVariants},
-        h_flex,
-        menu::DropdownMenu,
-        scroll::ScrollableElement,
-        tag::Tag,
-        v_flex,
+        Disableable, Sizable, button::Button, h_flex, menu::DropdownMenu,
+        scroll::ScrollableElement, tag::Tag, v_flex,
     },
     *,
 };
@@ -22,7 +17,7 @@ impl TrafficPage {
         let hidden = self.table.read(cx).delegate().hidden_columns.clone();
         let table = self.table.clone();
         Button::new("connection-columns")
-            .ghost()
+            .outline()
             .with_size(control::STANDARD)
             .icon(IconName::SlidersHorizontal)
             .label("列设置")
@@ -59,7 +54,7 @@ impl TrafficPage {
                     .child(div().flex_1().font_weight(text::HEADING).child("规则详情"))
                     .child(
                         Button::new("copy-selected-rule")
-                            .ghost()
+                            .outline()
                             .with_size(control::STANDARD)
                             .icon(IconName::Copy)
                             .label("复制规则")

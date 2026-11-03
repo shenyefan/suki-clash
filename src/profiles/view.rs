@@ -449,7 +449,7 @@ impl Render for ProfilesPage {
                         header.child(
                             Button::new("profile-batch")
                                 .icon(gpui_kit::assets::IconName::ListChecks)
-                                .ghost()
+                                .outline()
                                 .with_size(control::STANDARD)
                                 .label("批量管理")
                                 .on_click(cx.listener(|this, _, _, cx| {
@@ -461,7 +461,7 @@ impl Render for ProfilesPage {
                     })
                     .child(
                         Button::new("update-or-apply")
-                            .ghost()
+                            .outline()
                             .with_size(control::STANDARD)
                             .icon(IconName::RefreshCw)
                             .label("全部更新")
@@ -503,7 +503,7 @@ impl Render for ProfilesPage {
                         .child(
                             Button::new("select-all-profiles")
                                 .icon(gpui_kit::assets::IconName::CheckCheck)
-                                .ghost()
+                                .outline()
                                 .with_size(control::STANDARD)
                                 .label("全选")
                                 .on_click(cx.listener(|this, _, _, cx| {
@@ -515,7 +515,7 @@ impl Render for ProfilesPage {
                         .child(
                             Button::new("clear-profile-selection")
                                 .icon(gpui_kit::assets::IconName::X)
-                                .ghost()
+                                .outline()
                                 .with_size(control::STANDARD)
                                 .label("取消选择")
                                 .on_click(cx.listener(|this, _, _, cx| {

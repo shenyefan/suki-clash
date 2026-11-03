@@ -170,14 +170,6 @@ impl RecordsTable {
                         })
                         .into_any_element()
                 }
-                TrafficKind::Rules => {
-                    let value = rule_text(&row);
-                    ui::icon_button(("copy-rule", id), IconName::Copy, "复制规则")
-                        .on_click(move |_, _, cx| {
-                            cx.write_to_clipboard(ClipboardItem::new_string(value.clone()))
-                        })
-                        .into_any_element()
-                }
                 _ => div().into_any_element(),
             })
             .into_any_element()

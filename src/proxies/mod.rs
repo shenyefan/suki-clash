@@ -22,7 +22,6 @@ pub(crate) struct ProxiesPage {
     group_filter: BTreeSet<String>,
     group_urls: BTreeMap<String, Entity<InputState>>,
     test_preferences: (Option<u64>, preferences::Preferences),
-    url_editing: BTreeSet<String>,
     groups: Vec<ProxyGroup>,
     observed: std::sync::Arc<crate::core::Runtime>,
     expanded: BTreeSet<String>,
@@ -215,7 +214,6 @@ impl ProxiesPage {
             group_filter: BTreeSet::new(),
             group_urls: BTreeMap::new(),
             test_preferences,
-            url_editing: Default::default(),
             groups,
             observed: runtime,
             expanded,
@@ -246,42 +244,99 @@ impl ProxiesPage {
         cx: &mut Context<Self>,
     ) -> Entity<InputState> {
         let value = self.test_urls(cx).get(group).cloned().unwrap_or_default();
-        let input = cx.new(|cx| {
+        cx.new(|cx| {
             InputState::new(window, cx)
                 .placeholder("测速地址，留空使用默认")
                 .default_value(value)
-        });
-        let group = group.to_owned();
-        self._subscriptions.push(cx.subscribe_in(
-            &input,
-            window,
-            move |this, input, event, window, cx| {
-                if matches!(event, InputEvent::Blur) {
-                    let url = input.read(cx).value().trim().to_owned();
-                    let profile = this.session.read(cx).active_profile_id();
-                    if this
-                        .test_urls(cx)
-                        .get(&group)
-                        .map(String::as_str)
-                        .unwrap_or("")
-                        != url
-                    {
-                        crate::core::request(
-                            crate::core::Command::ProxyPreferences {
-                                profile,
-                                change: preferences::Change::TestUrl {
-                                    group: group.clone(),
-                                    url,
-                                },
-                            },
-                            window,
-                            cx,
-                        );
-                    }
-                }
+        })
+    }
+
+    /// The dialog owns draft editing; committing sends the one persisted test-URL change.
+    fn commit_test_url(&mut self, group: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(input) = self.group_urls.get(group) else {
+            return;
+        };
+        let url = input.read(cx).value().trim().to_owned();
+        if self
+            .test_urls(cx)
+            .get(group)
+            .map(String::as_str)
+            .unwrap_or("")
+            == url
+        {
+            return;
+        }
+        let profile = self.session.read(cx).active_profile_id();
+        crate::core::request(
+            crate::core::Command::ProxyPreferences {
+                profile,
+                change: preferences::Change::TestUrl {
+                    group: group.to_owned(),
+                    url,
+                },
             },
-        ));
-        input
+            window,
+            cx,
+        );
+    }
+
+    fn edit_test_url(&mut self, group: String, window: &mut Window, cx: &mut Context<Self>) {
+        use crate::ui::{
+            self,
+            theme::{control, layout},
+        };
+        use gpui_kit::component::{
+            Sizable as _, WindowExt,
+            button::{Button, ButtonVariants},
+            input::Input,
+        };
+        let Some(input) = self.group_urls.get(&group).cloned() else {
+            return;
+        };
+        let saved = self.test_urls(cx).get(&group).cloned().unwrap_or_default();
+        input.update(cx, |state, cx| state.set_value(saved, window, cx));
+        let owner = cx.weak_entity();
+        window.open_dialog(cx, move |dialog, window, cx| {
+            let (input, owner, group) = (input.clone(), owner.clone(), group.clone());
+            let field = input.clone();
+            ui::modal(dialog, "测速地址", layout::DIALOG_WIDTH, window, cx)
+                .content(ui::modal_content(
+                    "proxy-group-url-content",
+                    layout::FORM_MAX_HEIGHT,
+                    move |_, _| {
+                        ui::form()
+                            .child(ui::field_label(
+                                "测速地址",
+                                Input::new(&field).w_full().with_size(control::STANDARD),
+                            ))
+                            .into_any_element()
+                    },
+                ))
+                .footer(
+                    ui::modal_footer()
+                        .child(
+                            Button::new("cancel-group-url")
+                                .with_size(control::STANDARD)
+                                .outline()
+                                .label("取消")
+                                .on_click(|_, window, cx| window.close_dialog(cx)),
+                        )
+                        .child(
+                            Button::new("save-group-url")
+                                .with_size(control::STANDARD)
+                                .primary()
+                                .label("保存")
+                                .on_click(move |_, window, cx| {
+                                    owner
+                                        .update(cx, |this, cx| {
+                                            this.commit_test_url(&group, window, cx)
+                                        })
+                                        .ok();
+                                    window.close_dialog(cx);
+                                }),
+                        ),
+                )
+        });
     }
 
     fn is_expanded(&self, id: &str, searching: bool) -> bool {

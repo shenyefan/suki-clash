@@ -18,11 +18,7 @@ use crate::{session::Session, ui};
 use editor::{DocumentEditor, EditorMode, ImportInputs};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    component::{
-        Sizable, WindowExt,
-        button::{Button, ButtonVariants},
-        input::InputState,
-    },
+    component::{Sizable, WindowExt, button::Button, input::InputState},
     *,
 };
 use model::{Document, DocumentKind, valid_remote_url};
@@ -576,7 +572,7 @@ impl ProfilesPage {
                                     Button::new("undo-delete")
                                         .icon(gpui_kit::assets::IconName::RotateCcw)
                                         .with_size(control::STANDARD)
-                                        .ghost()
+                                        .outline()
                                         .label("撤销")
                                         .on_click(move |_, window, cx| {
                                             owner.update(cx, |this, cx| {

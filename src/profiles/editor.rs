@@ -9,7 +9,7 @@ use gpui_kit::{
     assets::IconName,
     component::{
         ActiveTheme, Icon, IndexPath, Sizable,
-        button::{Button, ButtonVariants},
+        button::Button,
         h_flex,
         input::{Editor, EditorState, Input, InputState, MaskPattern},
         searchable_list::SearchableListItem,
@@ -345,7 +345,7 @@ impl Render for DocumentEditor {
                         .child(
                             Button::new("validate-document-yaml")
                                 .icon(gpui_kit::assets::IconName::Check)
-                                .ghost()
+                                .outline()
                                 .with_size(control::STANDARD)
                                 .label("检查语法")
                                 .on_click(cx.listener(|this, _, window, cx| {
@@ -362,7 +362,7 @@ impl Render for DocumentEditor {
                         .child(
                             Button::new("copy-editor-file")
                                 .icon(gpui_kit::assets::IconName::Copy)
-                                .ghost()
+                                .outline()
                                 .with_size(control::STANDARD)
                                 .label("复制")
                                 .on_click(cx.listener(|this, _, _, cx| {

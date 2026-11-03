@@ -180,6 +180,7 @@ impl ProxiesPage {
                 .h(height)
                 .rounded(cx.theme().radius)
                 .bg(cx.theme().muted)
+                .occlude()
                 .child(self.group_header(group, searching, true, window, cx))
         });
         let rows = std::rc::Rc::new(rows);
@@ -296,104 +297,13 @@ impl ProxiesPage {
             .any(|(name, _)| name == &group.name);
         let reset_group = group.name.clone();
         let url_group = group.name.clone();
-        let drag_target = group.id.clone();
-        let header = h_flex()
-            .bg(cx.theme().muted)
-            .rounded(cx.theme().radius)
-            .id(SharedString::from(format!("group-drag-{}", view_id)))
-            .on_drag(GroupDrag(group.id.clone()), |drag, _, _, cx| {
-                cx.new(|_| drag.clone())
-            })
-            .on_drop(cx.listener(move |this, drag: &GroupDrag, window, cx| {
-                if let (Some(from), Some(to)) = (
-                    this.groups.iter().position(|group| group.id() == drag.0),
-                    this.groups
-                        .iter()
-                        .position(|group| group.id() == drag_target),
-                ) {
-                    let group = this.groups.remove(from);
-                    this.groups.insert(to, group);
-                    this.refresh_list(window, cx);
-                    cx.notify();
-                }
-            }))
-            .when(self.url_editing.contains(&group.name), |row| {
-                if let Some(input) = self.group_urls.get(&group.name) {
-                    row.child(gpui_kit::component::input::Input::new(input).w_full())
-                } else {
-                    row
-                }
-            })
-            .gap(space::SM)
-            .child(
-                Button::new(SharedString::from(format!("proxy-group-{}", view_id)))
-                    .ghost()
-                    .with_size(control::STANDARD)
-                    .flex_1()
-                    .min_w(space::NONE)
-                    .px(list::PADDING_X)
-                    .h(height)
-                    .accessibility_label(format!(
-                        "{}{}，{}个节点，当前节点{}",
-                        if open { "收起" } else { "展开" },
-                        group.name,
-                        group.count,
-                        selected
-                    ))
-                    .child(
-                        h_flex()
-                            .w_full()
-                            .gap(space::MD)
-                            .child(
-                                Icon::new(IconName::ChevronRight)
-                                    .rotate(radians(angle))
-                                    .size(layout::ICON),
-                            )
-                            .child(self.group_icon(&group, cx))
-                            .child(
-                                h_flex()
-                                    .flex_1()
-                                    .min_w(space::NONE)
-                                    .gap(space::SM)
-                                    .child(
-                                        div()
-                                            .truncate()
-                                            .font_weight(text::EMPHASIS)
-                                            .child(group.name.clone()),
-                                    )
-                                    .child(ui::muted(group.kind.label(), cx))
-                                    .child(
-                                        ui::muted(
-                                            format!(
-                                                "{}{}",
-                                                selected,
-                                                fixed_node
-                                                    .map(|node| format!(" · 固定：{node}"))
-                                                    .unwrap_or_default()
-                                            ),
-                                            cx,
-                                        )
-                                        .truncate(),
-                                    ),
-                            )
-                            .child(ui::muted(
-                                format!(
-                                    "{} 个节点",
-                                    self.groups
-                                        .iter()
-                                        .find(|entry| entry.id() == group.id)
-                                        .map(|entry| entry
-                                            .visible_nodes("", false, self.sort, false)
-                                            .len())
-                                        .unwrap_or(0)
-                                ),
-                                cx,
-                            )),
-                    )
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.toggle_group(toggle_id.clone(), searching, window, cx)
-                    })),
-            )
+        let actions = h_flex()
+            .id(SharedString::from(format!(
+                "proxy-group-actions-{}",
+                view_id
+            )))
+            .gap(space::XS)
+            .on_click(|_, _, cx| cx.stop_propagation())
             .child(
                 ui::icon_button(
                     SharedString::from(format!("proxy-group-locate-{}", view_id)),
@@ -453,11 +363,8 @@ impl ProxiesPage {
                     IconName::Link,
                     "编辑测速地址",
                 )
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    if !this.url_editing.remove(&url_group) {
-                        this.url_editing.insert(url_group.clone());
-                    }
-                    cx.notify();
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.edit_test_url(url_group.clone(), window, cx)
                 })),
             )
             .when(fixed, |row| {
@@ -480,6 +387,98 @@ impl ProxiesPage {
                     }),
                 )
             });
+        let drag_target = group.id.clone();
+        let header = h_flex()
+            .bg(cx.theme().muted)
+            .rounded(cx.theme().radius)
+            .id(SharedString::from(format!("group-drag-{}", view_id)))
+            .on_drag(GroupDrag(group.id.clone()), |drag, _, _, cx| {
+                cx.new(|_| drag.clone())
+            })
+            .on_drop(cx.listener(move |this, drag: &GroupDrag, window, cx| {
+                if let (Some(from), Some(to)) = (
+                    this.groups.iter().position(|group| group.id() == drag.0),
+                    this.groups
+                        .iter()
+                        .position(|group| group.id() == drag_target),
+                ) {
+                    let group = this.groups.remove(from);
+                    this.groups.insert(to, group);
+                    this.refresh_list(window, cx);
+                    cx.notify();
+                }
+            }))
+            .gap(space::SM)
+            .child(
+                Button::new(SharedString::from(format!("proxy-group-{}", view_id)))
+                    .ghost()
+                    .with_size(control::STANDARD)
+                    .w_full()
+                    .min_w(space::NONE)
+                    .px(list::PADDING_X)
+                    .h(height)
+                    .accessibility_label(format!(
+                        "{}{}，{}个节点，当前节点{}",
+                        if open { "收起" } else { "展开" },
+                        group.name,
+                        group.count,
+                        selected
+                    ))
+                    .child(
+                        h_flex()
+                            .w_full()
+                            .gap(space::MD)
+                            .child(
+                                Icon::new(IconName::ChevronRight)
+                                    .rotate(radians(angle))
+                                    .size(layout::ICON),
+                            )
+                            .child(self.group_icon(&group, cx))
+                            .child(
+                                h_flex()
+                                    .flex_1()
+                                    .min_w(space::NONE)
+                                    .gap(space::SM)
+                                    .child(
+                                        div()
+                                            .truncate()
+                                            .font_weight(text::EMPHASIS)
+                                            .child(group.name.clone()),
+                                    )
+                                    .child(ui::muted(group.kind.label(), cx))
+                                    .child(
+                                        ui::muted(
+                                            format!(
+                                                "{}{}",
+                                                selected,
+                                                fixed_node
+                                                    .map(|node| format!(" · 固定：{node}"))
+                                                    .unwrap_or_default()
+                                            ),
+                                            cx,
+                                        )
+                                        .truncate(),
+                                    ),
+                            )
+                            .child(ui::muted(
+                                format!(
+                                    "{} 个节点",
+                                    self.groups
+                                        .iter()
+                                        .find(|entry| entry.id() == group.id)
+                                        .map(|entry| entry
+                                            .visible_nodes("", false, self.sort, false)
+                                            .len())
+                                        .unwrap_or(0)
+                                ),
+                                cx,
+                            ))
+                            .child(actions),
+                    )
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.toggle_group(toggle_id.clone(), searching, window, cx)
+                    })),
+            );
         header.into_any_element()
     }
     fn locate_group(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
@@ -516,9 +515,13 @@ impl ProxiesPage {
                     .to_owned();
                 if let Some(index) = nodes.iter().position(|node| node.name() == selected) {
                     row += 1 + index / self.columns.max(1);
+                    // 悬浮组头占据视口顶部一行，目标节点需落在其下方。
+                    self.list_scroll
+                        .scroll_to_item(row - 1, ScrollStrategy::Top);
+                } else {
+                    self.list_scroll
+                        .scroll_to_item(row, ScrollStrategy::Nearest);
                 }
-                self.list_scroll
-                    .scroll_to_item(row, ScrollStrategy::Nearest);
                 break;
             }
             row += 1;
