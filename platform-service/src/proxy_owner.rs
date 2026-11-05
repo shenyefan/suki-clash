@@ -67,7 +67,9 @@ pub fn entries(value: &str) -> std::collections::BTreeSet<&str> {
         .filter(|v| !v.is_empty())
         .collect()
 }
-pub trait Backend: Send + 'static {
+// Native backends are created and used inside their serial worker. Requests
+// cross threads; OS authorization handles stay with the backend's owner.
+pub trait Backend: 'static {
     type Checkpoint;
     fn allow_interaction(&mut self, _allowed: bool) {}
     fn available(&self) -> Result<bool, String> {

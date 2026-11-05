@@ -1,15 +1,10 @@
-#[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
-fn main() {
-    panic!("This program is not intended to run on this platform.");
-}
-
-mod shared;
+use super::shared;
 
 use anyhow::Error;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use shared::run_command;
 
-use shared::{enter_repair_gate, run_maintenance_if_requested};
+use shared::enter_repair_gate;
 
 /// Removes approved cores after service deletion. Locked files are left for a later retry.
 #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
@@ -34,7 +29,7 @@ fn remove_installed_cores() {
     }
 }
 
-/// Removes recorded firewall rules and discovers cores staged by older installers.
+/// Removes recorded firewall rules and discovers approved cores without records.
 /// Keep failed records outside `cores` for retries: netsh cannot distinguish an absent rule
 /// from an unavailable firewall by exit status.
 #[cfg(windows)]
@@ -65,7 +60,7 @@ fn remove_core_firewall_rules(cores: &std::path::Path) {
         let Ok(name) = shared::core_firewall_rule_name(std::path::Path::new(&file_name)) else {
             continue;
         };
-        // Preserve newly discovered names from older installers before removing their cores.
+        // Retain newly discovered cleanup obligations before removing their cores.
         if let Err(error) = shared::record_core_firewall_rule(&cores.join(&file_name)) {
             eprintln!("Could not retain firewall cleanup record for {name:?}: {error:#}");
         }
@@ -104,16 +99,11 @@ fn poll_until<T>(
 }
 
 #[cfg(target_os = "macos")]
-fn main() -> Result<(), Error> {
+pub(super) fn run(debug: bool) -> Result<(), Error> {
     use anyhow::Context as _;
-    use std::env;
     use std::path::Path;
 
-    if run_maintenance_if_requested()? {
-        return Ok(());
-    }
     let _gate = enter_repair_gate()?;
-    let debug = env::args().any(|arg| arg == "--debug");
 
     let bundle_path = format!(
         "/Library/PrivilegedHelperTools/{}.bundle",
@@ -187,15 +177,10 @@ fn main() -> Result<(), Error> {
 }
 
 #[cfg(target_os = "linux")]
-fn main() -> Result<(), Error> {
+pub(super) fn run(debug: bool) -> Result<(), Error> {
     use anyhow::Context as _;
-    use std::env;
 
-    if run_maintenance_if_requested()? {
-        return Ok(());
-    }
     let _gate = enter_repair_gate()?;
-    let debug = env::args().any(|arg| arg == "--debug");
     let service_name = suki_clash_service::SERVICE_SLUG;
     let unit = format!("{service_name}.service");
     let state = std::process::Command::new("systemctl")
@@ -253,7 +238,7 @@ fn main() -> Result<(), Error> {
 }
 
 #[cfg(windows)]
-fn main() -> anyhow::Result<()> {
+pub(super) fn run(_debug: bool) -> anyhow::Result<()> {
     use platform_lib::{
         Error as WindowsServiceError,
         service::{ServiceAccess, ServiceState},
@@ -270,9 +255,6 @@ fn main() -> anyhow::Result<()> {
         matches!(error, WindowsServiceError::Winapi(error) if error.raw_os_error() == Some(code))
     }
 
-    if run_maintenance_if_requested()? {
-        return Ok(());
-    }
     // Resolve before deleting the SCM registration that may supply the recovery path.
     suki_clash_service::service_paths()?;
     let _gate = enter_repair_gate()?;

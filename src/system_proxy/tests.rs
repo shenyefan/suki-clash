@@ -51,6 +51,47 @@ fn target() -> Target {
     values.insert("IsSystemProxyEnabled".into(), "true".into());
     target_from_values(&values, 7897, "")
 }
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn network_change_invalidates_target_but_keeps_write_failures_suspended() {
+    let mut values = crate::preferences::defaults(crate::preferences::SettingsKind::SysProxy);
+    values.insert("IsSystemProxyEnabled".into(), "true".into());
+    values.insert("EnableProxyGuard".into(), "true".into());
+    let mut controller = Controller::default();
+    controller.apply(&values, 7897).await.unwrap();
+    assert_eq!(
+        controller.refresh_network().unwrap(),
+        NetworkStatus::Unchanged
+    );
+    assert!(controller.is_current(&values, 7897));
+    assert!(controller.guard_at.is_some());
+
+    controller.network_probe = Some(|| None);
+    assert_eq!(
+        controller.refresh_network().unwrap(),
+        NetworkStatus::Unavailable
+    );
+    assert!(!controller.is_current(&values, 7897));
+    assert!(controller.guard_at.is_none());
+    controller.network_probe = Some(|| Some("ethernet".into()));
+    assert_eq!(
+        controller.refresh_network().unwrap(),
+        NetworkStatus::Changed
+    );
+    controller.apply_automatic(&values, 7897).await.unwrap();
+    assert!(controller.is_current(&values, 7897));
+
+    controller.automatic_suspended = true;
+    controller.network_probe = Some(|| Some("wifi".into()));
+    assert_eq!(
+        controller.refresh_network().unwrap(),
+        NetworkStatus::Changed
+    );
+    assert!(controller.automatic_suspended());
+    assert_eq!(controller.poll(&values).await.unwrap().enabled(), None);
+    // The native owner still remembers all writes after cache invalidation.
+    assert_eq!(controller.clear().await.unwrap().enabled(), Some(false));
+}
 #[test]
 fn default_bypass_combination_and_pac_readback_follow_saved_policy() {
     let mut values = crate::preferences::defaults(crate::preferences::SettingsKind::SysProxy);

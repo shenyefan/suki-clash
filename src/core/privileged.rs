@@ -230,16 +230,16 @@ pub(super) async fn manage(
 }
 pub(super) async fn uninstall() -> Result<(), String> {
     tokio::task::spawn_blocking(|| {
-        let tool = std::env::current_exe()
+        let service = std::env::current_exe()
             .map_err(|error| error.to_string())?
             .with_file_name(format!(
-                "suki-clash-service-uninstall{}",
+                "suki-clash-service{}",
                 std::env::consts::EXE_SUFFIX
             ));
-        if !tool.is_file() {
-            return Err("服务卸载工具不存在，请使用包含后台服务的完整应用包".into());
+        if !service.is_file() {
+            return Err("后台服务程序不存在，请使用完整应用包".into());
         }
-        suki_service::management::uninstall(&tool).map_err(|error| error.to_string())
+        suki_service::management::uninstall(&service).map_err(|error| error.to_string())
     })
     .await
     .map_err(|_| "服务卸载任务异常退出")?
@@ -257,21 +257,21 @@ async fn install(
         .directory(crate::storage::DirectoryKind::Core)
         .join(crate::bootstrap::core_name());
     let outcome = tokio::task::spawn_blocking(move || {
-        let installer = std::env::current_exe()
+        let service = std::env::current_exe()
             .map_err(|error| error.to_string())?
             .with_file_name(format!(
-                "suki-clash-service-install{}",
+                "suki-clash-service{}",
                 std::env::consts::EXE_SUFFIX
             ));
-        if !installer.is_file() {
-            return Err("服务安装工具不存在，请使用包含后台服务的完整应用包".into());
+        if !service.is_file() {
+            return Err("后台服务程序不存在，请使用完整应用包".into());
         }
         #[cfg(unix)]
         let gid = Some(unsafe { libc::getegid() });
         #[cfg(windows)]
         let gid = None;
         suki_service::management::install(
-            &installer,
+            &service,
             &[suki_service::management::CoreSource {
                 path: core,
                 name: crate::bootstrap::core_name().into(),

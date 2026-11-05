@@ -11,6 +11,10 @@ impl Adapter {
 pub fn read() -> Result<OsSnapshot, String> {
     native::read()
 }
+/// Read the primary network service without acquiring write authorization.
+pub fn active_service_id() -> Result<Option<String>, String> {
+    native::active_service_id()
+}
 impl Backend for Adapter {
     type Checkpoint = Checkpoint;
     fn available(&self) -> Result<bool, String> {

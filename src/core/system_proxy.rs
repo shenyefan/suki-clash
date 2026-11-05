@@ -152,6 +152,12 @@ impl Actor {
         if self.snapshot.phase != Phase::Ready || self.system_proxy.automatic_suspended() {
             return Ok(());
         }
+        #[cfg(target_os = "macos")]
+        if self.system_proxy.refresh_network()? == crate::system_proxy::NetworkStatus::Unavailable {
+            // Offline startup is deferred; permission/write failures still suspend.
+            self.snapshot.system_proxy = Default::default();
+            return Ok(());
+        }
         let values = self.proxy_settings()?;
         self.snapshot
             .settings
@@ -191,9 +197,23 @@ impl Actor {
             return Ok(());
         }
         let observed = if self.snapshot.phase == Phase::Ready {
-            // Polling observes the OS and services an already-established guard.
-            // A failed startup/apply must not become an implicit retry every tick.
-            // Lifecycle/configuration commits explicitly call sync_system_proxy.
+            #[cfg(target_os = "macos")]
+            match self.system_proxy.refresh_network()? {
+                crate::system_proxy::NetworkStatus::Unavailable => {
+                    if self.snapshot.system_proxy != Default::default() {
+                        self.snapshot.system_proxy = Default::default();
+                        self.publish(self.snapshot.phase, None);
+                    }
+                    return Ok(());
+                }
+                crate::system_proxy::NetworkStatus::Changed => {
+                    self.sync_system_proxy().await?;
+                    self.publish(self.snapshot.phase, None);
+                }
+                crate::system_proxy::NetworkStatus::Unchanged => {}
+            }
+            // Observe and service the guard. A real apply failure remains suspended
+            // until an explicit request, including across network changes.
             let values = self.proxy_settings()?;
             self.system_proxy.poll(&values).await
         } else {

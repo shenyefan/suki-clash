@@ -1,10 +1,10 @@
 # Clash Verge Rev 功能对照与差距清单
 
-上游版本另见 [版本与同步记录](cv-upstream-sync.md)（2026-11-03）：本地已同步为dev 2.5.10（5b7e876），旧目录精确匹配2.5.9快照eefd025；官方稳定版2.5.9。新增U01服务SSH私钥暂存、U02服务Geo反向同步、U03全局模式普通组展示，本轮均已补齐；这是R01–R61之后的上游增量适配。
+上游版本另见 [版本与同步记录](cv-upstream-sync.md)（2026-11-05）：本地已快进为 dev 2.6.0（b9ab3b20），官方稳定版 v2.5.10。历史 U01 服务 SSH 私钥暂存、U02 服务 Geo 反向同步、U03 全局模式普通组展示已补齐；本次新增 U05 macOS 离线/换网代理恢复已修复，U06 GLOBAL 初次默认出口是尚未采用的策略差异。
 
-同步后的39个提交已作功能增量对照，见[更新差异复核](cv-update-comparison-2026-11-03.md)。WebDAV已按用户决定移除；自动备份继续暂缓；Muse AI列入用户决定的仪表盘能力；交付变更留给成熟工具集成。没有把新参考文件自动算作原逐文件审计覆盖。
+本次 27 个提交、128 文件的增量对照见 [11-05 更新差异复核](cv-update-comparison-2026-11-05.md)，前次 39 提交记录保留在 [11-03 复核](cv-update-comparison-2026-11-03.md)。WebDAV 已按用户决定移除；自动备份继续暂缓；Muse AI 列入用户决定的仪表盘能力；交付采用 Velopack。没有把新参考文件自动算作原逐文件审计覆盖。
 
-更新日期：2026-11-03。历史对照基线为CV 2.5.9快照eefd025；当前参考目录已同步到dev 2.5.10／5b7e876，新增文件变化未自动计入原审计覆盖。对照本轮 Suki 实现（含系统代理、重置、代理来源／搜索／测速、代理链、诊断与界面修正），不能据此推断已发布版本。参考目录现有独立 Git 身份，版本以其自身HEAD为准，不使用父仓库SHA。
+更新日期：2026-11-05。历史逐文件对照基线为 CV 2.5.9 快照 eefd025；当前参考目录为 dev 2.6.0／b9ab3b20，后续增量按各次复核记录，不自动计入原全文审计覆盖。对照当前 Suki 工作区，不能据此推断已发布版本。参考目录使用自身 Git HEAD，不使用父仓库 SHA。
 
 第一批修复（2026-11-02）：R29/R34/R30/R04/R47/R42/R45及L02/L04已完成代码整改，仍待真实平台验收。下列各行中这些编号的历史问题以[修复清单](cv-repair-checklist.md)状态为准；其余问题未自动关闭。根项目246项通过、16项忽略，check／严格Clippy通过。
 
@@ -88,13 +88,13 @@ S01的8项无消费者设置入口／默认值／枚举依赖已清理，保留�
 | C01 | 部分 | 系统信息与诊断 | 已接 OS 版本、架构、主机、实际权限、自启动回读和应用运行时长；仪表盘及详情已接。服务模式与后台服务状态已接；真实平台服务诊断及交接验收仍待完成。 | [system-info-card.tsx](../clash-verge-rev-dev/src/components/home/system-info-card.tsx) | [view.rs](../src/overview/view.rs) |
 | C02 | 部分 | 系统代理 | 三平台手动/PAC、回读、守卫、失败恢复与退出清理已接。macOS已接鉴权helper分路及离线清理；Windows默认及RAS逐连接检查点，KDE原值回退已修。权限拒绝停止自动处理，显式操作可重试。退出可取消与系统结束有界清理已接。剩余真实三平台网络／权限／退出恢复验收。 | [sysopt.rs](../clash-verge-rev-dev/src-tauri/src/core/sysopt.rs) | [macos.rs](../src/system_proxy/macos.rs) |
 | C03 | 部分 | TUN 与系统网络 | 常驻服务执行、TUN原生标识、DNS补齐、校验／热更新／回读及失败恢复已接；自动路由／重定向联动提交已修，日常开关不提权。真实网卡、路由、DNS与平台验收待完成。 | [tun.rs](../clash-verge-rev-dev/src-tauri/src/enhance/tun.rs) | [TUN 与服务](tun-service.md) |
-| C04 | 部分 | 平台服务 | 安装、修复、停止服务内核、卸载及显式转子进程已接；转换保留各阶段提交事实与独立补偿，Unix卸载先确认停止／注销再删除。令牌契约、默认服务归属、健康监督、资源恢复及防火墙部分成功已修。协议现为revision 9，应用与服务同步更新，不提供旧协议兼容。剩余真实安装／交接及故障集成验收。 | [service.rs](../clash-verge-rev-dev/src-tauri/src/core/service.rs) | [privileged.rs](../src/core/privileged.rs) |
+| C04 | 部分 | 平台服务 | 维护入口已整合到单一服务程序，安装／卸载不再交付独立可执行文件；[实施记录](service-single-executable-2026-11-05.md)。安装、修复、停止服务内核、卸载及显式转子进程已接；转换保留各阶段提交事实与独立补偿，Unix卸载先确认停止／注销再删除。令牌契约、默认服务归属、健康监督、资源恢复及防火墙部分成功已修。协议现为revision 9，应用与服务同步更新，不提供旧协议兼容。剩余真实安装／交接及故障集成验收。 | [service.rs](../clash-verge-rev-dev/src-tauri/src/core/service.rs) | [privileged.rs](../src/core/privileged.rs) |
 | C05 | 已有主体 | Windows 集成 | 采用 ClashSuki 的 FirewallAPI 原生枚举／回环方案，应用选择弹窗可搜索并编辑；未知／已卸载应用豁免保留。服务鉴权写入、并发前置检查、回读与失败恢复；防火墙仅重建服务批准内核及已认证用户应用目录内核的固定命名规则，失败恢复原规则，不接收任意程序路径。无需外部 enableLoopback.exe。剩余为 Windows 实机验收。 | [win_uwp.rs](../clash-verge-rev-dev/src-tauri/src/core/win_uwp.rs) | [windows_network.rs](../platform-service/src/windows_network.rs) |
 | C06 | 部分 | 启动与窗口生命周期 | 自启动、静默、关闭到托盘、启动脚本及清理后重启已接。启动协调GUI登录注册与期望值；设置显示OS实际状态、刷新和修正漂移，重置清GUI登录注册，不动helper注册。静默建窗隐藏且不聚焦，托盘失败显示主窗。Windows登录任务权限及回退保留原XML。剩余三平台原生生命周期验收。 | [autostart.rs](../clash-verge-rev-dev/src-tauri/src/core/autostart.rs) | [autostart_windows.rs](../src/desktop/autostart_windows.rs) |
 | C07 | 部分 | 单实例与外部导入 | 当前用户实例锁、认证回环端点、第二实例唤起／订阅导入、明确URI名称、有界队列及协议注册已接。macOS官方on_reopen、单实例与托盘共用显示主窗口入口。cargo run不代替正式应用包URI注册验收；正式跨平台激活仍待验收。 | [server.rs](../clash-verge-rev-dev/src-tauri/src/utils/server.rs) | [main.rs](../src/main.rs) |
 | C08 | 部分 | 托盘 | OS原生附着菜单、点击行为、普通／系统代理／TUN三态和自定义图标、macOS网速、模式／订阅／组／节点及维护动作已接。组图标按组／来源／代次绑定，拒绝迟到；同目标原生写入失败暂停，明确点击可重试。无独立窗口或自绘滚动条，TUN优先级与CV一致。Quit清本应用效果并保留空闲helper。剩余原生菜单完整视觉、跨平台和故障验收。 | [tray](../clash-verge-rev-dev/src-tauri/src/core/tray) | [tray](../src/tray) |
-| C09 | 部分 | 应用升级 | 已接Velopack 1.2.161：检查／共享客户端下载／SHA-256校验／确认安装，先清代理与内核再由SDK等待退出替换；非安装包打开GitHub发布页。真实发布源与端到端更新仍待验收。现有Mihomo内核升级仍独立。 | [updater.rs](../clash-verge-rev-dev/src-tauri/src/core/updater.rs) | [integration.rs](../src/integration.rs) |
-| C10 | 部分 | 打包签名与发布 | 已增加GitHub六平台原生构建及Velopack固定版本打包；Windows安装+便携、macOS pkg、Linux AppImage，各架构独立feed。全矩阵成功后单一草稿Release，支持可选签名／公证，无证书标未签名。真实Actions构建与签名／安装验收仍待完成，不宣称已发布。 | [tauri.conf.json](../clash-verge-rev-dev/src-tauri/tauri.conf.json) | [bootstrap](../src/bootstrap/mod.rs) |
+| C09 | 部分 | 应用升级 | 已接Velopack检查／下载／校验／安装执行链；当前Release仅公开安装器和压缩包，不公开自动更新清单，新版本需手动升级，已安装版检查会报清单获取错误。非安装包打开GitHub发布页。自动更新源与端到端更新仍待处理。现有Mihomo内核升级仍独立。 | [updater.rs](../clash-verge-rev-dev/src-tauri/src/core/updater.rs) | [integration.rs](../src/integration.rs) |
+| C10 | 部分 | 打包签名与发布 | GitHub仅构建Windows x64／ARM64、macOS Apple Silicon、Linux x64。Release仅包含7个安装器／压缩包，内部更新清单和构建元数据保留在Actions artifacts。全矩阵成功后单一草稿Release，描述包含下载表、实际签名状态及自动变更记录；支持可选签名／公证，无证书标未签名。真实Actions构建与签名／安装验收仍待完成，不宣称已发布。 | [tauri.conf.json](../clash-verge-rev-dev/src-tauri/tauri.conf.json) | [bootstrap](../src/bootstrap/mod.rs) |
 | C11 | 部分 | 完整备份 | 完整当前配置／订阅／覆写／增强归档、校验及恢复已接入Gist备份。Gist可创建独立历史、分页、下载、恢复、删除与可选Age加密；本地完整历史、文件导入／导出、恢复和删除现已接入维护，共用同一归档与恢复工作流。 | [backup.rs](../clash-verge-rev-dev/src-tauri/src/core/backup.rs) | [storage.rs](../src/storage.rs) |
 | C12 | 产品取舍 | WebDAV | 用户明确仅使用 Gist，完整删除 WebDAV 设置及操作入口，不纳入待实现范围。 | [backup.rs](../clash-verge-rev-dev/src-tauri/src/core/backup.rs) | [core_apply.rs](../src/settings/core_apply.rs) |
 | C13 | 暂缓 | 自动备份 | 定时备份、配置变化触发、保留数量及本地/远程历史策略执行；未实现入口已移除，不以仅持久化的设置宣称支持。 | [auto_backup.rs](../clash-verge-rev-dev/src-tauri/src/core/auto_backup.rs) | [schema.rs](../src/preferences/schema.rs) |
@@ -126,7 +126,7 @@ S01的8项无消费者设置入口／默认值／枚举依赖已清理，保留�
 | C39 | 部分 | 安全凭据跨平台 | 订阅／覆写凭据使用macOS钥匙串、Windows Credential Manager、Linux oo7 Secret Service；Keep／Replace／Clear明确意图，单项编辑不清另一项。跨平台适配器编译已有，真实桌面凭据读写验收待补。WebDAV明确不支持。 | [config](../clash-verge-rev-dev/src-tauri/src/config) | [credentials.rs](../src/profiles/credentials.rs) |
 | C40 | 待验收 | 跨平台与性能验收 | Windows/Linux 原生运行、权限/服务/TUN/托盘/安装包；macOS 完整窗口工作流、大规模组/连接性能、真实钥匙串、应用更新与退出网络恢复均需单列验收。构建和虚拟化测试不能替代实机验证。 | [src-tauri](../clash-verge-rev-dev/src-tauri) | [系统代理验证范围](system-proxy.md#验证) |
 | X01 | 按要求不做 | 偏好裁剪 | 字体、侧栏偏好/折叠导航定制、全局快捷键、轻量模式、自定义调色板；不列为待开发任务。 | [verge.rs](../clash-verge-rev-dev/src-tauri/src/config/verge.rs) | [AGENTS.md](../AGENTS.md) |
-| X02 | 设计差异 | 配置与失败契约 | 内核原生 YAML/程序偏好 JSON/默认值/数组、无 applied.json、无旧格式兼容与迁移；不复制 CV 自动换端口、改设置、静默修复/回退。内置 meta_guard/meta_hy_alpn 脚本涉及旧字段修正，也不作为兼容任务加入。 | [builtin](../clash-verge-rev-dev/src-tauri/src/enhance/builtin) | [AGENTS.md](../AGENTS.md) |
+| X02 | 设计差异 | 配置与失败契约 | 内核原生 YAML/程序偏好 JSON/默认值/数组、无 applied.json、无旧格式兼容与迁移；不复制 CV 自动换端口、改设置、静默修复/回退。新 dev 已删除内置 JS 目录及 meta_guard，hy_alpn 仍由 Rust 归一化；不作为本项目兼容任务加入。 | [enhance](../clash-verge-rev-dev/src-tauri/src/enhance/mod.rs) | [AGENTS.md](../AGENTS.md) |
 | X03 | 设计差异 | 界面与会话状态 | GPUI 原生组件、布尔 Switch、自动保存、间隔 0 关闭、日志倒序及筛选/排序不持久化、资源独立页面、toast 顶部居中。无需复制 Tauri/MUI/WebView devtools。 | [pages](../clash-verge-rev-dev/src/pages) | [Design.md](../DESIGN.md) |
 | B01 | 已有主体 | 内核与配置工作流 | 生命周期、归属、就绪、私有IPC、候选校验／热更新／受控重启、回滚及设置恢复已有。可取消退出和OS结束有界清理已修；真实平台网络恢复见C03/C04/C36/C40。 | [manager](../clash-verge-rev-dev/src-tauri/src/core/manager) | [service.rs](../src/core/service.rs) |
 | B02 | 已有主体 | 订阅与增强 | 订阅导入、元数据、下载、定时更新、排序／删除／撤销／激活、增强及有序覆写已有；正文文件唯一来源、明确凭据意图、提交后UI同步、首份激活及URL脱敏已修。表单和批量能力剩余见C15。 | [profiles.tsx](../clash-verge-rev-dev/src/pages/profiles.tsx) | [profiles.rs](../src/core/profiles.rs) |
@@ -379,9 +379,9 @@ Suki 的内核、外部资源、覆写、DNS、嗅探、系统代理和 TUN 分�
 
 来源设置与未接入入口的逐项清单见 [设置来源核查](settings-origin-audit.md)。CV 的可选布局、额外偏好、备注、多语言等差异仅作为对照事实；本清单不授权自行新增设置。明确排除的 X01–X03 不计作缺失任务。
 
-## 对照指纹
+## 历史审计指纹
 
-用于识别本地参考快照，不代表远端最新版本。
+用于识别原审计参考快照，不对应当前检出；当前摘要及固定 SHA 见 [版本基线](cv-reference-version.json)。
 
 - `clash-verge-rev-dev/src-tauri/src/config/verge.rs`：SHA-256 `acd20e809b2ddd46d637f40b42bc8df004a397b050cc0bcdac477b4871142a5a`
 - `clash-verge-rev-dev/src-tauri/src/ipc.rs`：SHA-256 `a5b4cb5d36e2cdb13e482caa30bb37dd2a919d5b2bae11a9000eb118c10038e7`

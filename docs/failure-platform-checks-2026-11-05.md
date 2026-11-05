@@ -30,3 +30,17 @@
 - 主程序格式、编译、Clippy 检查；服务使用发布所需 standalone,client 特性编译。服务默认无特性构建存在原有 serde_json 可选依赖错误，不属于本次图标逻辑。
 - Windows 交叉检查因当前工具链缺失目标标准库而失败，不能视作通过；没有运行真实 Windows 任务计划程序或 Windows/Linux 桌面。
 - 当前未运行新版本真实窗口，也未生成并安装三平台发布包；Dock、托盘、任务栏、安装器、快捷方式和 Linux 桌面集成的实机外观/交互仍待验证。自动 UI 回归及图标结构检查不能替代这些验收。
+
+## macOS 系统代理授权会话与维护页签
+
+通用设置最后一个页签由“同步与维护”改为“维护”，分组及 Gist 功能不变。
+
+本地代理执行端原先在每次 `write_native` 调用中创建 `AuthorizationRef`，写完随局部变量释放；启用、关闭、失败恢复分别重新创建会话，无法持续使用该授权实例的凭据缓存。现将授权引用移到 macOS Adapter，首次需要写入时创建，由同一个串行执行线程在后续开关、清理和恢复中复用，执行端销毁时释放；系统设置仍按每次操作新建 SCPreferences 并回读。代理后端在各自工作线程内部创建和使用，因此移除 Backend 不必要的 Send 限制，让授权引用保持线程内所有权，无需为原生句柄增加 unsafe Send。
+
+只有用户请求的可交互操作允许请求权限。后台守卫及服务维持原有非交互语义；不保存密码或授权引用到磁盘，不改 macOS 的授权策略。授权过期或系统策略要求重新验证时仍可能提示，不能保证跨启动或永久免授权。
+
+参考本地 CV 的 `core/proxy_control.rs::apply`：macOS 按运行模式分流，本地模式经 Sysopt/sysproxy，服务模式经 `set_system_proxy_by_service`。其 sysproxy 原生路径使用普通 SCPreferences，不自行创建交互授权窗口，权限不足返回 RequiresAdminPrivileges；常驻提权服务可在日常开关时执行写入。因此不能将 Suki 每次创建交互授权会话的现象解释为 CV 或 macOS 必然要求每次确认。
+
+参考 [Apple 授权缓存说明](https://developer.apple.com/library/archive/documentation/Security/Conceptual/authorization_concepts/02authconcepts/authconcepts.html)：系统同时管理全局缓存和每个授权实例的缓存，是否提示取决于权限规则和有效凭据。
+
+验证使用原生代理字典/清理回归及模拟执行端事务测试，不切换真实系统代理，不触发实际授权对话框。连续开关后的弹窗次数尚需用户在真实窗口验证；代码中复用授权引用不等于已经实测免提示。

@@ -3177,28 +3177,49 @@ async fn global_dns_saves_while_stopped_and_invalid_edits_preserve_committed_yam
 }
 
 #[tokio::test]
-async fn enabling_kernel_features_requires_installed_core_without_saving_the_switch() {
+async fn stopped_native_settings_save_intent_but_system_proxy_requires_a_ready_core() {
     use crate::{preferences::SettingsKind, storage::Values};
     let (_root, paths) = fixture(None);
     let mut owner = actor(paths.clone());
     for (kind, key) in [
         (SettingsKind::Dns, "DnsOverrideEnabled"),
         (SettingsKind::Sniffer, "SnifferOverrideEnabled"),
-        (SettingsKind::SysProxy, "IsSystemProxyEnabled"),
         (SettingsKind::Tun, "IsTunEnabled"),
     ] {
-        let error = owner
+        owner
             .save_settings(kind, Values::from([(key.into(), "true".into())]))
             .await
-            .unwrap_err();
-        assert!(error.contains("「内核」"), "{error}");
+            .unwrap();
         let repository = Repository::open(paths.clone()).unwrap();
+        assert_eq!(
+            crate::preferences::values(&repository, kind).unwrap()[key],
+            "true"
+        );
+        assert!(owner.running.is_none());
+        assert_eq!(owner.snapshot.phase(), Phase::Stopped);
+        assert_ne!(owner.snapshot.tun(), Some(true));
+        owner
+            .save_settings(kind, Values::from([(key.into(), "false".into())]))
+            .await
+            .unwrap();
         assert_eq!(
             crate::preferences::values(&repository, kind).unwrap()[key],
             "false"
         );
-        assert!(owner.running.is_none());
     }
+    let error = owner
+        .save_settings(
+            SettingsKind::SysProxy,
+            Values::from([("IsSystemProxyEnabled".into(), "true".into())]),
+        )
+        .await
+        .unwrap_err();
+    assert!(error.contains("「内核」"), "{error}");
+    assert_eq!(
+        crate::preferences::values(&Repository::open(paths).unwrap(), SettingsKind::SysProxy)
+            .unwrap()["IsSystemProxyEnabled"],
+        "false"
+    );
 }
 
 #[tokio::test]
@@ -3247,6 +3268,8 @@ async fn proxy_observation_does_not_retry_failed_startup_intent() {
     values.insert("SystemProxyModeIndex".into(), "pac".into());
     repository.save(&namespace, &values).unwrap();
     let mut owner = actor(paths);
+    #[cfg(target_os = "macos")]
+    owner.system_proxy.refresh_network().unwrap();
     // Startup can leave the core ready and OS application failed. Poll must only
     // observe; attempting to apply here would require a running child/API again.
     owner.snapshot.phase = Phase::Ready;
@@ -3261,6 +3284,45 @@ async fn proxy_observation_does_not_retry_failed_startup_intent() {
             .get("IsSystemProxyEnabled")
             .map(String::as_str),
         Some("true")
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn offline_proxy_restore_is_deferred_and_reconnect_checks_kernel_readiness() {
+    let (_root, paths) = fixture(None);
+    let repository = Repository::open(paths.clone()).unwrap();
+    crate::preferences::initialize(&repository).unwrap();
+    let namespace = crate::storage::Namespace::parse("sysproxy").unwrap();
+    let mut values =
+        crate::preferences::values(&repository, crate::preferences::SettingsKind::SysProxy)
+            .unwrap();
+    values.insert("IsSystemProxyEnabled".into(), "true".into());
+    repository.save(&namespace, &values).unwrap();
+    let mut owner = actor(paths);
+    owner.snapshot.phase = Phase::Ready;
+    owner.system_proxy.network_probe = Some(|| None);
+    owner.sync_system_proxy().await.unwrap();
+    for _ in 0..3 {
+        owner.poll_system_proxy().await.unwrap();
+    }
+    assert!(!owner.system_proxy.automatic_suspended());
+    assert_eq!(owner.snapshot.system_proxy.enabled(), None);
+
+    // Returning online must enter the readiness check rather than mark the
+    // proxy enabled or write to an unconfirmed listener. No child exists here.
+    owner.system_proxy.network_probe = Some(|| Some("wifi".into()));
+    assert!(
+        owner
+            .poll_system_proxy()
+            .await
+            .unwrap_err()
+            .contains("未就绪")
+    );
+    assert_eq!(
+        crate::preferences::values(&repository, crate::preferences::SettingsKind::SysProxy,)
+            .unwrap()["IsSystemProxyEnabled"],
+        "true"
     );
 }
 

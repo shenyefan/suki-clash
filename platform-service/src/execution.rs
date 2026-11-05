@@ -193,3 +193,103 @@ fn open_coordination_file(path: &Path) -> Result<File> {
 #[cfg(windows)]
 #[path = "execution_windows_lock.rs"]
 mod windows_lock;
+
+/// Stop only the owned child. Unix gives Mihomo time to release TUN/DNS resources;
+/// Windows uses the process handle. Always confirm exit before releasing ownership.
+pub async fn stop_child(
+    child: &mut tokio::process::Child,
+    grace: std::time::Duration,
+) -> std::io::Result<()> {
+    if child.try_wait()?.is_some() {
+        return Ok(());
+    }
+    #[cfg(not(unix))]
+    let _ = grace;
+    #[cfg(unix)]
+    if let Some(pid) = child.id().and_then(|pid| i32::try_from(pid).ok())
+        && !grace.is_zero()
+    {
+        if unsafe { platform_lib::kill(pid, platform_lib::SIGTERM) } == 0 {
+            match tokio::time::timeout(grace, child.wait()).await {
+                Ok(result) => return result.map(|_| ()),
+                Err(_) => log::warn!("Owned core did not exit after SIGTERM; forcing termination"),
+            }
+        } else {
+            log::warn!(
+                "Cannot signal owned core: {}",
+                std::io::Error::last_os_error()
+            );
+        }
+    }
+    child.start_kill()?;
+    tokio::time::timeout(std::time::Duration::from_secs(2), child.wait())
+        .await
+        .map_err(|_| {
+            std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "core exit was not confirmed after termination",
+            )
+        })?
+        .map(|_| ())
+}
+
+#[cfg(all(test, unix))]
+mod child_shutdown_tests {
+    use super::stop_child;
+    use std::{os::unix::process::ExitStatusExt, process::Stdio, time::Duration};
+    use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
+
+    #[tokio::test]
+    async fn owned_child_gets_time_to_run_exit_cleanup_and_can_be_stopped_twice() {
+        let mut child = tokio::process::Command::new("/bin/sh")
+            .args([
+                "-c",
+                "trap 'echo cleaned; exit 0' TERM; echo ready; while :; do :; done",
+            ])
+            .stdout(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        let mut output = BufReader::new(child.stdout.take().unwrap());
+        let mut ready = String::new();
+        tokio::time::timeout(Duration::from_secs(2), output.read_line(&mut ready))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(ready.trim(), "ready");
+        stop_child(&mut child, Duration::from_secs(1))
+            .await
+            .unwrap();
+        assert!(child.wait().await.unwrap().success());
+        let mut cleanup = String::new();
+        output.read_to_string(&mut cleanup).await.unwrap();
+        assert_eq!(cleanup.trim(), "cleaned");
+        stop_child(&mut child, Duration::from_secs(1))
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn child_ignoring_term_is_killed_and_reaped_after_the_grace_period() {
+        let mut child = tokio::process::Command::new("/bin/sh")
+            .args(["-c", "trap '' TERM; echo ready; exec /bin/sleep 60"])
+            .stdout(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        let mut output = BufReader::new(child.stdout.take().unwrap());
+        let mut ready = String::new();
+        tokio::time::timeout(Duration::from_secs(2), output.read_line(&mut ready))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(ready.trim(), "ready");
+        stop_child(&mut child, Duration::from_millis(20))
+            .await
+            .unwrap();
+        assert_eq!(
+            child.wait().await.unwrap().signal(),
+            Some(platform_lib::SIGKILL)
+        );
+    }
+}

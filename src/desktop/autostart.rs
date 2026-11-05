@@ -4,13 +4,16 @@
 mod windows;
 #[cfg(all(not(windows), not(test)))]
 fn registration() -> Result<auto_launch::AutoLaunch, String> {
-    let executable = std::env::current_exe().map_err(|error| error.to_string())?;
+    let executable = super::executable()?;
     let path = executable.to_str().ok_or("程序路径不是有效 UTF-8")?;
     let mut builder = auto_launch::AutoLaunchBuilder::new();
     builder
         .set_app_name("Suki Clash")
-        .set_app_path(path)
         .set_args(&["--autostart"]);
+    #[cfg(target_os = "linux")]
+    builder.set_app_path(&super::desktop_command(path)?);
+    #[cfg(not(target_os = "linux"))]
+    builder.set_app_path(path);
     #[cfg(target_os = "macos")]
     builder.set_macos_launch_mode(auto_launch::MacOSLaunchMode::LaunchAgent);
     builder.build().map_err(|error| error.to_string())

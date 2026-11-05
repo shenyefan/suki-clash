@@ -1,37 +1,38 @@
 {
-  "checked_at": "2026-11-03T14:27:48+08:00",
+  "checked_at": "2026-11-05T13:37:30+08:00",
   "repository": "https://github.com/clash-verge-rev/clash-verge-rev",
   "local": {
     "directory": "clash-verge-rev-dev",
-    "declared_version": "2.5.10",
-    "git_commit": "5b7e876ab0332620e100bf826fc84f20f1658acd",
+    "declared_version": "2.6.0",
+    "git_commit": "b9ab3b2015fec1acaeddd5a59ae913ecc54fc184",
     "git_identity_note": "Independent official Git clone; dev tracks origin/dev; working tree clean at synchronization.",
-    "snapshot_sha256": "d5fad25da65a4e7a6e1e16323f24c1027786f0b9c30bb8b3c11528e4be6ade1a",
-    "snapshot_entries": 751,
-    "snapshot_algorithm": "Sorted relative-path NUL kind NUL SHA256(file bytes) or symlink target LF; excludes .git/node_modules/target/dist/.cache path components.",
+    "snapshot_sha256": "b65d4768bb353aa53aeb48588bc8a1596e64a0ada38bdb45b59b930f160bac4d",
+    "snapshot_entries": 748,
+    "snapshot_algorithm": "Git-tracked paths sorted by UTF-8 bytes; relative-path NUL Git-mode NUL SHA256(file bytes or symlink target bytes) LF. Local worktree bytes; excludes untracked files.",
     "key_file_sha256": {
-      "package.json": "0c428b63ee7d7ff31eaa0415e8661d2dbdf81e3e464a58077b906bb33a575b73",
-      "src-tauri/tauri.conf.json": "ed5970a200b5dcb7202a917b56b79f650d98fd24098ba1bee77f176a52b9d409",
-      "src-tauri/Cargo.toml": "463719531477579b3bde3b8eb37cb64a89e4990da420a06579ee8da024872c58",
-      "Cargo.lock": "0d73d95386162b536ce049c0c26a40e267c021a485ddf17e3c7102f8254e9565",
-      "Changelog.md": "90254728fe59224426dc5f63cb1756c7efd5f0e85becbf54d342429e83f7971c",
+      "package.json": "fef86fa10de4f6b64801fdea7e3d0336e922c77089771a3d2a3d1a0e5ef01383",
+      "src-tauri/tauri.conf.json": "69b174edaaa317047cc1744efba7d3d9a30e9e348e1f7712b41aad8572eb336e",
+      "src-tauri/Cargo.toml": "a79a26038b0e6e2a3f7a29a7936f7009de8b914e38a5ce2f23412ce0756da683",
+      "Cargo.lock": "752a113260f9613b626200f64a599f310a15fceb56b0e0b4816cbc62d770e214",
+      "Changelog.md": "bc13ef0c1a52096188d40182e660b2d8aff76c62e86fae8525f0a14ea1d7b47d",
       "src-tauri/src/core/runtime_bundle.rs": "eeb22264740e26d5051df9528ca625fe2cdb779950faf39333f42fa7bb63768e",
-      "src-tauri/src/core/service.rs": "b06882e4eee76b59517aa231773d510ad50fec3be5608f4d451155a6533c8b60"
+      "src-tauri/src/core/service.rs": "686bf9806250851a7c3dd7097b5c3becf48a38ac52a9affe251e6d3a72656177"
     },
     "branch": "dev"
   },
   "upstream": {
     "stable": {
-      "version": "2.5.9",
-      "tag": "v2.5.9",
-      "commit": "160bb4fe8eaef2bc626163d89622229e5d7c5b59",
-      "published_at": "2026-11-02T10:09:17Z"
+      "version": "2.5.10",
+      "tag": "v2.5.10",
+      "commit": "c83f7ad529c7c9cb3d2d54a0955ef8c1b22a411b",
+      "release_url": "https://github.com/clash-verge-rev/clash-verge-rev/releases/tag/v2.5.10",
+      "verification_note": "GitHub releases/latest resolved to v2.5.10 on 2026-11-05; release page identifies c83f7ad. No local tag fetched."
     },
     "development": {
       "branch": "dev",
-      "version": "2.5.10",
-      "commit": "5b7e876ab0332620e100bf826fc84f20f1658acd",
-      "commit_date": "2026-11-03T01:34:16Z",
+      "version": "2.6.0",
+      "commit": "b9ab3b2015fec1acaeddd5a59ae913ecc54fc184",
+      "commit_date": "2026-11-04T22:56:57Z",
       "service_dependency": {
         "version": "2.7.7",
         "commit": "3ed29700b093190b5e7addcaa892e77f172af544"
@@ -77,6 +78,37 @@
       "date": "2026-11-03",
       "action": "Implemented Suki adaptations U01 SSH key assets, U02 Geo readback, U03 global-mode groups; service protocol revision 9. Reference commit unchanged.",
       "report": "cv-update-comparison-2026-11-03.md"
+    },
+    {
+      "date": "2026-11-05",
+      "action": "Fast-forwarded clean reference dev and compared 27 upstream commits; independently fixed macOS offline/network-service proxy restoration in Suki. Historical audit coverage is unchanged.",
+      "before": {
+        "directory": "clash-verge-rev-dev",
+        "declared_version": "2.5.10",
+        "git_commit": "5b7e876ab0332620e100bf826fc84f20f1658acd",
+        "git_identity_note": "Independent official Git clone; dev tracks origin/dev; working tree clean at synchronization.",
+        "snapshot_sha256": "d5fad25da65a4e7a6e1e16323f24c1027786f0b9c30bb8b3c11528e4be6ade1a",
+        "snapshot_entries": 751,
+        "snapshot_algorithm": "Sorted relative-path NUL kind NUL SHA256(file bytes) or symlink target LF; excludes .git/node_modules/target/dist/.cache path components.",
+        "key_file_sha256": {
+          "package.json": "0c428b63ee7d7ff31eaa0415e8661d2dbdf81e3e464a58077b906bb33a575b73",
+          "src-tauri/tauri.conf.json": "ed5970a200b5dcb7202a917b56b79f650d98fd24098ba1bee77f176a52b9d409",
+          "src-tauri/Cargo.toml": "463719531477579b3bde3b8eb37cb64a89e4990da420a06579ee8da024872c58",
+          "Cargo.lock": "0d73d95386162b536ce049c0c26a40e267c021a485ddf17e3c7102f8254e9565",
+          "Changelog.md": "90254728fe59224426dc5f63cb1756c7efd5f0e85becbf54d342429e83f7971c",
+          "src-tauri/src/core/runtime_bundle.rs": "eeb22264740e26d5051df9528ca625fe2cdb779950faf39333f42fa7bb63768e",
+          "src-tauri/src/core/service.rs": "b06882e4eee76b59517aa231773d510ad50fec3be5608f4d451155a6533c8b60"
+        },
+        "branch": "dev"
+      },
+      "after_commit": "b9ab3b2015fec1acaeddd5a59ae913ecc54fc184",
+      "commits": 27,
+      "changed_paths": 128,
+      "added": 0,
+      "modified": 125,
+      "deleted": 3,
+      "diff_manifest": "cv-reference-sync-2026-11-05.csv",
+      "report": "cv-update-comparison-2026-11-05.md"
     }
   ]
 }

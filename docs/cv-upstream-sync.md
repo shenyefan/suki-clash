@@ -1,15 +1,25 @@
 # CV 版本与上游同步记录
 
-核对日期：2026-11-03（北京时间）。本次已同步参考目录至官方 dev，并登记旧／新精确提交；没有修改 Suki 程序。
+核对日期：2026-11-05（北京时间）。参考目录已从 `5b7e876a` 快进到 `b9ab3b20`，开发版本声明为 2.6.0。官方稳定版为 [v2.5.10](https://github.com/clash-verge-rev/clash-verge-rev/releases/tag/v2.5.10)，并非 2.6.0。
 
-## 当前版本基线
+## 当前同步
+
+- 当前 dev：`b9ab3b2015fec1acaeddd5a59ae913ecc54fc184`，提交时间 2026-11-05 06:56:57 +08。
+- 稳定版发布页对应：`c83f7ad529c7c9cb3d2d54a0955ef8c1b22a411b`，v2.5.10。
+- 服务依赖仍为 v2.7.7／`3ed29700b093190b5e7addcaa892e77f172af544`；Suki 自有协议仍为 revision 9。
+- 本次 27 提交、128 文件（125 修改、3 删除），详见 [差异复核](cv-update-comparison-2026-11-05.md) 和 [完整路径清单](cv-reference-sync-2026-11-05.csv)。U05 macOS 离线/换网代理恢复已独立适配；U06 GLOBAL 初次默认出口记录为策略差异，未自动采用。
+- 参考工作树更新前后干净，只执行快进；本次没有替换目录或修改参考实现。旧 SHA 及摘要保留在 [JSON 历史](cv-reference-version.json)，新目录摘要使用明确记录的 Git 跟踪路径/模式/文件内容算法，历史摘要保留原算法。
+
+以下保留 2026-11-03 的历史记录，不代表当前目录或最新稳定版。
+
+## 2026-11-03 历史版本基线
 
 | 对象 | 版本与身份 | 说明 |
 | --- | --- | --- |
 | 同步前本地目录 | 2.5.9，`eefd025806f255b85e7bc28158c30fdad477935d` | 全部747个文件路径与 Git blob 完全匹配；commit 时间2026-10-26 10:04:55 +08 |
-| 当前本地 `clash-verge-rev-dev/` | 2.5.10，`5b7e876ab0332620e100bf826fc84f20f1658acd` | 独立 Git 仓库，dev 跟踪 origin/dev，工作树干净 |
-| 官方最新稳定版 | v2.5.9，`160bb4fe8eaef2bc626163d89622229e5d7c5b59` | 2026-11-02 18:09:17 +08 发布 |
-| 本次核对的 dev | 2.5.10，`5b7e876ab0332620e100bf826fc84f20f1658acd` | commit 时间 2026-11-03 09:34:16 +08；开发版，不是已发布稳定版 |
+| 当时同步后本地 `clash-verge-rev-dev/` | 2.5.10，`5b7e876ab0332620e100bf826fc84f20f1658acd` | 独立 Git 仓库，dev 跟踪 origin/dev，工作树干净 |
+| 当时官方稳定版 | v2.5.9，`160bb4fe8eaef2bc626163d89622229e5d7c5b59` | 2026-11-02 18:09:17 +08 发布 |
+| 当时核对的 dev | 2.5.10，`5b7e876ab0332620e100bf826fc84f20f1658acd` | commit 时间 2026-11-03 09:34:16 +08；当时开发版 |
 | dev 的服务依赖 | v2.7.7，`3ed29700b093190b5e7addcaa892e77f172af544` | 同步前参考依赖为 v2.7.6，当前已同步为 v2.7.7；Suki 自有协议修订不能直接用该版本号替换 |
 
 来源：[稳定版发布记录](https://github.com/clash-verge-rev/clash-verge-rev/releases/tag/v2.5.9)、[dev 固定提交的版本文件](https://github.com/clash-verge-rev/clash-verge-rev/blob/5b7e876ab0332620e100bf826fc84f20f1658acd/package.json)。机器可读基线、目录摘要、关键文件摘要和历史见 [cv-reference-version.json](cv-reference-version.json)。

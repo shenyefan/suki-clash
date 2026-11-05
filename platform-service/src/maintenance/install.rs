@@ -1,12 +1,7 @@
-#[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
-fn main() {
-    panic!("This program is not intended to run on this platform.");
-}
-
 #[cfg(all(target_os = "linux", not(test)))]
-#[path = "installer/selinux.rs"]
+#[path = "selinux.rs"]
 mod selinux;
-mod shared;
+use super::shared;
 
 use anyhow::Error;
 use anyhow::{Context as _, bail};
@@ -14,7 +9,7 @@ use sha2::{Digest as _, Sha256};
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use shared::run_command;
 
-use shared::{enter_repair_gate, run_maintenance_if_requested};
+use shared::enter_repair_gate;
 use std::fs::{File, OpenOptions};
 use std::io::Read as _;
 #[cfg(unix)]
@@ -22,20 +17,12 @@ use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
-fn main() -> Result<(), Error> {
-    if install_platform()? {
-        std::process::exit(suki_clash_service::management::FIREWALL_WARNING_EXIT_CODE as i32);
-    }
-    Ok(())
+pub(super) fn run(arguments: impl Iterator<Item = std::ffi::OsString>) -> Result<bool, Error> {
+    install_platform(parse_install_arguments(arguments)?)
 }
 
 fn bundled_service_binary() -> Result<PathBuf, Error> {
-    let source = std::env::current_exe()?.with_file_name(if cfg!(windows) {
-        "suki-clash-service.exe"
-    } else {
-        "suki-clash-service"
-    });
+    let source = std::env::current_exe()?;
     let metadata = std::fs::symlink_metadata(&source)
         .with_context(|| format!("failed to inspect bundled service binary {source:?}"))?;
     if !metadata.file_type().is_file() {
@@ -804,14 +791,7 @@ fn set_macos_permissions(path: &Path, mode: u32) -> Result<(), Error> {
 }
 
 #[cfg(target_os = "macos")]
-fn install_platform() -> Result<bool, Error> {
-    if suki_clash_service::management::prepare_install_if_requested()? {
-        return Ok(false);
-    }
-    if run_maintenance_if_requested()? {
-        return Ok(false);
-    }
-    let mut options = parse_install_arguments(std::env::args_os().skip(1))?;
+fn install_platform(mut options: InstallOptions) -> Result<bool, Error> {
     let _gate = enter_repair_gate()?;
     prepare_requested_cores(&mut options.cores)?;
     if !options.install_service {
@@ -892,14 +872,7 @@ fn install_platform() -> Result<bool, Error> {
 }
 
 #[cfg(target_os = "linux")]
-fn install_platform() -> Result<bool, Error> {
-    if suki_clash_service::management::prepare_install_if_requested()? {
-        return Ok(false);
-    }
-    if run_maintenance_if_requested()? {
-        return Ok(false);
-    }
-    let mut options = parse_install_arguments(std::env::args_os().skip(1))?;
+fn install_platform(mut options: InstallOptions) -> Result<bool, Error> {
     let _gate = enter_repair_gate()?;
     prepare_requested_cores(&mut options.cores)?;
     if !options.install_service {
@@ -945,7 +918,7 @@ fn install_platform() -> Result<bool, Error> {
 }
 
 #[cfg(windows)]
-fn install_platform() -> anyhow::Result<bool> {
+fn install_platform(mut options: InstallOptions) -> anyhow::Result<bool> {
     use platform_lib::{
         Error as WindowsServiceError,
         service::{
@@ -957,13 +930,6 @@ fn install_platform() -> anyhow::Result<bool> {
     use std::ffi::{OsStr, OsString};
     use std::{thread, time::Duration};
 
-    if suki_clash_service::management::prepare_install_if_requested()? {
-        return Ok(false);
-    }
-    if run_maintenance_if_requested()? {
-        return Ok(false);
-    }
-    let mut options = parse_install_arguments(std::env::args_os().skip(1))?;
     let _gate = enter_repair_gate()?;
     prepare_requested_cores(&mut options.cores)?;
     if !options.install_service {

@@ -40,7 +40,7 @@ jobs:
               assert os.environ["GITHUB_REF_NAME"] == "v" + version, "tag must match Cargo.toml version"
           with open(os.environ["GITHUB_OUTPUT"], "a") as output:
               output.write("version=" + version + "\n")
-      - name: Snapshot runtime assets for every architecture
+      - name: Snapshot runtime assets for release targets
         env:
           GH_TOKEN: ${{ github.token }}
         run: python packaging/runtime.py --resolve runtime-lock.json
@@ -64,18 +64,12 @@ jobs:
             target: aarch64-pc-windows-msvc
             channel: win-arm64
             msvc_arch: arm64
-          - runner: macos-15-intel
-            target: x86_64-apple-darwin
-            channel: osx-x64
           - runner: macos-15
             target: aarch64-apple-darwin
             channel: osx-arm64
           - runner: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
             channel: linux-x64
-          - runner: ubuntu-24.04-arm
-            target: aarch64-unknown-linux-gnu
-            channel: linux-arm64
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
     steps:
@@ -114,11 +108,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y clang cmake ninja-build pkg-config libfontconfig1-dev libfreetype6-dev libxkbcommon-dev libxkbcommon-x11-dev libxcb1-dev libxcb-xkb-dev libwayland-dev libssl-dev libasound2-dev libudev-dev libvulkan-dev libgit2-dev patchelf file
-          if [ "${{ matrix.channel }}" = "linux-arm64" ]; then
-            sudo apt-get install -y libfuse2t64
-          else
-            sudo apt-get install -y libfuse2
-          fi
+          sudo apt-get install -y libfuse2
       - name: Install pinned Velopack CLI
         shell: bash
         run: dotnet tool install vpk --version "$VELOPACK_VERSION" --tool-path .tools
@@ -133,8 +123,8 @@ jobs:
         run: python -m unittest discover -s packaging -p 'test_*.py'
       - name: Build application
         run: cargo build --locked --release --target ${{ matrix.target }} --bin suki-clash
-      - name: Build service and management tools
-        run: cargo build --locked --release --manifest-path platform-service/Cargo.toml --target ${{ matrix.target }} --features standalone,client --bin suki-clash-service --bin suki-clash-service-install --bin suki-clash-service-uninstall
+      - name: Build service with integrated maintenance
+        run: cargo build --locked --release --manifest-path platform-service/Cargo.toml --target ${{ matrix.target }} --features standalone,client --bin suki-clash-service
       - name: Prepare optional signing identities
         env:
           SUKI_WINDOWS_CERTIFICATE_P12: ${{ secrets.SUKI_WINDOWS_CERTIFICATE_P12 }}
@@ -175,26 +165,60 @@ jobs:
         with:
           pattern: packages-*
           path: packages
-      - name: Assemble all architectures without overwriting feeds
+      - name: Assemble user downloads and release description
         shell: python
         run: |
-          import pathlib, shutil
+          import json, pathlib, shutil
           output = pathlib.Path("Releases")
           output.mkdir()
-          for source in pathlib.Path("packages").glob("*/*"):
-              target = output / source.name
-              assert not target.exists(), "duplicate release asset: " + source.name
-              shutil.copy2(source, target)
-          assert len(list(output.glob("releases.*.json"))) == 6, "all six architecture feeds are required"
+          downloads = {
+              "win-x64": ("Windows x64", ("Setup.exe", "Portable.zip")),
+              "win-arm64": ("Windows ARM64", ("Setup.exe", "Portable.zip")),
+              "osx-arm64": ("macOS Apple Silicon", ("Setup.pkg", "Portable.zip")),
+              "linux-x64": ("Linux x64", ("AppImage",)),
+          }
+          notes = [
+              "## 下载", "",
+              "按系统和架构选择下方附件。Windows 提供安装版和免安装压缩包；macOS 提供安装包和应用压缩包；Linux 提供 AppImage。", "",
+              "| 平台 | 文件 | 签名状态 |", "| --- | --- | --- |",
+          ]
+          for channel, (label, formats) in downloads.items():
+              source = pathlib.Path("packages") / ("packages-" + channel)
+              metadata = json.loads((source / f"build.{channel}.json").read_text())
+              status = ("已签名并公证" if channel.startswith("osx") else "已签名") if metadata["signed"] else "未签名"
+              for suffix in formats:
+                  name = f"SukiClash-{channel}" + ("." if suffix == "AppImage" else "-") + suffix
+                  package = source / name
+                  if not package.is_file() or package.stat().st_size == 0:
+                      raise ValueError("missing or empty release package: " + str(package))
+                  shutil.copy2(package, output / name)
+                  notes.append(f"| {label} | `{name}` | {status} |")
+          notes.extend([
+              "", "## 使用说明", "",
+              "- 已内置 Mihomo 内核和 Geo 数据。",
+              "- 免安装版的用户配置仍保存在系统应用目录；TUN 需要相应服务与权限。",
+              "- Linux 下载后需为 AppImage 添加执行权限。",
+              "- 此版本通过下载安装包或压缩包手动升级。", "",
+          ])
+          pathlib.Path("release-notes.md").write_text("\n".join(notes), encoding="utf-8")
       - name: Create or update one draft GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
-          if gh release view "$RELEASE_TAG" --json isDraft > release.json; then
+          gh api "repos/$GH_REPO/releases/generate-notes" -f tag_name="$RELEASE_TAG" --jq .body >> release-notes.md
+          if gh release view "$RELEASE_TAG" --json isDraft,assets > release.json; then
             python3 -c 'import json; assert json.load(open("release.json"))["isDraft"], "refusing to change a published release"'
+            gh release edit "$RELEASE_TAG" --title "Suki Clash $RELEASE_TAG" --notes-file release-notes.md
+            python3 - <<'PYTHON'
+          import json, os, pathlib, subprocess
+          expected = {path.name for path in pathlib.Path("Releases").iterdir()}
+          for asset in json.loads(pathlib.Path("release.json").read_text())["assets"]:
+              if asset["name"] not in expected:
+                  subprocess.run(["gh", "release", "delete-asset", os.environ["RELEASE_TAG"], asset["name"], "--yes"], check=True)
+          PYTHON
           else
-            gh release create "$RELEASE_TAG" --verify-tag --draft --title "Suki Clash $RELEASE_TAG" --notes "Multi-platform candidate packages. Review build.*.json signing status and complete native installation/update acceptance before publishing."
+            gh release create "$RELEASE_TAG" --verify-tag --draft --title "Suki Clash $RELEASE_TAG" --notes-file release-notes.md
           fi
           gh release upload "$RELEASE_TAG" Releases/* --clobber

@@ -116,13 +116,13 @@ pub fn sha256_file(path: &Path) -> Result<String> {
 }
 
 pub fn install(
-    installer: &Path,
+    service: &Path,
     cores: &[CoreSource],
     core_only: bool,
     gid: Option<u32>,
     prompt: &str,
 ) -> Result<InstallationOutcome> {
-    let mut command = Command::new(installer);
+    let mut command = Command::new(service);
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt as _;
@@ -141,21 +141,24 @@ pub fn install(
     }
     let output = command
         .output()
-        .context("failed to launch the service installer")?;
+        .context("failed to launch service installation")?;
     installation_result(output)
 }
 
 #[cfg(feature = "client")]
-pub fn uninstall(tool: &Path) -> Result<()> {
+pub fn uninstall(service: &Path) -> Result<()> {
+    let staging = Staging::new()?;
+    let service = stage_service(service, &staging)?;
+    let arguments = [OsString::from("--uninstall")];
     #[cfg(unix)]
     let warning = elevate(
-        tool,
-        &[],
+        &service,
+        &arguments,
         unsafe { platform_lib::getegid() },
         "卸载 Suki Clash 后台服务",
     )?;
     #[cfg(windows)]
-    let warning = elevate(tool, &[], "卸载 Suki Clash 后台服务")?;
+    let warning = elevate(&service, &arguments, "卸载 Suki Clash 后台服务")?;
     anyhow::ensure!(
         !warning,
         "uninstaller returned an installation warning code"
@@ -223,6 +226,15 @@ impl Staging {
     }
 }
 
+#[cfg(feature = "client")]
+fn stage_service(service: &Path, staging: &Staging) -> Result<PathBuf> {
+    let target = staging
+        .0
+        .join(service.file_name().context("service has no name")?);
+    std::fs::copy(service, &target).context("failed to stage the service executable")?;
+    Ok(target)
+}
+
 #[cfg(any(feature = "client", test))]
 struct PreparedCores {
     staging: Staging,
@@ -235,11 +247,10 @@ impl PreparedCores {
     fn new(cores: &[CoreSource], core_only: bool) -> Result<Self> {
         let staging = Staging::new()?;
         let mut requirements = Vec::new();
-        let mut elevated: Vec<OsString> = if core_only {
-            Vec::new()
-        } else {
-            vec!["--install-service".into()]
-        };
+        let mut elevated: Vec<OsString> = vec!["--install".into()];
+        if !core_only {
+            elevated.push("--install-service".into());
+        }
         for core in cores {
             anyhow::ensure!(
                 [
@@ -288,13 +299,9 @@ impl PreparedCores {
     }
 }
 
-/// Called by the installer before any privileged maintenance or argument parsing.
+/// Called by the service executable before starting its daemon runtime.
 #[cfg(feature = "client")]
-pub fn prepare_install_if_requested() -> Result<bool> {
-    let mut arguments = std::env::args_os().skip(1);
-    if arguments.next().as_deref() != Some(std::ffi::OsStr::new("--prepare-install")) {
-        return Ok(false);
-    }
+pub fn prepare_install(mut arguments: impl Iterator<Item = OsString>) -> Result<()> {
     let mut cores = Vec::new();
     let mut ensure = false;
     let mut core_only = false;
@@ -337,11 +344,7 @@ pub fn prepare_install_if_requested() -> Result<bool> {
             _ => bail!("unknown preparation argument: {argument:?}"),
         }
     }
-    let installer = std::env::current_exe()?;
-    let service = installer.with_file_name(format!(
-        "suki-clash-service{}",
-        std::env::consts::EXE_SUFFIX
-    ));
+    let service = std::env::current_exe()?;
     let PreparedCores {
         staging,
         requirements,
@@ -368,7 +371,7 @@ pub fn prepare_install_if_requested() -> Result<bool> {
             .is_ok_and(|status| verified(&status))
     {
         write_installation_result(false, std::io::stdout().lock())?;
-        return Ok(true);
+        return Ok(());
     }
     #[cfg(windows)]
     let elevated = {
@@ -378,27 +381,17 @@ pub fn prepare_install_if_requested() -> Result<bool> {
         }
         arguments
     };
-    // Both executables must be beside each other; a temporary copy also avoids macOS TCC paths.
-    let staged_installer = staging
-        .0
-        .join(installer.file_name().context("installer has no name")?);
-    std::fs::copy(&installer, &staged_installer)?;
-    if !core_only {
-        std::fs::copy(
-            &service,
-            staging
-                .0
-                .join(service.file_name().context("service has no name")?),
-        )?;
-    }
+    // One executable performs maintenance and becomes the installed daemon.
+    // A temporary copy also avoids macOS TCC paths and Windows image locks.
+    let staged_service = stage_service(&service, &staging)?;
     #[cfg(unix)]
-    let warning = elevate(&staged_installer, &elevated, gid, &prompt)?;
+    let warning = elevate(&staged_service, &elevated, gid, &prompt)?;
     #[cfg(windows)]
-    let warning = elevate(&staged_installer, &elevated, &prompt)?;
+    let warning = elevate(&staged_service, &elevated, &prompt)?;
     // Core-only publication is verified by the privileged installer and must also work offline.
     if core_only {
         write_installation_result(warning, std::io::stdout().lock())?;
-        return Ok(true);
+        return Ok(());
     }
     let status = runtime
         .block_on(crate::client::inspect_installation_with_digest(
@@ -412,7 +405,7 @@ pub fn prepare_install_if_requested() -> Result<bool> {
         return Err(failure.into());
     }
     write_installation_result(warning, std::io::stdout().lock())?;
-    Ok(true)
+    Ok(())
 }
 
 #[cfg(any(all(feature = "client", target_os = "macos"), test))]
@@ -689,10 +682,26 @@ mod tests {
             Some("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")
         );
         assert_eq!(std::fs::read(plan.staging.0.join(&name))?, b"abc");
-        assert_eq!(plan.arguments[0], "--install-service");
-        assert_eq!(plan.arguments[1], "--install-core");
-        assert_eq!(plan.arguments[3], "--sha256");
-        assert_eq!(plan.arguments.len(), 5);
+        assert_eq!(plan.arguments[0], "--install");
+        assert_eq!(plan.arguments[1], "--install-service");
+        assert_eq!(plan.arguments[2], "--install-core");
+        assert_eq!(plan.arguments[4], "--sha256");
+        assert_eq!(plan.arguments.len(), 6);
+        let core_only = PreparedCores::new(
+            &[CoreSource {
+                name: name.clone(),
+                path: path.clone(),
+            }],
+            true,
+        )?;
+        assert_eq!(core_only.arguments[0], "--install");
+        assert_eq!(core_only.arguments[1], "--install-core");
+        assert!(
+            !core_only
+                .arguments
+                .iter()
+                .any(|arg| arg == "--install-service")
+        );
         let staged = plan.staging.0.clone();
         drop(plan);
         assert!(!staged.exists());
@@ -707,6 +716,36 @@ mod tests {
             )
             .is_err()
         );
+        Ok(())
+    }
+
+    #[cfg(feature = "client")]
+    #[test]
+    fn maintenance_stages_one_service_copy_independent_of_the_source() -> Result<()> {
+        let source = Staging::new()?;
+        let executable = source.0.join(format!(
+            "suki-clash-service{}",
+            std::env::consts::EXE_SUFFIX
+        ));
+        std::fs::write(&executable, b"service and maintenance")?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755))?;
+        }
+        let staged = Staging::new()?;
+        let target = stage_service(&executable, &staged)?;
+        std::fs::remove_file(&executable)?;
+        assert_eq!(std::fs::read(&target)?, b"service and maintenance");
+        assert_eq!(std::fs::read_dir(&staged.0)?.count(), 1);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            assert_ne!(std::fs::metadata(&target)?.permissions().mode() & 0o111, 0);
+        }
+        let directory = staged.0.clone();
+        drop(staged);
+        assert!(!directory.exists());
         Ok(())
     }
 
