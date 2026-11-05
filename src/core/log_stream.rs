@@ -41,8 +41,10 @@ fn line(bytes: &[u8]) -> Result<String, String> {
     if bytes.len() > 64 * 1024 {
         return Err("内核日志消息超过 64 KiB".into());
     }
-    let log: Log = serde_json::from_slice(bytes).map_err(|_| "内核日志响应无效")?;
-    let payload = serde_json::to_string(&log.payload).map_err(|_| "无法编码内核日志")?;
+    let log: Log = serde_json::from_slice(bytes)
+        .map_err(|error| crate::logging::diagnostic_error("内核日志响应无效", error))?;
+    let payload = serde_json::to_string(&log.payload)
+        .map_err(|error| crate::logging::diagnostic_error("无法编码内核日志", error))?;
     Ok(format!(
         "level={} msg={payload}",
         Level::parse(&log.level).label().to_ascii_lowercase()

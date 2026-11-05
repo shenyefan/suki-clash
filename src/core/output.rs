@@ -25,7 +25,10 @@ pub(super) fn capture(
     let task = tokio::spawn(async move {
         let mut output = Output::new(feed, suppressed);
         match Sink::new(&paths, Source::Core, limits.0, limits.1) {
-            Ok(sink) => output.sink = Some(sink),
+            Ok(sink) => {
+                output.feed.track(&sink);
+                output.sink = Some(sink);
+            }
             Err(error) => output.fail(format!("无法创建内核日志文件：{error}")),
         }
         let (mut stdout, mut stderr) = (stdout, stderr);
@@ -45,11 +48,11 @@ pub(super) fn capture(
                     }
                 },
                 result=stdout.read(&mut out_buffer),if !out_done=>{
-                    let count=result.map_err(|_|"读取内核标准输出失败")?; out_done=count==0;
+                    let count=result.map_err(|error| crate::logging::diagnostic_error("读取内核标准输出失败", error))?; out_done=count==0;
                     out.append(&mut output,&out_buffer[..count],out_done,&updates.borrow().0,false);
                 },
                 result=stderr.read(&mut err_buffer),if !err_done=>{
-                    let count=result.map_err(|_|"读取内核错误输出失败")?; err_done=count==0;
+                    let count=result.map_err(|error| crate::logging::diagnostic_error("读取内核错误输出失败", error))?; err_done=count==0;
                     err.append(&mut output,&err_buffer[..count],err_done,&updates.borrow().0,true);
                 },
             }
@@ -79,7 +82,10 @@ impl Output {
     pub(super) fn configure(&mut self, paths: &AppPaths, limits: (u32, u64)) {
         if self.sink.is_none() {
             match Sink::new(paths, Source::Core, limits.0, limits.1) {
-                Ok(sink) => self.sink = Some(sink),
+                Ok(sink) => {
+                    self.feed.track(&sink);
+                    self.sink = Some(sink);
+                }
                 Err(error) => self.fail(format!("无法创建内核日志文件：{error}")),
             }
         } else if let Some(sink) = &mut self.sink

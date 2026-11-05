@@ -39,7 +39,7 @@ fn main() {
         .set_auto_apply_on_startup(false)
         .run();
     let (instance, instance_error) = match integration::AppPaths::discover()
-        .map_err(|error| error.to_string())
+        .map_err(crate::logging::error_message)
         .and_then(|paths| {
             desktop::instance::Service::acquire(
                 &paths,
@@ -65,6 +65,8 @@ fn main() {
         },
         Err(error) => integration::Service::unavailable(None, error.to_string()),
     };
+    service.enable_logging();
+    logging::install_panic_hook();
     let url_sender = instance.as_ref().map(|instance| instance.sender.clone());
     let application = application().with_assets(assets::AllAssets);
     application.on_open_urls(move |urls| {

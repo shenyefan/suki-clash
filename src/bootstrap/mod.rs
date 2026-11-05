@@ -36,7 +36,8 @@ pub(crate) fn target() -> String {
 }
 
 pub(crate) fn bundle_directory() -> Result<PathBuf, String> {
-    let executable = std::env::current_exe().map_err(|_| "无法定位应用安装目录")?;
+    let executable = std::env::current_exe()
+        .map_err(|error| crate::logging::diagnostic_error("无法定位应用安装目录", error))?;
     bundle_beside(&executable)
 }
 fn bundle_beside(executable: &Path) -> Result<PathBuf, String> {
@@ -57,7 +58,10 @@ fn plain_file(path: &Path) -> Result<Option<fs::Metadata>, String> {
         Ok(meta) if meta.is_file() && !meta.file_type().is_symlink() => Ok(Some(meta)),
         Ok(_) => Err("资源位置包含符号链接、目录或特殊文件".into()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(_) => Err("无法检查资源文件".into()),
+        Err(error) => Err(crate::logging::diagnostic_error(
+            "无法检查资源文件".into(),
+            error,
+        )),
     }
 }
 
@@ -70,7 +74,9 @@ pub(crate) fn prepare(
     bundle: &Path,
     cancelled: impl Fn() -> bool,
 ) -> Result<(), String> {
-    paths.create().map_err(|_| "无法创建应用资源目录")?;
+    paths
+        .create()
+        .map_err(|error| crate::logging::diagnostic_error("无法创建应用资源目录", error))?;
     let root = paths.directory(DirectoryKind::Core);
     let names = [core_name(), GEO[0], GEO[1], GEO[2], GEO[3]];
     // Existing files can be newer/user supplied. Do not replace them from the
@@ -101,7 +107,8 @@ pub(crate) fn prepare(
         return Err("运行资源清单超过上限".into());
     }
     let bytes = read_bounded(&manifest_path, 64 * 1024)?;
-    let manifest: Manifest = serde_json::from_slice(&bytes).map_err(|_| "运行资源清单格式无效")?;
+    let manifest: Manifest = serde_json::from_slice(&bytes)
+        .map_err(|error| crate::logging::diagnostic_error("运行资源清单格式无效", error))?;
     if manifest.version != 1 || manifest.target != target() || manifest.assets.len() != names.len()
     {
         return Err("运行资源清单版本、平台或文件数量不匹配".into());
@@ -169,10 +176,12 @@ fn install(
     if metadata.len() != asset.size {
         return Err(format!("{} 文件长度校验失败", asset.name));
     }
-    let mut input = fs::File::open(source).map_err(|_| format!("无法读取 {}", asset.name))?;
+    let mut input = fs::File::open(source).map_err(|error| {
+        crate::logging::diagnostic_error(format!("无法读取 {}", asset.name), error)
+    })?;
     let directory = destination.parent().ok_or("资源目标没有父目录")?;
-    let mut temporary =
-        tempfile::NamedTempFile::new_in(directory).map_err(|_| "无法创建资源临时文件")?;
+    let mut temporary = tempfile::NamedTempFile::new_in(directory)
+        .map_err(|error| crate::logging::diagnostic_error("无法创建资源临时文件", error))?;
     let mut digest = Sha256::new();
     let mut size = 0u64;
     let mut chunk = [0u8; 64 * 1024];
@@ -180,9 +189,9 @@ fn install(
         if cancelled() {
             return Err("资源准备已取消".into());
         }
-        let read = input
-            .read(&mut chunk)
-            .map_err(|_| format!("读取 {} 失败", asset.name))?;
+        let read = input.read(&mut chunk).map_err(|error| {
+            crate::logging::diagnostic_error(format!("读取 {} 失败", asset.name), error)
+        })?;
         if read == 0 {
             break;
         }
@@ -193,7 +202,7 @@ fn install(
         digest.update(&chunk[..read]);
         temporary
             .write_all(&chunk[..read])
-            .map_err(|_| "写入资源临时文件失败")?;
+            .map_err(|error| crate::logging::diagnostic_error("写入资源临时文件失败", error))?;
     }
     if size != asset.size
         || digest
@@ -216,12 +225,12 @@ fn install(
         temporary
             .as_file()
             .set_permissions(fs::Permissions::from_mode(mode))
-            .map_err(|_| "无法设置资源文件权限")?;
+            .map_err(|error| crate::logging::diagnostic_error("无法设置资源文件权限", error))?;
     }
     temporary
         .as_file()
         .sync_all()
-        .map_err(|_| "无法同步资源文件")?;
+        .map_err(|error| crate::logging::diagnostic_error("无法同步资源文件", error))?;
     if cancelled() {
         return Err("资源准备已取消".into());
     }
@@ -235,16 +244,20 @@ fn install(
                 _ => Err("资源文件在安装时发生变化，请关闭应用并检查安装文件".into()),
             }
         }
-        Err(_) => Err(format!("无法安装 {}", asset.name)),
+        Err(error) => Err(crate::logging::diagnostic_error(
+            format!("无法安装 {}", asset.name),
+            error,
+        )),
     }
 }
 
 fn read_bounded(path: &Path, limit: u64) -> Result<Vec<u8>, String> {
-    let file = fs::File::open(path).map_err(|_| "无法读取资源清单")?;
+    let file = fs::File::open(path)
+        .map_err(|error| crate::logging::diagnostic_error("无法读取资源清单", error))?;
     let mut bytes = Vec::new();
     file.take(limit + 1)
         .read_to_end(&mut bytes)
-        .map_err(|_| "读取资源清单失败")?;
+        .map_err(|error| crate::logging::diagnostic_error("读取资源清单失败", error))?;
     if bytes.len() as u64 > limit {
         return Err("资源清单超过上限".into());
     }

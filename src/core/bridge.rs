@@ -221,7 +221,7 @@ fn install(service: Option<Service>, snapshot: Snapshot, cx: &mut App) {
                                 if *sequence > this.delay_log_sequence {
                                     this.delay_log_sequence = *sequence;
                                     crate::integration::announce_module(
-                                        if *failed == 0 { "DEBUG" } else { "WARNING" },
+                                        if *failed == 0 { "INFO" } else { "WARNING" },
                                         "proxies",
                                         format!("测速完成，{count} 项，{failed} 项失败"),
                                         cx,
@@ -392,6 +392,7 @@ pub(crate) fn request(command: Command, window: &mut Window, cx: &mut App) {
 }
 
 pub(crate) fn submit(command: Command, window: &mut Window, cx: &mut App) -> Result<u64, String> {
+    let operation = command.operation();
     let owner = controller(cx);
     let result = owner.update(cx, |this, cx| {
         if this.quitting.is_some() {
@@ -405,6 +406,10 @@ pub(crate) fn submit(command: Command, window: &mut Window, cx: &mut App) -> Res
         Ok::<_, super::ServiceError>(id)
     });
     result.map_err(|error| {
+        log::error!(
+            "提交操作被拒绝：{operation}；{}",
+            crate::logging::error_chain(&error)
+        );
         let message = match error {
             super::ServiceError::Closed => owner
                 .read(cx)
@@ -479,6 +484,13 @@ fn finish(exit: Exit, cx: &mut App) {
         if this.quitting.is_some() {
             return;
         }
+        let operation = match &exit {
+            Exit::Quit => "退出程序",
+            Exit::Restart => "重启程序",
+            Exit::Reset(_) => "重置程序",
+            Exit::Update(_) => "应用更新",
+        };
+        log::info!("操作开始：{operation}");
         this.quitting = Some(cx.spawn(async move |owner, cx| {
             let joined = async {
                 let installer = if let Exit::Update(expected) = &exit {
@@ -496,15 +508,20 @@ fn finish(exit: Exit, cx: &mut App) {
                     .update(cx, |this, _| {
                         this.service.as_mut().map(Service::prepare_exit).transpose()
                     })
-                    .map_err(|error| error.to_string())?;
-                if let Some(reply) = preparation.map_err(|error| error.to_string())? {
-                    reply.recv().await.map_err(|_| "内核退出准备应答中断")??;
+                    .map_err(crate::logging::error_message)?;
+                if let Some(reply) = preparation.map_err(crate::logging::error_message)? {
+                    reply.recv().await.map_err(|error| {
+                        crate::logging::diagnostic_error("内核退出准备应答中断", error)
+                    })??;
                 }
                 if let Some(flush) = cx
                     .update(crate::integration::flush)
-                    .map_err(|error| error.to_string())?
+                    .map_err(crate::logging::error_message)?
                 {
-                    flush.receive().await.map_err(|error| error.to_string())?;
+                    flush
+                        .receive()
+                        .await
+                        .map_err(crate::logging::error_message)?;
                 }
                 if let Exit::Reset(paths) = &exit {
                     let paths = paths.clone();
@@ -529,9 +546,12 @@ fn finish(exit: Exit, cx: &mut App) {
                     let replacement = cx
                         .background_spawn(async move {
                             let stopped = desktop_worker.map_or(Ok(()), |worker| {
-                                worker
-                                    .join()
-                                    .map_err(|_| "实例控制服务清理失败".to_string())
+                                worker.join().map_err(|error| {
+                                    crate::logging::diagnostic_error(
+                                        "实例控制服务清理失败".to_string(),
+                                        crate::logging::panic_message(error.as_ref()),
+                                    )
+                                })
                             });
                             let spawned = stopped.and_then(|()| {
                                 std::process::Command::new(executable)
@@ -587,6 +607,7 @@ fn finish(exit: Exit, cx: &mut App) {
                 });
                 return;
             }
+            log::info!("{operation}：清理与准备完成，正在结束执行线程");
             // All fallible preparation completed. Only now destroy owners.
             let (core_worker, storage_worker, desktop_worker) = cx.update(|cx| {
                 let core_worker = controller(cx).update(cx, |this, _| {
@@ -605,7 +626,10 @@ fn finish(exit: Exit, cx: &mut App) {
                     match worker.join() {
                         Ok(Ok(())) => {}
                         Ok(Err(error)) => errors.push(error),
-                        Err(_) => errors.push("内核执行线程异常退出".into()),
+                        Err(error) => errors.push(format!(
+                            "内核执行线程异常退出：{}",
+                            crate::logging::panic_message(error.as_ref())
+                        )),
                     }
                 }
                 if let Some(worker) = storage_worker
@@ -641,9 +665,12 @@ fn wait_session_cleanup(
     std::thread::Builder::new()
         .name("suki-session-ending".into())
         .spawn(move || {
-            let result = worker
-                .join()
-                .unwrap_or_else(|_| Err("内核清理线程异常退出".into()));
+            let result = worker.join().unwrap_or_else(|error| {
+                Err(crate::logging::diagnostic_error(
+                    "内核清理线程异常退出".into(),
+                    crate::logging::panic_message(error.as_ref()),
+                ))
+            });
             let _ = sender.send(result);
         })
         .map_err(|error| format!("无法等待内核清理：{error}"))?;

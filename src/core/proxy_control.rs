@@ -208,7 +208,9 @@ impl Actor {
             Ok::<_, String>(restored)
         })
         .await
-        .map_err(|_| "节点选择恢复已达到30秒时限，已停止".to_owned())??;
+        .map_err(|error| {
+            crate::logging::diagnostic_error("节点选择恢复已达到30秒时限，已停止".to_owned(), error)
+        })??;
         for group in restored {
             recovery.pending.remove(&group);
         }
@@ -371,7 +373,7 @@ impl Actor {
         .await;
         if let Err(error) = result {
             let old = serde_json::from_value::<ProxyMode>(serde_json::Value::String(before))
-                .map_err(|_| "旧模式无效")?;
+                .map_err(|error| crate::logging::diagnostic_error("旧模式无效", error))?;
             let api = async {
                 client.patch_mode(old).await?;
                 if client.json("/configs").await?["mode"].as_str() != Some(old.label()) {

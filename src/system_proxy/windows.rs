@@ -95,7 +95,7 @@ fn query(connection: Option<&str>) -> Result<(OsSnapshot, ConnectionSettings), S
             (String::new(), 0)
         } else {
             let url = url::Url::parse(&format!("http://{address}"))
-                .map_err(|_| "WinINET 代理地址无效")?;
+                .map_err(|error| crate::logging::diagnostic_error("WinINET 代理地址无效", error))?;
             (
                 url.host_str()
                     .unwrap_or_default()
@@ -134,7 +134,9 @@ fn query(connection: Option<&str>) -> Result<(OsSnapshot, ConnectionSettings), S
         snapshot,
         ConnectionSettings {
             flags,
-            strings: strings.try_into().map_err(|_| "WinINET 字段数量无效")?,
+            strings: strings
+                .try_into()
+                .map_err(|error| crate::logging::diagnostic_error("WinINET 字段数量无效", error))?,
         },
     ))
 }
@@ -241,8 +243,8 @@ fn connections() -> Result<Vec<Option<String>>, String> {
             .iter()
             .position(|unit| *unit == 0)
             .unwrap_or(entry.szEntryName.len());
-        let name =
-            String::from_utf16(&entry.szEntryName[..length]).map_err(|_| "RAS 连接名称编码无效")?;
+        let name = String::from_utf16(&entry.szEntryName[..length])
+            .map_err(|error| crate::logging::diagnostic_error("RAS 连接名称编码无效", error))?;
         names.push(Some(name));
     }
     Ok(names)
@@ -319,7 +321,12 @@ impl Adapter {
         let owned = if let Some(path) = &journal {
             match std::fs::read(path) {
                 Ok(bytes) => serde_json::from_slice::<Vec<(Option<String>, Vec<Target>)>>(&bytes)
-                    .map_err(|_| "系统代理恢复记录损坏，未覆盖原文件")?
+                    .map_err(|error| {
+                        crate::logging::diagnostic_error(
+                            "系统代理恢复记录损坏，未覆盖原文件",
+                            error,
+                        )
+                    })?
                     .into_iter()
                     .collect(),
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => BTreeMap::new(),
@@ -341,12 +348,13 @@ impl Adapter {
     fn persist(&self) -> Result<(), String> {
         if let Some(path) = &self.journal {
             if let Some(parent) = path.parent() {
-                std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+                std::fs::create_dir_all(parent).map_err(crate::logging::error_message)?;
             }
             crate::storage::atomic_write(
                 path,
-                &serde_json::to_vec(&self.owned.iter().collect::<Vec<_>>())
-                    .map_err(|_| "无法编码代理连接归属")?,
+                &serde_json::to_vec(&self.owned.iter().collect::<Vec<_>>()).map_err(|error| {
+                    crate::logging::diagnostic_error("无法编码代理连接归属", error)
+                })?,
             )
             .map_err(|error| format!("无法保存代理连接归属：{error}"))?;
         }

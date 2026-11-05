@@ -66,6 +66,64 @@ pub(crate) enum Command {
         refresh: bool,
     },
 }
+impl Command {
+    pub(crate) fn operation(&self) -> &'static str {
+        use crate::proxies::runtime::Action;
+        match self {
+            Self::ToggleSystemProxy => "切换系统代理",
+            Self::ToggleTun => "切换虚拟网卡",
+            Self::AutostartStatus => "读取自启动状态",
+            Self::WindowsNetwork(suki_service::windows_network::Request::List) => "读取 UWP 应用",
+            Self::WindowsNetwork(suki_service::windows_network::Request::SetLoopback {
+                ..
+            }) => "设置 UWP 回环豁免",
+            Self::WindowsNetwork(suki_service::windows_network::Request::RebuildFirewall) => {
+                "重建防火墙规则"
+            }
+            Self::PlatformService(super::privileged::Action::Install) => "安装服务",
+            Self::PlatformService(super::privileged::Action::Repair) => "修复服务",
+            Self::PlatformService(super::privileged::Action::Uninstall) => "卸载服务",
+            Self::Gist(_) => "Gist 备份操作",
+            Self::LocalBackup(_) => "本地备份操作",
+            Self::AppUpdate(_) => "应用更新操作",
+            Self::ProxyPreferences { .. } => "保存代理偏好",
+            Self::Profiles(super::ProfileCommand::Save { .. }) => "保存订阅",
+            Self::Profiles(super::ProfileCommand::Update { .. }) => "更新订阅",
+            Self::Profiles(super::ProfileCommand::Enhance { .. }) => "应用订阅增强",
+            Self::Profiles(super::ProfileCommand::Restore { .. }) => "恢复订阅",
+            Self::Overrides(_) => "覆写操作",
+            Self::ScriptLogs(_) => "读取脚本日志",
+            Self::CheckDocument { .. } => "校验文档",
+            Self::Start => "启动内核",
+            Self::Stop => "停止内核",
+            Self::PrepareExit(_) => "准备退出",
+            Self::Restart => "重启内核",
+            Self::Activate(_) => "激活订阅",
+            Self::Settings { .. } => "保存设置",
+            Self::Tunnel(_) => "修改隧道",
+            Self::Interfaces => "读取网卡",
+            Self::ProxyNames => "读取代理名称",
+            Self::Proxy(Action::Refresh) => "刷新代理",
+            Self::Proxy(Action::Mode(_)) => "切换出站模式",
+            Self::Proxy(Action::Select { .. }) => "选择节点",
+            Self::Proxy(Action::Unfix { .. }) => "取消固定节点",
+            Self::Connections(_) => "关闭连接",
+            Self::Chain(_) => "修改代理链",
+            Self::Validate => "校验配置",
+            Self::FlushFakeIp => "清空 Fake-IP 缓存",
+            Self::RuntimeConfig => "读取运行配置",
+            Self::ChainCandidates => "读取代理链候选",
+            Self::UpdateGeo => "更新 GeoData",
+            Self::UpdateDatabase(_) => "更新数据库",
+            Self::Resources => "读取外部资源",
+            Self::Rules => "读取规则",
+            Self::UpdateProviders { .. } => "更新集合",
+            Self::CheckUpdate(_) => "检查内核更新",
+            Self::Install(_) => "安装内核",
+            Self::Versions { .. } => "读取内核版本",
+        }
+    }
+}
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum ServiceError {
@@ -158,8 +216,12 @@ impl Service {
                         );
                     }
                     let _ = worker_shutdown.send(true);
-                    task.await.map_err(|_| "实时采集任务异常退出")?;
-                    log_task.await.map_err(|_| "内核日志采集任务异常退出")?;
+                    task.await.map_err(|error| {
+                        crate::logging::diagnostic_error("实时采集任务异常退出", error)
+                    })?;
+                    log_task.await.map_err(|error| {
+                        crate::logging::diagnostic_error("内核日志采集任务异常退出", error)
+                    })?;
                     result
                 })
             })?;
@@ -181,15 +243,22 @@ impl Service {
         test: crate::proxies::runtime::Test,
     ) -> Result<u64, String> {
         self.next_id = self.next_id.checked_add(1).ok_or("测速请求编号已耗尽")?;
+        log::info!(
+            "操作开始：测速；请求={}；内核代次={}；配置修订={}",
+            self.next_id,
+            test.generation,
+            test.epoch
+        );
         self.tests
             .try_send(super::delays::Request {
                 id: self.next_id,
                 test,
             })
-            .map_err(|_| "测速队列不可用")?;
+            .map_err(|error| crate::logging::diagnostic_error("测速队列不可用", error))?;
         Ok(self.next_id)
     }
     pub(crate) fn refresh_ip(&self) {
+        log::info!("操作开始：刷新出口 IP");
         self.probe_refresh
             .send_modify(|control| control.revision = control.revision.wrapping_add(1));
     }
@@ -479,7 +548,9 @@ impl Actor {
                     .directory(crate::storage::DirectoryKind::Core)
                     .join(".owner.lock"),
             )
-            .map_err(|_| "无法建立本应用内核目录所有权")?;
+            .map_err(|error| {
+                crate::logging::diagnostic_error("无法建立本应用内核目录所有权", error)
+            })?;
         if ownership.try_lock().is_err() {
             self.publish(
                 Phase::Failed,
@@ -503,8 +574,8 @@ impl Actor {
         let prepared = super::install::recover_pending(&self.paths)
             .and_then(|()| {
                 let repository = crate::storage::Repository::open(self.paths.clone())
-                    .map_err(|error| error.to_string())?;
-                crate::preferences::initialize(&repository).map_err(|error| error.to_string())
+                    .map_err(crate::logging::error_message)?;
+                crate::preferences::initialize(&repository).map_err(crate::logging::error_message)
             })
             .and_then(|()| {
                 let preferences = super::Preferences::load(&self.paths)?;
@@ -555,6 +626,11 @@ impl Actor {
                         self.health_recovery_remaining = 0;
                     }
                     self.snapshot.request_id = Some(request.id);
+                    let operation_name = request.command.operation();
+                    log::info!("请求 {} 开始：{}；内核代次={}，配置修订={}", request.id, operation_name, self.snapshot.generation, self.snapshot.monitor_epoch);
+                    if let Command::Settings { kind, patch } = &request.command {
+                        log::info!("请求 {} 设置域={}，字段={}", request.id, kind.id(), patch.keys().cloned().collect::<Vec<_>>().join(","));
+                    }
                     self.snapshot.operation_active=true;
                     self.snapshot.operation_committed=false;
                     self.snapshot.operation_module=Some(if matches!(&request.command,Command::Profiles(_)) {"profiles"} else if matches!(&request.command,Command::Overrides(_)|Command::ScriptLogs(_)){"overrides"}else {"core"});
@@ -576,11 +652,12 @@ impl Actor {
                         }
                         match request.command.clone() {
                             Command::WindowsNetwork(request)=>{
+                                self.snapshot.operation_module=Some("windows-network");
                                 #[cfg(windows)] {
                                     super::privileged::require_ready().await?;
-                                    let credentials=super::service_identity::current_owner_credentials_for_root(self.paths.data()).map_err(|error|error.to_string())?;
+                                    let credentials=super::service_identity::current_owner_credentials_for_root(self.paths.data()).map_err(crate::logging::error_message)?;
                                     let firewall=matches!(request,suki_service::windows_network::Request::RebuildFirewall);
-                                    let response=suki_service::windows_network(&credentials,request).await.map_err(|error|error.to_string())?;
+                                    let response=suki_service::windows_network(&credentials,request).await.map_err(crate::logging::error_message)?;
                                     if response.code!=0{return Err(response.message);}
                                     let apps=response.data.ok_or("服务未返回 UWP 应用列表")?;
                                     if !firewall{self.snapshot.uwp_apps=apps;}
@@ -603,7 +680,7 @@ impl Actor {
                             Command::Overrides(change)=>self.overrides(change).await,
                             Command::ScriptLogs(id)=>self.script_logs(id),
                             Command::CheckDocument {kind,content}=>{
-                                let result=if kind==crate::profiles::model::DocumentKind::JavaScript {crate::configuration::script::validate(&content)}else {crate::configuration::compose(content.as_bytes(),None,&Default::default()).map(|_|()).map_err(|error|error.to_string())};
+                                let result=if kind==crate::profiles::model::DocumentKind::JavaScript {crate::configuration::script::validate(&content)}else {crate::configuration::compose(content.as_bytes(),None,&Default::default()).map(|_|()).map_err(crate::logging::error_message)};
                                 if result.is_ok(){self.completed("配置语法有效".into());}result
                             },
                             Command::Start => self.start().await,
@@ -636,11 +713,11 @@ impl Actor {
                                 self.snapshot.runtime_yaml = Some(if let Some(running) = &self.running { running.launch.composed.clone() } else { Launch::preview(&self.paths).await?.composed });
                                 if candidates {
                                     if self.running.is_some() { self.sync_provider_cache().await?; }
-                                    let mut root:serde_yaml_ng::Value=serde_yaml_ng::from_str(self.snapshot.runtime_yaml.as_deref().ok_or("运行配置不可用")?).map_err(|_|"运行配置无效")?;
+                                    let mut root:serde_yaml_ng::Value=serde_yaml_ng::from_str(self.snapshot.runtime_yaml.as_deref().ok_or("运行配置不可用")?).map_err(|error| crate::logging::diagnostic_error("运行配置无效", error))?;
                                     let (definitions,sources,errors)=crate::proxies::chain_sources::candidates(&root,&self.paths.directory(crate::storage::DirectoryKind::Core));
                                     root["proxies"]=serde_yaml_ng::Value::Sequence(definitions.into_values().collect());
                                     self.snapshot.chain_sources=sources;
-                                    self.snapshot.runtime_yaml=Some(serde_yaml_ng::to_string(&root).map_err(|_|"无法编码链式候选配置")?);
+                                    self.snapshot.runtime_yaml=Some(serde_yaml_ng::to_string(&root).map_err(|error| crate::logging::diagnostic_error("无法编码链式候选配置", error))?);
                                     if !errors.is_empty(){self.runtime_warning=Some(crate::failure::join(&errors));}
                                 }
                                 Ok(())
@@ -675,10 +752,14 @@ impl Actor {
                     self.snapshot.operation_active=false;
                     self.snapshot.progress=None;
                     if let Err(error) = result {
+                        log::error!("请求 {} 失败：{}；已提交={}；{}", request.id, operation_name, self.snapshot.operation_committed, error);
                         // Preparation failure must preserve an existing ready child.
                         let phase = if matches!(&request.command, Command::Gist(_) | Command::LocalBackup(_) | Command::AppUpdate(_)) { self.snapshot.phase } else if self.running.is_some() && self.snapshot.phase == Phase::Ready { Phase::Ready } else { Phase::Failed };
                         self.publish(phase, Some(error));
-                    } else {self.publish(self.snapshot.phase,None);}
+                    } else {
+                        log::info!("请求 {} 完成：{}；已提交={}", request.id, operation_name, self.snapshot.operation_committed);
+                        self.publish(self.snapshot.phase,None);
+                    }
                     drop(request);
                 }
                 _ = subscription_timer.tick(), if !self.exit_prepared => {
@@ -757,7 +838,7 @@ impl Actor {
         let result = result.and(recovered);
         if let Err(error) = &result {
             self.publish(Phase::Failed, Some(format!("退出清理失败：{error}")));
-            eprintln!("退出时无法确认本应用内核进程已结束：{error}");
+            log::error!("退出时无法确认本应用内核进程已结束：{error}");
         }
         self.updates.close();
         result
@@ -923,7 +1004,10 @@ impl Actor {
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .spawn()
-            .map_err(|error| format!("无法启动内核校验：{}", error.kind()))?;
+            .map_err(|error| {
+                log::error!("无法启动内核校验；{}", crate::logging::error_chain(&error));
+                format!("无法启动内核校验：{}", error.kind())
+            })?;
         let pipe_suppressed = Default::default();
         let captured = match (validator.stdout.take(), validator.stderr.take()) {
             (Some(stdout), Some(stderr)) => Some(super::output::capture(
@@ -1106,9 +1190,8 @@ impl Actor {
         crate::bootstrap::require_core(&self.paths)?;
         let (_, key, name, file) = database.spec();
         let config: serde_yaml_ng::Value = match &self.running {
-            Some(running) => {
-                serde_yaml_ng::from_str(&running.launch.composed).map_err(|_| "运行配置无效")?
-            }
+            Some(running) => serde_yaml_ng::from_str(&running.launch.composed)
+                .map_err(|error| crate::logging::diagnostic_error("运行配置无效", error))?,
             None => serde_yaml_ng::Value::Mapping(
                 super::Preferences::load(&self.paths)?.native().clone(),
             ),
@@ -1131,9 +1214,9 @@ impl Actor {
         let directory = tempfile::Builder::new()
             .prefix("geo-validate-")
             .tempdir_in(self.paths.directory(DirectoryKind::Cache))
-            .map_err(|_| "无法创建资源校验目录")?;
+            .map_err(|error| crate::logging::diagnostic_error("无法创建资源校验目录", error))?;
         crate::storage::atomic_write(&directory.path().join(file), &bytes)
-            .map_err(|_| "无法写入资源校验文件")?;
+            .map_err(|error| crate::logging::diagnostic_error("无法写入资源校验文件", error))?;
         let launch = Launch::for_database_validation(
             &self.paths,
             directory.path().to_owned(),
@@ -1143,23 +1226,32 @@ impl Actor {
         .await?;
         drop(self.validate(launch).await?);
         let destination = self.paths.directory(DirectoryKind::Core).join(file);
-        let previous = match std::fs::symlink_metadata(&destination) {
-            Ok(metadata)
-                if metadata.is_file()
-                    && !metadata.file_type().is_symlink()
-                    && metadata.len() <= super::download::ARCHIVE_LIMIT =>
-            {
-                Some(std::fs::read(&destination).map_err(|_| "无法保留原数据库")?)
-            }
-            Ok(_) => return Err("数据库路径或大小无效".into()),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-            Err(_) => return Err("无法检查原数据库".into()),
-        };
+        let previous =
+            match std::fs::symlink_metadata(&destination) {
+                Ok(metadata)
+                    if metadata.is_file()
+                        && !metadata.file_type().is_symlink()
+                        && metadata.len() <= super::download::ARCHIVE_LIMIT =>
+                {
+                    Some(std::fs::read(&destination).map_err(|error| {
+                        crate::logging::diagnostic_error("无法保留原数据库", error)
+                    })?)
+                }
+                Ok(_) => return Err("数据库路径或大小无效".into()),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                Err(error) => {
+                    return Err(crate::logging::diagnostic_error(
+                        "无法检查原数据库".into(),
+                        error,
+                    ));
+                }
+            };
         let previous_source = self
             .running
             .as_ref()
             .map(|running| running.launch.source.clone());
-        crate::storage::atomic_write(&destination, &bytes).map_err(|_| "无法替换数据库")?;
+        crate::storage::atomic_write(&destination, &bytes)
+            .map_err(|error| crate::logging::diagnostic_error("无法替换数据库", error))?;
         if let Some(source) = previous_source {
             self.progress(&format!("加载 {name}"));
             let result = async {
@@ -1170,8 +1262,10 @@ impl Actor {
             if let Err(cause) = result {
                 let files = match previous {
                     Some(bytes) => crate::storage::atomic_write(&destination, &bytes)
-                        .map_err(|error| error.to_string()),
-                    None => std::fs::remove_file(&destination).map_err(|error| error.to_string()),
+                        .map_err(crate::logging::error_message),
+                    None => {
+                        std::fs::remove_file(&destination).map_err(crate::logging::error_message)
+                    }
                 };
                 let mut errors = vec![format!("{name} 加载失败：{cause}")];
                 if let Err(error) = files {
@@ -1404,7 +1498,7 @@ impl Actor {
                 self.fetch(selection.version_url().ok_or("发行通道无效")?, 1024)
                     .await?,
             )
-            .map_err(|_| "版本号不是 UTF-8")?
+            .map_err(|error| crate::logging::diagnostic_error("版本号不是 UTF-8", error))?
             .trim()
             .to_owned(),
         };
@@ -1439,8 +1533,8 @@ impl Actor {
                 1024 * 1024,
             )
             .await?;
-        let tags: Vec<super::release::Tag> =
-            serde_json::from_slice(&bytes).map_err(|_| "官方版本列表格式无效")?;
+        let tags: Vec<super::release::Tag> = serde_json::from_slice(&bytes)
+            .map_err(|error| crate::logging::diagnostic_error("官方版本列表格式无效", error))?;
         let mut versions = Vec::new();
         for tag in tags {
             if super::release::normalize(&tag.name).is_ok() && !versions.contains(&tag.name) {
@@ -1464,7 +1558,7 @@ impl Actor {
         let directory = tempfile::Builder::new()
             .prefix("core-install-")
             .tempdir_in(self.paths.directory(crate::storage::DirectoryKind::Cache))
-            .map_err(|_| "无法创建内核安装暂存目录")?;
+            .map_err(|error| crate::logging::diagnostic_error("无法创建内核安装暂存目录", error))?;
         let executable = directory.path().join(crate::bootstrap::core_name());
         self.staging = Some(directory);
         let unpacked = tokio::task::spawn_blocking(move || {
@@ -1475,13 +1569,15 @@ impl Actor {
             }
         })
         .await
-        .map_err(|_| "内核解包任务异常退出")??;
-        crate::storage::atomic_write(&executable, &unpacked).map_err(|_| "无法写入暂存内核")?;
+        .map_err(|error| crate::logging::diagnostic_error("内核解包任务异常退出", error))??;
+        crate::storage::atomic_write(&executable, &unpacked)
+            .map_err(|error| crate::logging::diagnostic_error("无法写入暂存内核", error))?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt as _;
-            std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700))
-                .map_err(|_| "无法设置新内核执行权限")?;
+            std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).map_err(
+                |error| crate::logging::diagnostic_error("无法设置新内核执行权限", error),
+            )?;
         }
         let source = match &self.running {
             Some(running) => running.launch.source.clone(),
@@ -1497,12 +1593,15 @@ impl Actor {
             .join(crate::bootstrap::core_name());
         let mut service_publication_attempted = false;
         let result = async {
-            crate::storage::atomic_write(&managed, &unpacked).map_err(|_| "无法替换内核文件")?;
+            crate::storage::atomic_write(&managed, &unpacked)
+                .map_err(|error| crate::logging::diagnostic_error("无法替换内核文件", error))?;
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt as _;
                 std::fs::set_permissions(&managed, std::fs::Permissions::from_mode(0o700))
-                    .map_err(|_| "无法设置内核执行权限")?;
+                    .map_err(|error| {
+                        crate::logging::diagnostic_error("无法设置内核执行权限", error)
+                    })?;
             }
             launch.force_service = (launch.privileged_network()?
                 && super::privileged::tun_service_required().await?)
@@ -1595,7 +1694,8 @@ impl Actor {
             values.get("Tunnels").map(String::as_str).unwrap_or("[]"),
         )?;
         let entries = crate::configuration::tunnels::change(entries, change)?;
-        let yaml = serde_yaml_ng::to_string(&entries).map_err(|_| "无法编码隧道配置")?;
+        let yaml = serde_yaml_ng::to_string(&entries)
+            .map_err(|error| crate::logging::diagnostic_error("无法编码隧道配置", error))?;
         self.patch(crate::storage::Values::from([("Tunnels".into(), yaml)]))
             .await
     }
@@ -1611,10 +1711,12 @@ impl Actor {
         ) {
             return self.patch(patch).await;
         }
-        let repository =
-            crate::storage::Repository::open(self.paths.clone()).map_err(|_| "无法读取设置存储")?;
-        let namespace = crate::storage::Namespace::parse(kind.id()).map_err(|_| "设置名称无效")?;
-        let previous = preferences::values(&repository, kind).map_err(|error| error.to_string())?;
+        let repository = crate::storage::Repository::open(self.paths.clone())
+            .map_err(|error| crate::logging::diagnostic_error("无法读取设置存储", error))?;
+        let namespace = crate::storage::Namespace::parse(kind.id())
+            .map_err(|error| crate::logging::diagnostic_error("设置名称无效", error))?;
+        let previous =
+            preferences::values(&repository, kind).map_err(crate::logging::error_message)?;
         if kind == SettingsKind::SysProxy {
             return self.save_system_proxy(&repository, &previous, patch).await;
         }
@@ -1634,12 +1736,16 @@ impl Actor {
         desired.extend(preferences::choices::encode(patch));
         if let Some(key) = preferences::native::key(kind) {
             let root = if let Some(text) = native_patch.get(key) {
-                serde_yaml_ng::from_str(text).map_err(|_| "原生配置无效".to_owned())?
+                serde_yaml_ng::from_str(text).map_err(|error| {
+                    crate::logging::diagnostic_error("原生配置无效".to_owned(), error)
+                })?
             } else {
                 let root = previous
                     .get(key)
                     .map(|text| {
-                        serde_yaml_ng::from_str(text).map_err(|_| "原生配置无效".to_owned())
+                        serde_yaml_ng::from_str(text).map_err(|error| {
+                            crate::logging::diagnostic_error("原生配置无效".to_owned(), error)
+                        })
                     })
                     .unwrap_or_else(|| preferences::native::initial(kind))?;
                 preferences::native::patch(kind, &root, &native_patch)?
@@ -1670,7 +1776,7 @@ impl Actor {
             let commit = || {
                 repository
                     .save(&write_namespace, &saved)
-                    .map_err(|error| error.to_string())
+                    .map_err(crate::logging::error_message)
             };
             let result = if let Some(candidate) = candidate {
                 self.apply_profile_candidate(candidate, commit).await
@@ -1974,8 +2080,8 @@ impl Actor {
         let source = running.launch.source.clone();
         let client = running.launch.client.clone();
         let old_yaml = running.launch.yaml().await?;
-        let old_expected: serde_yaml_ng::Value =
-            serde_yaml_ng::from_str(&running.launch.composed).map_err(|_| "旧配置无效")?;
+        let old_expected: serde_yaml_ng::Value = serde_yaml_ng::from_str(&running.launch.composed)
+            .map_err(|error| crate::logging::diagnostic_error("旧配置无效", error))?;
         let mut candidate = Launch::with_preferences(&self.paths, source, desired.clone()).await?;
         candidate
             .reuse_control(&self.running.as_ref().ok_or("内核尚未运行")?.launch)
@@ -1993,8 +2099,8 @@ impl Actor {
                 return Ok(());
             }
         };
-        let expected: serde_yaml_ng::Value =
-            serde_yaml_ng::from_str(&candidate.composed).map_err(|_| "候选配置无效")?;
+        let expected: serde_yaml_ng::Value = serde_yaml_ng::from_str(&candidate.composed)
+            .map_err(|error| crate::logging::diagnostic_error("候选配置无效", error))?;
         if let Some(settings) = self.running.as_ref().and_then(|r| r.log_settings.as_ref()) {
             let mut redactions = settings.borrow().0.clone();
             redactions.extend(candidate.redactions());
@@ -2131,8 +2237,8 @@ impl Actor {
             return Err("已有内核进程但尚未确认就绪，请停止后重试".into());
         }
         let repository = crate::storage::Repository::open(self.paths.clone())
-            .map_err(|error| error.to_string())?;
-        crate::preferences::initialize(&repository).map_err(|error| error.to_string())?;
+            .map_err(crate::logging::error_message)?;
+        crate::preferences::initialize(&repository).map_err(crate::logging::error_message)?;
         self.snapshot.preferences = Some(super::Preferences::load(&self.paths)?);
         self.publish(Phase::Starting, None);
         let launch = Launch::prepare(&self.paths).await?;
@@ -2155,10 +2261,10 @@ impl Actor {
         }
         let autostart = (|| {
             let repository = crate::storage::Repository::open(self.paths.clone())
-                .map_err(|error| error.to_string())?;
+                .map_err(crate::logging::error_message)?;
             let settings =
                 crate::preferences::values(&repository, crate::preferences::SettingsKind::General)
-                    .map_err(|error| error.to_string())?;
+                    .map_err(crate::logging::error_message)?;
             let desired = settings.get("AutoRun").is_some_and(|value| value == "true");
             if crate::desktop::autostart::enabled()? != desired {
                 crate::desktop::autostart::apply(desired)?;
@@ -2218,7 +2324,7 @@ impl Actor {
             #[cfg(not(test))]
             let execution = Some(
                 suki_service::execution::CoreExecutionGuard::acquire()
-                    .map_err(|error| error.to_string())?,
+                    .map_err(crate::logging::error_message)?,
             );
             #[cfg(test)]
             let execution = None;
@@ -2227,7 +2333,10 @@ impl Actor {
                 .stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::piped())
                 .spawn()
-                .map_err(|error| format!("无法启动 Mihomo：{}", error.kind()))?;
+                .map_err(|error| {
+                    log::error!("无法启动 Mihomo；{}", crate::logging::error_chain(&error));
+                    format!("无法启动 Mihomo：{}", error.kind())
+                })?;
             let pipe_suppressed = Default::default();
             let captured = match (child.stdout.take(), child.stderr.take()) {
                 (Some(stdout), Some(stderr)) => Some(super::output::capture(
@@ -2315,17 +2424,17 @@ impl Actor {
             if let Process::Service(session) = &mut running.child {
                 session.status().await?;
             }
-            if let Some(status) = running
-                .child
-                .try_wait()
-                .map_err(|error| format!("无法检查内核进程：{}", error.kind()))?
-            {
+            if let Some(status) = running.child.try_wait().map_err(|error| {
+                log::error!("无法检查内核进程；{}", crate::logging::error_chain(&error));
+                format!("无法检查内核进程：{}", error.kind())
+            })? {
                 return Err(format!("内核在 API 就绪前退出（{status}）"));
             }
             if let Ok(version) = running.launch.client.version().await {
                 let expected: serde_yaml_ng::Value =
-                    serde_yaml_ng::from_str(&running.launch.composed)
-                        .map_err(|_| "无法读取候选监听设置")?;
+                    serde_yaml_ng::from_str(&running.launch.composed).map_err(|error| {
+                        crate::logging::diagnostic_error("无法读取候选监听设置", error)
+                    })?;
                 running.launch.client.verify_listeners(&expected).await?;
                 self.snapshot.tun = Some(running.launch.client.verify_tun(&expected).await?);
                 self.snapshot.service_mode = matches!(running.child, Process::Service(_));
@@ -2336,7 +2445,7 @@ impl Actor {
                 if running
                     .child
                     .try_wait()
-                    .map_err(|_| "无法确认内核存活")?
+                    .map_err(|error| crate::logging::diagnostic_error("无法确认内核存活", error))?
                     .is_none()
                 {
                     return Ok(version);
@@ -2381,11 +2490,11 @@ impl Actor {
             if let Some(mut output) = running.output.take() {
                 match tokio::time::timeout(Duration::from_secs(2), &mut output).await {
                     Ok(Ok(Ok(()))) => {}
-                    Ok(result) => eprintln!("内核进程已退出，但日志任务未完成：{result:?}"),
+                    Ok(result) => log::warn!("内核进程已退出，但日志任务未完成：{result:?}"),
                     Err(_) => {
                         output.abort();
                         let _ = output.await;
-                        eprintln!("内核进程已退出，日志任务已停止");
+                        log::info!("内核进程已退出，日志任务已停止");
                     }
                 }
             }

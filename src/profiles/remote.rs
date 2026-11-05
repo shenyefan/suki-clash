@@ -12,28 +12,31 @@ pub(crate) fn apply(
         let identity = document
             .age_key
             .parse::<age::x25519::Identity>()
-            .map_err(|_| "Age 私钥无效")?;
+            .map_err(|error| crate::logging::diagnostic_error("Age 私钥无效", error))?;
         let decryptor = age::Decryptor::new(age::armor::ArmoredReader::new(bytes))
-            .map_err(|_| "Age 订阅格式无效")?;
+            .map_err(|error| crate::logging::diagnostic_error("Age 订阅格式无效", error))?;
         let reader = decryptor
             .decrypt(std::iter::once(&identity as &dyn age::Identity))
-            .map_err(|_| "Age 订阅解密失败")?;
+            .map_err(|error| crate::logging::diagnostic_error("Age 订阅解密失败", error))?;
         reader
             .take(crate::configuration::INPUT_LIMIT + 1)
             .read_to_end(&mut body)
-            .map_err(|_| "读取 Age 订阅失败")?;
+            .map_err(|error| crate::logging::diagnostic_error("读取 Age 订阅失败", error))?;
     } else {
         body.extend_from_slice(bytes);
     }
     if body.len() as u64 > crate::configuration::INPUT_LIMIT {
         return Err("订阅超过大小上限".into());
     }
-    let content = String::from_utf8(body).map_err(|_| "订阅不是 UTF-8 文本")?;
+    let content = String::from_utf8(body)
+        .map_err(|error| crate::logging::diagnostic_error("订阅不是 UTF-8 文本", error))?;
     if document.kind == super::model::DocumentKind::JavaScript {
         crate::configuration::script::validate(&content)?;
     } else {
         let mapping: serde_yaml_ng::Mapping =
-            serde_yaml_ng::from_str(&content).map_err(|_| "下载内容不是有效 YAML 对象")?;
+            serde_yaml_ng::from_str(&content).map_err(|error| {
+                crate::logging::diagnostic_error("下载内容不是有效 YAML 对象", error)
+            })?;
         if document.kind == super::model::DocumentKind::Profile
             && !mapping.contains_key("proxies")
             && !mapping.contains_key("proxy-providers")
@@ -47,7 +50,10 @@ pub(crate) fn apply(
         .map(|(name, value)| {
             Ok((
                 name.as_str().to_owned(),
-                value.to_str().map_err(|_| "订阅响应头编码无效")?.to_owned(),
+                value
+                    .to_str()
+                    .map_err(|error| crate::logging::diagnostic_error("订阅响应头编码无效", error))?
+                    .to_owned(),
             ))
         })
         .collect::<Result<BTreeMap<_, _>, String>>()?;

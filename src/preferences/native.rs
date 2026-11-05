@@ -95,7 +95,8 @@ pub(crate) fn project(kind: SettingsKind, root: &Value, enabled: bool) -> Result
     }
     values.insert(
         key(kind).ok_or("不是原生文档设置")?.into(),
-        serde_yaml_ng::to_string(root).map_err(|_| "无法编码原生配置")?,
+        serde_yaml_ng::to_string(root)
+            .map_err(|error| crate::logging::diagnostic_error("无法编码原生配置", error))?,
     );
     Ok(super::choices::encode(values))
 }
@@ -118,7 +119,8 @@ pub(crate) fn decode(kind: SettingsKind, bytes: &[u8]) -> Result<Values, String>
 }
 pub(crate) fn encode(kind: SettingsKind, values: &Values) -> Result<Vec<u8>, String> {
     let root = if let Some(text) = values.get(key(kind).ok_or("不是原生文档设置")?) {
-        serde_yaml_ng::from_str(text).map_err(|_| "YAML 文档无效")?
+        serde_yaml_ng::from_str(text)
+            .map_err(|error| crate::logging::diagnostic_error("YAML 文档无效", error))?
     } else {
         let mut merged = defaults(kind);
         merged.extend(values.clone());
@@ -134,7 +136,7 @@ pub(crate) fn encode(kind: SettingsKind, values: &Values) -> Result<Vec<u8>, Str
     let root = root.as_mapping().ok_or("设置需为对象")?;
     serde_yaml_ng::to_string(&root)
         .map(String::into_bytes)
-        .map_err(|_| "无法编码 YAML 设置".into())
+        .map_err(|error| crate::logging::diagnostic_error("无法编码 YAML 设置".into(), error))
 }
 pub(crate) fn patch(kind: SettingsKind, root: &Value, changes: &Values) -> Result<Value, String> {
     let mut result = root.clone();

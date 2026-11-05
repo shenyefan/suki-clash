@@ -40,7 +40,13 @@ impl Client {
             Endpoint::Unix(path) => tokio::net::UnixStream::connect(path)
                 .await
                 .map(|stream| Box::new(stream) as Box<dyn Ipc>)
-                .map_err(|error| format!("连接内核本地通道失败：{}", error.kind())),
+                .map_err(|error| {
+                    log::error!(
+                        "连接内核本地通道失败；{}",
+                        crate::logging::error_chain(&error)
+                    );
+                    format!("连接内核本地通道失败：{}", error.kind())
+                }),
             #[cfg(windows)]
             Endpoint::Pipe(path) => {
                 use windows_sys::Win32::Foundation::ERROR_PIPE_BUSY;
@@ -57,7 +63,12 @@ impl Client {
                 };
                 tokio::time::timeout(Duration::from_secs(2), connect)
                     .await
-                    .map_err(|_| "内核命名管道繁忙，连接超时".to_owned())?
+                    .map_err(|error| {
+                        crate::logging::diagnostic_error(
+                            "内核命名管道繁忙，连接超时".to_owned(),
+                            error,
+                        )
+                    })?
             }
         }
     }
@@ -69,9 +80,11 @@ impl Client {
             let stream = self.connect().await?;
             let mut request = format!("ws://localhost{path}")
                 .into_client_request()
-                .map_err(|_| "无法构造内核 WebSocket 请求")?;
+                .map_err(|error| {
+                    crate::logging::diagnostic_error("无法构造内核 WebSocket 请求", error)
+                })?;
             let mut authorization = HeaderValue::from_str(&format!("Bearer {}", self.secret))
-                .map_err(|_| "内核鉴权配置无效")?;
+                .map_err(|error| crate::logging::diagnostic_error("内核鉴权配置无效", error))?;
             authorization.set_sensitive(true);
             request.headers_mut().insert("Authorization", authorization);
             let config = WebSocketConfig::default()
@@ -80,17 +93,25 @@ impl Client {
             let (socket, _) =
                 tokio_tungstenite::client_async_with_config(request, stream, Some(config))
                     .await
-                    .map_err(|error| match error {
-                        tokio_tungstenite::tungstenite::Error::Http(response) => {
-                            format!("内核 WebSocket 返回 HTTP {}", response.status().as_u16())
+                    .map_err(|error| {
+                        log::error!(
+                            "内核 WebSocket 握手原始错误：{}",
+                            crate::logging::error_chain(&error)
+                        );
+                        match error {
+                            tokio_tungstenite::tungstenite::Error::Http(response) => {
+                                format!("内核 WebSocket 返回 HTTP {}", response.status().as_u16())
+                            }
+                            _ => "内核 WebSocket 握手失败".into(),
                         }
-                        _ => "内核 WebSocket 握手失败".into(),
                     })?;
             Ok(socket)
         };
         tokio::time::timeout(Duration::from_secs(5), work)
             .await
-            .map_err(|_| "内核 WebSocket 连接超时".to_owned())?
+            .map_err(|error| {
+                crate::logging::diagnostic_error("内核 WebSocket 连接超时".to_owned(), error)
+            })?
     }
     pub(super) async fn close_connections(&self, id: Option<&str>) -> Result<(), String> {
         let path = id
@@ -101,7 +122,8 @@ impl Client {
             .map(|_| ())
     }
     pub(super) async fn json(&self, path: &str) -> Result<serde_json::Value, String> {
-        serde_json::from_slice(&self.get(path).await?).map_err(|_| "内核 JSON 响应无效".into())
+        serde_json::from_slice(&self.get(path).await?)
+            .map_err(|error| crate::logging::diagnostic_error("内核 JSON 响应无效".into(), error))
     }
     pub(super) async fn rules(
         &self,
@@ -185,7 +207,7 @@ impl Client {
                 &path,
                 Duration::from_secs(5),
                 serde_json::to_vec(&serde_json::json!({"name":node}))
-                    .map_err(|_| "节点名称无效")?,
+                    .map_err(|error| crate::logging::diagnostic_error("节点名称无效", error))?,
             )
             .await?;
         } else {
@@ -200,7 +222,7 @@ impl Client {
             "/configs",
             Duration::from_secs(5),
             serde_json::to_vec(&serde_json::json!({"mode":mode.label()}))
-                .map_err(|_| "模式无效")?,
+                .map_err(|error| crate::logging::diagnostic_error("模式无效", error))?,
         )
         .await
         .map(|_| ())
@@ -230,7 +252,10 @@ impl Client {
                 .await
         })
         .await
-        .map_err(|_| MeasurementError::Timeout)?
+        .map_err(|error| {
+            log::debug!("测速超时：{error}");
+            MeasurementError::Timeout
+        })?
         .map_err(MeasurementError::Failed)?;
         if status == hyper::StatusCode::GATEWAY_TIMEOUT
             || status == hyper::StatusCode::REQUEST_TIMEOUT
@@ -249,7 +274,12 @@ impl Client {
         }
         serde_json::from_slice::<Delay>(&body)
             .map(|value| value.delay)
-            .map_err(|_| MeasurementError::Failed("延迟测试响应无效".into()))
+            .map_err(|error| {
+                MeasurementError::Failed(crate::logging::diagnostic_error(
+                    "延迟测试响应无效".into(),
+                    error,
+                ))
+            })
     }
     pub(super) async fn tun_enabled(&self) -> Result<bool, String> {
         let config = self.json("/configs").await?;
@@ -288,7 +318,7 @@ impl Client {
     }
     pub(super) async fn reload_file(&self, path: &str) -> Result<(), String> {
         let body = serde_json::to_vec(&serde_json::json!({"path":path}))
-            .map_err(|_| "无法编码配置路径")?;
+            .map_err(|error| crate::logging::diagnostic_error("无法编码配置路径", error))?;
         self.request_body(
             Method::PUT,
             "/configs?force=true",
@@ -300,7 +330,7 @@ impl Client {
     }
     pub(super) async fn reload(&self, yaml: &str) -> Result<(), String> {
         let body = serde_json::to_vec(&serde_json::json!({"payload": yaml}))
-            .map_err(|_| "无法编码热更新请求")?;
+            .map_err(|error| crate::logging::diagnostic_error("无法编码热更新请求", error))?;
         self.request_body(
             Method::PUT,
             "/configs?force=true",
@@ -312,8 +342,8 @@ impl Client {
     }
     pub(super) async fn proxy_names(&self) -> Result<Vec<String>, String> {
         let body = self.get("/proxies").await?;
-        let value: serde_json::Value =
-            serde_json::from_slice(&body).map_err(|_| "代理列表响应无效")?;
+        let value: serde_json::Value = serde_json::from_slice(&body)
+            .map_err(|error| crate::logging::diagnostic_error("代理列表响应无效", error))?;
         let proxies = value
             .get("proxies")
             .and_then(serde_json::Value::as_object)
@@ -325,8 +355,8 @@ impl Client {
         expected: &serde_yaml_ng::Value,
     ) -> Result<(), String> {
         let response = self.get("/configs").await?;
-        let actual: serde_json::Value =
-            serde_json::from_slice(&response).map_err(|_| "内核监听配置回读无效")?;
+        let actual: serde_json::Value = serde_json::from_slice(&response)
+            .map_err(|error| crate::logging::diagnostic_error("内核监听配置回读无效", error))?;
         for key in [
             "mixed-port",
             "port",
@@ -356,7 +386,8 @@ impl Client {
             "log-level",
         ] {
             if let Some(expected) = expected.get(key) {
-                let expected = serde_json::to_value(expected).map_err(|_| "无法编码回读设置")?;
+                let expected = serde_json::to_value(expected)
+                    .map_err(|error| crate::logging::diagnostic_error("无法编码回读设置", error))?;
                 if actual.get(key) != Some(&expected) {
                     return Err(format!("{key} 未按候选配置加载"));
                 }
@@ -406,8 +437,9 @@ impl Client {
 
     pub(super) async fn version(&self) -> Result<String, String> {
         let response = self.get("/version").await?;
-        let response: Version =
-            serde_json::from_slice(&response).map_err(|_| "内核版本响应格式无效".to_owned())?;
+        let response: Version = serde_json::from_slice(&response).map_err(|error| {
+            crate::logging::diagnostic_error("内核版本响应格式无效".to_owned(), error)
+        })?;
         if response.version.trim().is_empty() || response.version.len() > 128 {
             return Err("内核版本响应无效".into());
         }
@@ -439,7 +471,12 @@ impl Client {
                 .await
         })
         .await
-        .map_err(|_| "内核本地 API 请求超时；服务端操作可能仍在执行，请勿重复提交".to_owned())?
+        .map_err(|error| {
+            crate::logging::diagnostic_error(
+                "内核本地 API 请求超时；服务端操作可能仍在执行，请勿重复提交".to_owned(),
+                error,
+            )
+        })?
     }
 
     async fn exchange<S>(
@@ -470,9 +507,15 @@ impl Client {
     where
         S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     {
-        let (mut sender, connection) = http1::handshake(TokioIo::new(stream))
-            .await
-            .map_err(|_| "内核本地 HTTP 握手失败".to_owned())?;
+        let (mut sender, connection) =
+            http1::handshake(TokioIo::new(stream))
+                .await
+                .map_err(|error| {
+                    crate::logging::diagnostic_error(
+                        "内核本地 HTTP 握手失败".to_owned(),
+                        crate::logging::error_chain(&error),
+                    )
+                })?;
         // Drive the connection in the same future. Timeout/cancellation drops both
         // halves; no detached connection task can survive its generation.
         let request = async {
@@ -483,16 +526,25 @@ impl Client {
                 .header("Authorization", format!("Bearer {}", self.secret))
                 .header("Content-Type", "application/json")
                 .body(Full::new(Bytes::from(payload)))
-                .map_err(|_| "无法构造内核请求".to_owned())?;
-            let response = sender
-                .send_request(request)
-                .await
-                .map_err(|_| "内核本地 API 传输失败".to_owned())?;
+                .map_err(|error| {
+                    crate::logging::diagnostic_error("无法构造内核请求".to_owned(), error)
+                })?;
+            let response = sender.send_request(request).await.map_err(|error| {
+                crate::logging::diagnostic_error(
+                    "内核本地 API 传输失败".to_owned(),
+                    crate::logging::error_chain(&error),
+                )
+            })?;
             let status = response.status();
             let mut body = response.into_body();
             let mut bytes = Vec::new();
             while let Some(frame) = body.frame().await {
-                let frame = frame.map_err(|_| "内核响应读取失败".to_owned())?;
+                let frame = frame.map_err(|error| {
+                    crate::logging::diagnostic_error(
+                        "内核响应读取失败".to_owned(),
+                        crate::logging::error_chain(&error),
+                    )
+                })?;
                 if let Ok(data) = frame.into_data() {
                     if bytes.len().saturating_add(data.len()) > RESPONSE_LIMIT {
                         return Err("内核响应超过大小限制".into());
@@ -508,7 +560,7 @@ impl Client {
             biased;
             result = &mut request => result,
             result = &mut connection => {
-                result.map_err(|_| "内核本地连接中断".to_owned())?;
+                result.map_err(|error| crate::logging::diagnostic_error("内核本地连接中断".to_owned(), error))?;
                 request.await
             }
         }

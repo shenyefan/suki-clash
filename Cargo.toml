@@ -1,11 +1,12 @@
 [package]
 name = "suki-clash"
-version = "0.2.4"
+version = "0.2.5"
 edition = "2024"
 
 [dependencies]
 suki_service = { package = "suki-clash-service", path = "platform-service", features = ["client"] }
 anyhow = "1.0"
+log = { version = "0.4", features = ["std"] }
 gpui-kit = { version = "0.9.0", features = ["tree-sitter-yaml", "tree-sitter-javascript"] }
 regex = "1.13.1"
 url = "2.5.8"

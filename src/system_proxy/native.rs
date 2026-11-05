@@ -41,8 +41,12 @@ impl Native {
             if let Some(path) = &native.journal {
                 match std::fs::read(path) {
                     Ok(bytes) => {
-                        native.owned = serde_json::from_slice(&bytes)
-                            .map_err(|_| "系统代理恢复记录损坏，未覆盖原文件")?;
+                        native.owned = serde_json::from_slice(&bytes).map_err(|error| {
+                            crate::logging::diagnostic_error(
+                                "系统代理恢复记录损坏，未覆盖原文件",
+                                error,
+                            )
+                        })?;
                         for target in native.owned.clone() {
                             native.clear(&target)?;
                         }
@@ -122,13 +126,15 @@ impl Backend for Native {
                 }
                 if let Some(path) = &self.journal {
                     if let Some(parent) = path.parent() {
-                        std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+                        std::fs::create_dir_all(parent).map_err(crate::logging::error_message)?;
                     }
                     crate::storage::atomic_write(
                         path,
-                        &serde_json::to_vec(&self.owned).map_err(|_| "无法编码代理恢复记录")?,
+                        &serde_json::to_vec(&self.owned).map_err(|error| {
+                            crate::logging::diagnostic_error("无法编码代理恢复记录", error)
+                        })?,
                     )
-                    .map_err(|error| error.to_string())?;
+                    .map_err(crate::logging::error_message)?;
                 }
             }
             platform::write(target)
@@ -164,7 +170,9 @@ impl Backend for Native {
             if let Some(path) = &self.journal {
                 crate::storage::atomic_write(
                     path,
-                    &serde_json::to_vec(&self.owned).map_err(|_| "无法编码代理恢复记录")?,
+                    &serde_json::to_vec(&self.owned).map_err(|error| {
+                        crate::logging::diagnostic_error("无法编码代理恢复记录", error)
+                    })?,
                 )
                 .map_err(|error| format!("系统代理已清理；无法更新恢复记录：{error}"))?;
             }

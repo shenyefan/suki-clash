@@ -16,7 +16,7 @@ fn registration() -> Result<auto_launch::AutoLaunch, String> {
     builder.set_app_path(path);
     #[cfg(target_os = "macos")]
     builder.set_macos_launch_mode(auto_launch::MacOSLaunchMode::LaunchAgent);
-    builder.build().map_err(|error| error.to_string())
+    builder.build().map_err(crate::logging::error_message)
 }
 pub(crate) fn apply(enabled: bool) -> Result<(), String> {
     #[cfg(all(windows, not(test)))]
@@ -34,7 +34,7 @@ pub(crate) fn apply(enabled: bool) -> Result<(), String> {
         .map_err(|error| format!("自启动设置未应用：{error}"))?;
         if registration
             .is_enabled()
-            .map_err(|error| error.to_string())?
+            .map_err(crate::logging::error_message)?
             != enabled
         {
             return Err("自启动设置回读不一致".into());
@@ -53,7 +53,7 @@ pub(crate) fn enabled() -> Result<bool, String> {
     {
         registration()?
             .is_enabled()
-            .map_err(|error| error.to_string())
+            .map_err(crate::logging::error_message)
     }
     #[cfg(test)]
     {

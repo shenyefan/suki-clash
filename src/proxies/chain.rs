@@ -223,7 +223,7 @@ impl ChainEditor {
             proxies.push(proxy);
         }
         serde_yaml_ng::to_string(&BTreeMap::from([("proxies", proxies)]))
-            .map_err(|_| "无法编码代理链".into())
+            .map_err(|error| crate::logging::diagnostic_error("无法编码代理链".into(), error))
     }
     fn accept_yaml(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Result<(), String> {
         let draft = Config {

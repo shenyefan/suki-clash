@@ -184,7 +184,8 @@ struct RawProvider {
     subscription_info: Option<Usage>,
 }
 pub(super) fn parse(bytes: &[u8], kind: ProviderKind) -> Result<Vec<Provider>, String> {
-    let response: Response = serde_json::from_slice(bytes).map_err(|_| "资源集合响应无效")?;
+    let response: Response = serde_json::from_slice(bytes)
+        .map_err(|error| crate::logging::diagnostic_error("资源集合响应无效", error))?;
     if response.providers.len() > 4096 {
         return Err("资源集合数量超限".into());
     }

@@ -42,7 +42,12 @@ fn read(path: &Path) -> Result<Option<Vec<u8>>, String> {
     let metadata = match fs::symlink_metadata(path) {
         Ok(m) => m,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(_) => return Err("无法检查更新恢复材料".into()),
+        Err(error) => {
+            return Err(crate::logging::diagnostic_error(
+                "无法检查更新恢复材料".into(),
+                error,
+            ));
+        }
     };
     if !metadata.is_file()
         || metadata.file_type().is_symlink()
@@ -52,10 +57,10 @@ fn read(path: &Path) -> Result<Option<Vec<u8>>, String> {
     }
     let mut bytes = Vec::new();
     fs::File::open(path)
-        .map_err(|_| "无法读取更新恢复材料")?
+        .map_err(|error| crate::logging::diagnostic_error("无法读取更新恢复材料", error))?
         .take(super::download::ARCHIVE_LIMIT + 1)
         .read_to_end(&mut bytes)
-        .map_err(|_| "读取恢复材料失败")?;
+        .map_err(|error| crate::logging::diagnostic_error("读取恢复材料失败", error))?;
     if bytes.len() as u64 > super::download::ARCHIVE_LIMIT {
         return Err("恢复材料超过上限".into());
     }
@@ -72,13 +77,13 @@ impl Recovery {
         let staging = tempfile::Builder::new()
             .prefix(".recovery-stage-")
             .tempdir_in(paths.directory(DirectoryKind::Core))
-            .map_err(|_| "无法创建更新恢复目录")?;
+            .map_err(|error| crate::logging::diagnostic_error("无法创建更新恢复目录", error))?;
         let staged_root = staging.path().to_owned();
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt as _;
             fs::set_permissions(&staged_root, fs::Permissions::from_mode(0o700))
-                .map_err(|_| "无法保护恢复目录")?;
+                .map_err(|error| crate::logging::diagnostic_error("无法保护恢复目录", error))?;
         }
         let mut manifest = Manifest {
             version: 2,
@@ -92,14 +97,17 @@ impl Recovery {
                         paths,
                         &["core", "runtime"],
                     )?)
-                    .map_err(|_| "无法保存内核设置恢复材料")?,
+                    .map_err(|error| {
+                        crate::logging::diagnostic_error("无法保存内核设置恢复材料", error)
+                    })?,
                 )
             } else {
                 read(&path)?
             };
             if let Some(bytes) = &content {
-                atomic_write(&staged_root.join(role), bytes)
-                    .map_err(|_| "无法保存旧内核恢复材料")?;
+                atomic_write(&staged_root.join(role), bytes).map_err(|error| {
+                    crate::logging::diagnostic_error("无法保存旧内核恢复材料", error)
+                })?;
             }
             manifest.files.push(Entry {
                 role: role.into(),
@@ -119,22 +127,24 @@ impl Recovery {
             manifest,
         };
         result.write_manifest()?;
-        fs::rename(&result.root, &root).map_err(|_| "无法提交内核更新恢复目录")?;
+        fs::rename(&result.root, &root)
+            .map_err(|error| crate::logging::diagnostic_error("无法提交内核更新恢复目录", error))?;
         result.root = root;
         Ok(result)
     }
     fn write_manifest(&self) -> Result<(), String> {
         atomic_write(
             &self.root.join("manifest.json"),
-            &serde_json::to_vec(&self.manifest).map_err(|_| "无法编码恢复记录")?,
+            &serde_json::to_vec(&self.manifest)
+                .map_err(|error| crate::logging::diagnostic_error("无法编码恢复记录", error))?,
         )
-        .map_err(|_| "无法提交恢复记录".into())
+        .map_err(|error| crate::logging::diagnostic_error("无法提交恢复记录".into(), error))
     }
     pub(super) fn commit(&mut self) -> Result<(), String> {
         self.manifest.committed = true;
         self.write_manifest()?;
         if let Err(error) = fs::remove_dir_all(&self.root) {
-            eprintln!("内核更新已提交，但恢复目录清理失败：{}", error.kind());
+            log::warn!("内核更新已提交，但恢复目录清理失败：{error}");
         }
         Ok(())
     }
@@ -175,27 +185,35 @@ impl Recovery {
         for (role, path, bytes) in verified {
             match bytes {
                 Some(bytes) if role == "app" => {
-                    let snapshot =
-                        serde_json::from_slice(&bytes).map_err(|_| "内核设置恢复材料无效")?;
+                    let snapshot = serde_json::from_slice(&bytes).map_err(|error| {
+                        crate::logging::diagnostic_error("内核设置恢复材料无效", error)
+                    })?;
                     crate::preferences::app::restore(&self.paths, &snapshot)?;
                 }
-                Some(bytes) => atomic_write(&path, &bytes).map_err(|_| "旧内核文件恢复失败")?,
+                Some(bytes) => atomic_write(&path, &bytes).map_err(|error| {
+                    crate::logging::diagnostic_error("旧内核文件恢复失败", error)
+                })?,
                 None => {
                     if path.exists() {
-                        fs::remove_file(&path).map_err(|_| "无法撤销新增内核文件")?;
+                        fs::remove_file(&path).map_err(|error| {
+                            crate::logging::diagnostic_error("无法撤销新增内核文件", error)
+                        })?;
                     }
                 }
             }
             #[cfg(unix)]
             if role == "binary" && path.exists() {
                 use std::os::unix::fs::PermissionsExt as _;
-                fs::set_permissions(&path, fs::Permissions::from_mode(0o700))
-                    .map_err(|_| "无法恢复内核执行权限")?;
+                fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).map_err(|error| {
+                    crate::logging::diagnostic_error("无法恢复内核执行权限", error)
+                })?;
             }
             #[cfg(not(unix))]
             let _ = role;
         }
-        fs::remove_dir_all(&self.root).map_err(|_| "旧内核已恢复，但恢复目录清理失败")?;
+        fs::remove_dir_all(&self.root).map_err(|error| {
+            crate::logging::diagnostic_error("旧内核已恢复，但恢复目录清理失败", error)
+        })?;
         Ok(())
     }
 }
@@ -207,7 +225,7 @@ pub(crate) fn recover_pending(paths: &AppPaths) -> Result<(), String> {
         return Ok(());
     }
     if fs::symlink_metadata(&root)
-        .map_err(|_| "无法检查更新恢复目录")?
+        .map_err(|error| crate::logging::diagnostic_error("无法检查更新恢复目录", error))?
         .file_type()
         .is_symlink()
     {
@@ -218,12 +236,14 @@ pub(crate) fn recover_pending(paths: &AppPaths) -> Result<(), String> {
     if bytes.len() > 64 * 1024 {
         return Err("更新恢复清单超限".into());
     }
-    let manifest: Manifest = serde_json::from_slice(&bytes).map_err(|_| "更新恢复清单格式无效")?;
+    let manifest: Manifest = serde_json::from_slice(&bytes)
+        .map_err(|error| crate::logging::diagnostic_error("更新恢复清单格式无效", error))?;
     if manifest.version != 2 {
         return Err("更新恢复记录版本不受支持".into());
     }
     if manifest.committed {
-        fs::remove_dir_all(root).map_err(|_| "无法清理已提交的更新材料")?;
+        fs::remove_dir_all(root)
+            .map_err(|error| crate::logging::diagnostic_error("无法清理已提交的更新材料", error))?;
         return Ok(());
     }
     Recovery {

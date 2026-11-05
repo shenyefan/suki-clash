@@ -31,7 +31,8 @@ impl Transfer {
         url: &str,
         limit: u64,
     ) -> Result<Self, String> {
-        let parsed = url::Url::parse(url).map_err(|_| "内核下载地址无效")?;
+        let parsed = url::Url::parse(url)
+            .map_err(|error| crate::logging::diagnostic_error("内核下载地址无效", error))?;
         if parsed.scheme() != "https"
             || !matches!(parsed.host_str(), Some("github.com" | "api.github.com"))
         {
@@ -99,7 +100,12 @@ impl Transfer {
         agent: &str,
         transport: &SubscriptionTransport,
     ) -> Result<Self, String> {
-        let timeout = Duration::from_secs(document.timeout.parse().map_err(|_| "下载超时无效")?);
+        let timeout = Duration::from_secs(
+            document
+                .timeout
+                .parse()
+                .map_err(|error| crate::logging::diagnostic_error("下载超时无效", error))?,
+        );
         Self::request(
             http,
             paths,
@@ -180,7 +186,7 @@ impl Transfer {
         let directory = tempfile::Builder::new()
             .prefix("http-")
             .tempdir_in(paths.directory(DirectoryKind::Cache))
-            .map_err(|_| "无法创建 HTTP 临时目录")?;
+            .map_err(|error| crate::logging::diagnostic_error("无法创建 HTTP 临时目录", error))?;
         Ok(Self {
             request: Some(builder),
             path: directory.path().join("response"),
@@ -223,16 +229,16 @@ impl Transfer {
             progress(0, total);
             let mut file = tokio::fs::File::create(&self.path)
                 .await
-                .map_err(|_| "无法创建下载临时文件")?;
+                .map_err(|error| crate::logging::diagnostic_error("无法创建下载临时文件", error))?;
             let mut bytes = Vec::new();
             let mut last = Instant::now();
             while let Some(chunk) = response.chunk().await.map_err(crate::network::error)? {
                 if (bytes.len() as u64).saturating_add(chunk.len() as u64) > self.limit {
                     return Err("下载超过大小上限".into());
                 }
-                file.write_all(&chunk)
-                    .await
-                    .map_err(|_| "下载临时文件写入失败")?;
+                file.write_all(&chunk).await.map_err(|error| {
+                    crate::logging::diagnostic_error("下载临时文件写入失败", error)
+                })?;
                 bytes.extend_from_slice(&chunk);
                 if last.elapsed() >= Duration::from_millis(100) {
                     progress(bytes.len() as u64, total);
@@ -242,13 +248,15 @@ impl Transfer {
             if !self.allow_empty && bytes.is_empty() {
                 return Err("下载内容为空".into());
             }
-            file.sync_all().await.map_err(|_| "下载临时文件同步失败")?;
+            file.sync_all()
+                .await
+                .map_err(|error| crate::logging::diagnostic_error("下载临时文件同步失败", error))?;
             progress(bytes.len() as u64, total);
             Ok(bytes)
         };
         tokio::time::timeout(self.timeout, work)
             .await
-            .map_err(|_| "HTTP 请求超时".to_owned())?
+            .map_err(|error| crate::logging::diagnostic_error("HTTP 请求超时".to_owned(), error))?
     }
 }
 struct Request<'a> {
@@ -263,7 +271,8 @@ fn header(value: &str) -> Result<HeaderValue, String> {
     if value.chars().any(char::is_control) {
         return Err("HTTP 请求标头含无效字符".into());
     }
-    HeaderValue::from_str(value).map_err(|_| "HTTP 请求标头无效".into())
+    HeaderValue::from_str(value)
+        .map_err(|error| crate::logging::diagnostic_error("HTTP 请求标头无效".into(), error))
 }
 
 #[cfg(test)]

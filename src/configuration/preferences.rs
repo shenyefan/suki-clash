@@ -62,7 +62,10 @@ impl Preferences {
             crate::preferences::SettingsKind::Tun,
         ));
         let app_values = crate::preferences::app::read_values(paths, "core", LIMIT)?;
-        let saved = if native.try_exists().map_err(|_| "无法检查内核设置")? {
+        let saved = if native
+            .try_exists()
+            .map_err(|error| crate::logging::diagnostic_error("无法检查内核设置", error))?
+        {
             let mapping: Mapping =
                 serde_yaml_ng::from_slice(&read_bytes(&native)?).map_err(|error| {
                     let location = error
@@ -106,9 +109,9 @@ impl Preferences {
         let get =
             |key: &str, default: &str| values.get(key).cloned().unwrap_or_else(|| default.into());
         for (field, key, default) in PORTS {
-            let port = get(field, default)
-                .parse::<u16>()
-                .map_err(|_| format!("{field} 必须为 0–65535 的整数"))?;
+            let port = get(field, default).parse::<u16>().map_err(|error| {
+                crate::logging::diagnostic_error(format!("{field} 必须为 0–65535 的整数"), error)
+            })?;
             if key == "redir-port" && cfg!(windows) && port != 0 {
                 return Err("Windows 不支持重定向端口".into());
             }
@@ -191,13 +194,13 @@ impl Preferences {
         if allowed.len() > 128 {
             return Err("CORS 来源不能超过 128 项".into());
         }
-        native.insert("external-controller-cors".into(), serde_yaml_ng::to_value(serde_json::json!({"allow-private-network": boolean(values, "CorsPrivateNetwork", true)?, "allow-origins": allowed})).map_err(|_| "无法编码 CORS 配置")?);
+        native.insert("external-controller-cors".into(), serde_yaml_ng::to_value(serde_json::json!({"allow-private-network": boolean(values, "CorsPrivateNetwork", true)?, "allow-origins": allowed})).map_err(|error| crate::logging::diagnostic_error("无法编码 CORS 配置", error))?);
         let tunnels = super::tunnels::parse(&get("Tunnels", "[]"))?;
         for tunnel in &tunnels {
             let address = tunnel
                 .address
                 .parse::<std::net::SocketAddr>()
-                .map_err(|_| "隧道监听无效")?;
+                .map_err(|error| crate::logging::diagnostic_error("隧道监听无效", error))?;
             if PORTS.iter().any(|(_, key, _)| {
                 native.get(*key).and_then(Value::as_u64) == Some(u64::from(address.port()))
             }) {
@@ -206,7 +209,8 @@ impl Preferences {
         }
         native.insert(
             "tunnels".into(),
-            serde_yaml_ng::to_value(tunnels).map_err(|_| "无法编码隧道配置")?,
+            serde_yaml_ng::to_value(tunnels)
+                .map_err(|error| crate::logging::diagnostic_error("无法编码隧道配置", error))?,
         );
         let enabled = boolean(values, "EnableExternalController", false)?;
         let controller = get("ExternalController", "127.0.0.1:9090");
@@ -214,7 +218,12 @@ impl Preferences {
         if enabled {
             let address = controller
                 .parse::<std::net::SocketAddr>()
-                .map_err(|_| "外部控制地址必须为 IP:端口（IPv6 使用方括号）")?;
+                .map_err(|error| {
+                    crate::logging::diagnostic_error(
+                        "外部控制地址必须为 IP:端口（IPv6 使用方括号）",
+                        error,
+                    )
+                })?;
             if address.port() == 0 || secret.trim().is_empty() {
                 return Err("启用外部控制时必须设置非零端口及访问密钥".into());
             }
@@ -261,9 +270,9 @@ impl Preferences {
         };
         app.insert("CoreReleaseIndex".into(), channel.into());
         for (key, default) in [("MaxLogDays", "7"), ("MaxLogFileSizeMb", "10")] {
-            let value = get(key, default)
-                .parse::<u32>()
-                .map_err(|_| "日志保留值必须为正整数")?;
+            let value = get(key, default).parse::<u32>().map_err(|error| {
+                crate::logging::diagnostic_error("日志保留值必须为正整数", error)
+            })?;
             if value == 0 || value > 3650 {
                 return Err("日志保留值需在 1–3650 之间".into());
             }
@@ -485,17 +494,26 @@ impl Preferences {
     }
     pub(crate) fn save(&self, paths: &AppPaths) -> Result<(), String> {
         let [native, _] = Self::paths(paths);
-        let bytes = serde_yaml_ng::to_string(&self.native).map_err(|_| "无法编码内核设置")?;
+        let bytes = serde_yaml_ng::to_string(&self.native)
+            .map_err(|error| crate::logging::diagnostic_error("无法编码内核设置", error))?;
         let previous = match fs::read(&native) {
             Ok(bytes) => Some(bytes),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-            Err(_) => return Err("无法保留旧内核设置".into()),
+            Err(error) => {
+                return Err(crate::logging::diagnostic_error(
+                    "无法保留旧内核设置".into(),
+                    error,
+                ));
+            }
         };
-        atomic_write(&native, bytes.as_bytes()).map_err(|_| "无法保存内核设置")?;
+        atomic_write(&native, bytes.as_bytes())
+            .map_err(|error| crate::logging::diagnostic_error("无法保存内核设置", error))?;
         if let Err(error) = crate::preferences::app::write_values(paths, "core", &self.app) {
             let recovery = match previous {
-                Some(bytes) => atomic_write(&native, &bytes).map_err(|error| error.to_string()),
-                None => fs::remove_file(&native).map_err(|_| "无法恢复内核设置".into()),
+                Some(bytes) => atomic_write(&native, &bytes).map_err(crate::logging::error_message),
+                None => fs::remove_file(&native).map_err(|error| {
+                    crate::logging::diagnostic_error("无法恢复内核设置".into(), error)
+                }),
             };
             return Err(match recovery {
                 Ok(()) => error,
@@ -648,15 +666,17 @@ fn valid_network(value: &str) -> bool {
 
 fn read_bytes(path: &std::path::Path) -> Result<Vec<u8>, String> {
     use std::io::Read as _;
-    let metadata = fs::symlink_metadata(path).map_err(|_| "无法检查设置文件")?;
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|error| crate::logging::diagnostic_error("无法检查设置文件", error))?;
     if !metadata.is_file() || metadata.file_type().is_symlink() {
         return Err("设置路径不是普通文件".into());
     }
-    let file = fs::File::open(path).map_err(|_| "无法读取设置文件")?;
+    let file = fs::File::open(path)
+        .map_err(|error| crate::logging::diagnostic_error("无法读取设置文件", error))?;
     let mut bytes = Vec::new();
     file.take(LIMIT + 1)
         .read_to_end(&mut bytes)
-        .map_err(|_| "读取设置失败")?;
+        .map_err(|error| crate::logging::diagnostic_error("读取设置失败", error))?;
     if bytes.len() as u64 > LIMIT {
         return Err("设置文件超过上限".into());
     }

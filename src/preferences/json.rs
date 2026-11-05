@@ -37,9 +37,10 @@ fn list_field(key: &str, kind: FieldKind) -> bool {
         || matches!(key, "HttpPorts" | "TlsPorts" | "QuicPorts")
 }
 fn yaml_object(text: &str) -> Result<Value, String> {
-    let value: serde_yaml_ng::Value =
-        serde_yaml_ng::from_str(text).map_err(|_| "设置对象格式无效")?;
-    serde_json::to_value(value).map_err(|_| "设置对象含不受支持的键".into())
+    let value: serde_yaml_ng::Value = serde_yaml_ng::from_str(text)
+        .map_err(|error| crate::logging::diagnostic_error("设置对象格式无效", error))?;
+    serde_json::to_value(value)
+        .map_err(|error| crate::logging::diagnostic_error("设置对象含不受支持的键".into(), error))
 }
 pub(crate) fn encode(values: &Values) -> Result<Vec<u8>, String> {
     let definitions = fields();
@@ -50,7 +51,8 @@ pub(crate) fn encode(values: &Values) -> Result<Vec<u8>, String> {
         if let Some(name) = key.strip_prefix(UNKNOWN) {
             root.insert(
                 name.into(),
-                serde_json::from_str(text).map_err(|_| "扩展设置格式无效")?,
+                serde_json::from_str(text)
+                    .map_err(|error| crate::logging::diagnostic_error("扩展设置格式无效", error))?,
             );
             continue;
         }
@@ -58,7 +60,9 @@ pub(crate) fn encode(values: &Values) -> Result<Vec<u8>, String> {
             .strip_prefix("WebUi.")
             .and_then(|value| value.split_once('.'))
         {
-            let id = id.parse::<u64>().map_err(|_| "WebUI ID 无效")?;
+            let id = id
+                .parse::<u64>()
+                .map_err(|error| crate::logging::diagnostic_error("WebUI ID 无效", error))?;
             if !matches!(field, "name" | "url") {
                 return Err("WebUI 字段无效".into());
             }
@@ -81,9 +85,9 @@ pub(crate) fn encode(values: &Values) -> Result<Vec<u8>, String> {
                 _ => return Err(format!("{key} 必须为布尔值")),
             }
         } else if kind == Some(FieldKind::Number) {
-            text.parse::<u64>()
-                .map(Value::from)
-                .map_err(|_| format!("{key} 必须为非负整数"))?
+            text.parse::<u64>().map(Value::from).map_err(|error| {
+                crate::logging::diagnostic_error(format!("{key} 必须为非负整数"), error)
+            })?
         } else if kind.is_some_and(|kind| list_field(key, kind)) {
             let entries = if matches!(key.as_str(), "HttpPorts" | "TlsPorts" | "QuicPorts") {
                 text.split(',').collect::<Vec<_>>()
@@ -109,7 +113,8 @@ pub(crate) fn encode(values: &Values) -> Result<Vec<u8>, String> {
             serde_json::json!({"panels": panels.into_values().collect::<Vec<_>>() }),
         );
     }
-    serde_json::to_vec_pretty(&root).map_err(|_| "无法编码设置 JSON".into())
+    serde_json::to_vec_pretty(&root)
+        .map_err(|error| crate::logging::diagnostic_error("无法编码设置 JSON".into(), error))
 }
 pub(crate) fn decode(bytes: &[u8]) -> Result<Values, String> {
     let mut root: Map<String, Value> = serde_json::from_slice(bytes).map_err(|error| {
@@ -142,7 +147,8 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Values, String> {
                 name: String,
                 url: String,
             }
-            let web_ui: WebUi = serde_json::from_value(value).map_err(|_| "WebUI 设置格式无效")?;
+            let web_ui: WebUi = serde_json::from_value(value)
+                .map_err(|error| crate::logging::diagnostic_error("WebUI 设置格式无效", error))?;
             values.insert("WebUiConfigured".into(), "true".into());
             let mut ids = std::collections::BTreeSet::new();
             for panel in web_ui.panels {
@@ -158,7 +164,8 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Values, String> {
             if !value.is_array() {
                 return Err("tunnels 格式无效".into());
             }
-            let text = serde_yaml_ng::to_string(&value).map_err(|_| "无法读取设置对象")?;
+            let text = serde_yaml_ng::to_string(&value)
+                .map_err(|error| crate::logging::diagnostic_error("无法读取设置对象", error))?;
             values.insert("Tunnels".into(), text);
             continue;
         }
@@ -168,7 +175,8 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Values, String> {
             } else {
                 values.insert(
                     format!("{UNKNOWN}{name}"),
-                    serde_json::to_string(&value).map_err(|_| "扩展设置无效")?,
+                    serde_json::to_string(&value)
+                        .map_err(|error| crate::logging::diagnostic_error("扩展设置无效", error))?,
                 );
             }
             continue;

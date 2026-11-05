@@ -103,8 +103,9 @@ impl SettingsPage {
                     }
                 }
             }
-            let yaml =
-                serde_yaml_ng::to_string(&self.dns_document).map_err(|_| "无法编码配置".to_owned());
+            let yaml = serde_yaml_ng::to_string(&self.dns_document).map_err(|error| {
+                crate::logging::diagnostic_error("无法编码配置".to_owned(), error)
+            });
             match yaml {
                 Ok(yaml) => {
                     patch.insert(

@@ -24,7 +24,9 @@ impl Tunnel {
         let local = self
             .address
             .parse::<std::net::SocketAddr>()
-            .map_err(|_| "本地隧道地址必须为 IP:端口")?;
+            .map_err(|error| {
+                crate::logging::diagnostic_error("本地隧道地址必须为 IP:端口", error)
+            })?;
         if local.port() == 0 {
             return Err("本地隧道端口不能为 0".into());
         }
@@ -65,16 +67,22 @@ pub(crate) fn parse(yaml: &str) -> Result<Vec<Tunnel>, String> {
     if yaml.len() > 256 * 1024 {
         return Err("隧道配置超过大小上限".into());
     }
-    let entries: Vec<Tunnel> = serde_yaml_ng::from_str(yaml).map_err(|_| "隧道配置格式无效")?;
+    let entries: Vec<Tunnel> = serde_yaml_ng::from_str(yaml)
+        .map_err(|error| crate::logging::diagnostic_error("隧道配置格式无效", error))?;
     if entries.len() > 128 {
         return Err("隧道数量不能超过 128".into());
     }
     for (ix, entry) in entries.iter().enumerate() {
         entry.validate()?;
-        let address: std::net::SocketAddr = entry.address.parse().map_err(|_| "隧道监听无效")?;
+        let address: std::net::SocketAddr = entry
+            .address
+            .parse()
+            .map_err(|error| crate::logging::diagnostic_error("隧道监听无效", error))?;
         for other in &entries[..ix] {
-            let other_addr: std::net::SocketAddr =
-                other.address.parse().map_err(|_| "隧道监听无效")?;
+            let other_addr: std::net::SocketAddr = other
+                .address
+                .parse()
+                .map_err(|error| crate::logging::diagnostic_error("隧道监听无效", error))?;
             if address.port() == other_addr.port()
                 && (address.ip() == other_addr.ip()
                     || address.ip().is_unspecified()
@@ -113,7 +121,8 @@ pub(crate) fn change(mut entries: Vec<Tunnel>, change: Change) -> Result<Vec<Tun
             entries.remove(ix);
         }
     }
-    let yaml = serde_yaml_ng::to_string(&entries).map_err(|_| "无法编码隧道配置")?;
+    let yaml = serde_yaml_ng::to_string(&entries)
+        .map_err(|error| crate::logging::diagnostic_error("无法编码隧道配置", error))?;
     parse(&yaml)
 }
 

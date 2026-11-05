@@ -17,7 +17,10 @@ pub(super) fn read(service: &str, id: u64) -> Result<(String, String), String> {
             return if GetLastError() == ERROR_NOT_FOUND {
                 Ok((String::new(), String::new()))
             } else {
-                Err("无法读取 Windows 订阅凭据".into())
+                Err(crate::logging::diagnostic_error(
+                    "无法读取 Windows 订阅凭据".into(),
+                    std::io::Error::last_os_error(),
+                ))
             };
         }
         let credential = &*pointer;
@@ -29,14 +32,16 @@ pub(super) fn read(service: &str, id: u64) -> Result<(String, String), String> {
                 credential.CredentialBlobSize as usize,
             )
         };
-        let result = serde_json::from_slice(bytes).map_err(|_| "订阅凭据格式无效".into());
+        let result = serde_json::from_slice(bytes)
+            .map_err(|error| crate::logging::diagnostic_error("订阅凭据格式无效".into(), error));
         CredFree(pointer.cast());
         result
     }
 }
 pub(super) fn write(service: &str, id: u64, token: &str, age: &str) -> Result<(), String> {
     let mut target = target(service, id);
-    let mut bytes = serde_json::to_vec(&(token, age)).map_err(|_| "无法编码订阅凭据")?;
+    let mut bytes = serde_json::to_vec(&(token, age))
+        .map_err(|error| crate::logging::diagnostic_error("无法编码订阅凭据", error))?;
     let credential = CREDENTIALW {
         Type: CRED_TYPE_GENERIC,
         TargetName: target.as_mut_ptr(),
@@ -46,7 +51,10 @@ pub(super) fn write(service: &str, id: u64, token: &str, age: &str) -> Result<()
         ..Default::default()
     };
     if unsafe { CredWriteW(&credential, 0) } == 0 {
-        Err("无法保存 Windows 订阅凭据".into())
+        Err(crate::logging::diagnostic_error(
+            "无法保存 Windows 订阅凭据".into(),
+            std::io::Error::last_os_error(),
+        ))
     } else {
         Ok(())
     }
@@ -58,6 +66,9 @@ pub(super) fn delete(service: &str, id: u64) -> Result<(), String> {
     {
         Ok(())
     } else {
-        Err("无法删除 Windows 订阅凭据".into())
+        Err(crate::logging::diagnostic_error(
+            "无法删除 Windows 订阅凭据".into(),
+            std::io::Error::last_os_error(),
+        ))
     }
 }

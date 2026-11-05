@@ -36,13 +36,13 @@ pub(crate) fn announce(level: &'static str, message: String, cx: &mut App) {
 }
 pub(crate) fn announce_module(
     level: &'static str,
-    module: &'static str,
+    module: impl Into<String>,
     message: String,
     cx: &mut App,
 ) {
     if let Err(error) = cx.global_mut::<Bridge>().service.submit(Command::Log {
         level,
-        module,
+        module: module.into(),
         message,
     }) {
         logs(cx).publish(crate::logging::Record::program(
@@ -126,25 +126,21 @@ pub(crate) fn execute(
     let module = match &command {
         #[cfg(test)]
         Command::Save { namespace, .. } => match namespace.name() {
-            "settings" => "settings",
-            _ => "storage",
+            "settings" => "settings".to_owned(),
+            _ => "storage".to_owned(),
         },
-        Command::Log { module, .. } => module,
-        _ => "storage",
+        Command::Log { module, .. } => module.clone(),
+        _ => "storage".to_owned(),
     };
-    let success_level = match &command {
-        #[cfg(test)]
-        Command::Save { .. } => "DEBUG",
-        Command::OpenDirectory(_) | Command::OpenDocument(_) | Command::Diagnostics => "DEBUG",
-        _ => "INFO",
-    };
+    let success_level = "INFO";
+    announce_module("INFO", module.clone(), format!("操作开始：{label}"), cx);
     let pending = match cx.global_mut::<Bridge>().service.submit(command) {
         Ok(pending) => pending,
         Err(error) => {
             let handle = window.window_handle();
             cx.defer(move |cx| {
                 let _ = handle.update(cx, |_, window, cx| {
-                    announce_module("ERROR", module, error.to_string(), cx);
+                    announce_module("ERROR", module, crate::logging::error_chain(&error), cx);
                     complete(Err(error), window, cx);
                 });
             });
@@ -157,7 +153,7 @@ pub(crate) fn execute(
         let result = pending.receive().await;
         cx.update(|cx| match &result {
             Ok(_) => announce_module(success_level, module, format!("{label}已完成"), cx),
-            Err(error) => announce_module("ERROR", module, error.to_string(), cx),
+            Err(error) => announce_module("ERROR", module, crate::logging::error_chain(error), cx),
         });
         let _ = handle.update(cx, |_, window, cx| complete(result, window, cx));
         cx.update(|cx| {
@@ -198,7 +194,11 @@ fn save(
         window,
         cx,
         move |result, w, cx| {
-            complete(result.map(|_| ()).map_err(|error| error.to_string()), w, cx);
+            complete(
+                result.map(|_| ()).map_err(crate::logging::error_message),
+                w,
+                cx,
+            );
         },
     );
 }

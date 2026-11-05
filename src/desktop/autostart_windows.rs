@@ -8,7 +8,7 @@ fn run(args: &[&str]) -> Result<Output, String> {
         .args(args)
         .creation_flags(0x08000000)
         .output()
-        .map_err(|error| error.to_string())
+        .map_err(crate::logging::error_message)
 }
 fn decode(bytes: &[u8]) -> String {
     if bytes.starts_with(&[0xff, 0xfe]) {
@@ -94,14 +94,14 @@ pub(super) fn checkpoint() -> Result<Checkpoint, String> {
 fn register(name: &str, xml: &str) -> Result<(), String> {
     // Close the writer before Task Scheduler opens the XML in another process.
     let file = tempfile::NamedTempFile::new()
-        .map_err(|error| error.to_string())?
+        .map_err(crate::logging::error_message)?
         .into_temp_path();
     let bytes = [
         vec![0xff, 0xfe],
         xml.encode_utf16().flat_map(u16::to_le_bytes).collect(),
     ]
     .concat();
-    std::fs::write(&file, bytes).map_err(|error| error.to_string())?;
+    std::fs::write(&file, bytes).map_err(crate::logging::error_message)?;
     let output = run(&[
         "/Create",
         "/TN",
@@ -149,12 +149,13 @@ pub(super) fn apply(on: bool) -> Result<(), String> {
     }
     let name = if elevated { ADMIN } else { USER };
     let other = if elevated { USER } else { ADMIN };
-    let exe = std::env::current_exe().map_err(|error| error.to_string())?;
-    let user =
-        match crate::core::service_identity_for_autostart().map_err(|error| error.to_string())? {
-            suki_service::OwnerIdentity::Windows { sid } => sid,
-            _ => return Err("无法读取 Windows 用户身份".into()),
-        };
+    let exe = std::env::current_exe().map_err(crate::logging::error_message)?;
+    let user = match crate::core::service_identity_for_autostart()
+        .map_err(crate::logging::error_message)?
+    {
+        suki_service::OwnerIdentity::Windows { sid } => sid,
+        _ => return Err("无法读取 Windows 用户身份".into()),
+    };
     let level = if elevated {
         "HighestAvailable"
     } else {

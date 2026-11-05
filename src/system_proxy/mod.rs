@@ -130,7 +130,7 @@ impl Worker {
                 if let Some(Ok(owner)) = &mut owner
                     && let Err(error) = owner.clear()
                 {
-                    eprintln!("系统代理退出清理失败：{error}");
+                    log::error!("系统代理退出清理失败：{error}");
                 }
             })
             .map_err(|error| format!("无法启动系统代理执行端：{error}"))?;
@@ -144,8 +144,10 @@ impl Worker {
         self.sender
             .send(Work { request, reply })
             .await
-            .map_err(|_| "系统代理执行端已停止")?;
-        receiver.await.map_err(|_| "系统代理执行端异常退出")?
+            .map_err(|error| crate::logging::diagnostic_error("系统代理执行端已停止", error))?;
+        receiver
+            .await
+            .map_err(|error| crate::logging::diagnostic_error("系统代理执行端异常退出", error))?
     }
 }
 impl Drop for Worker {

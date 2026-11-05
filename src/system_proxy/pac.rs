@@ -19,7 +19,7 @@ impl Server {
             .map_err(|error| format!("无法启动 PAC 服务：{error}"))?;
         let port = listener
             .local_addr()
-            .map_err(|error| error.to_string())?
+            .map_err(crate::logging::error_message)?
             .port();
         let url = format!("http://127.0.0.1:{port}/proxy.pac");
         let (script, contents) = tokio::sync::watch::channel(String::new());

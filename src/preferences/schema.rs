@@ -470,7 +470,7 @@ fn general_extensions() -> Vec<SectionSpec> {
                     label: "日志清理",
                     description: "",
                     kind: FieldKind::Select,
-                    default: "不清理",
+                    default: "保留 7 天",
                     options: &[
                         "不清理",
                         "保留 1 天",

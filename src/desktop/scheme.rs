@@ -70,17 +70,17 @@ pub(crate) fn register() -> Result<(), String> {
         let directory = dirs::data_local_dir()
             .ok_or("无法确定桌面应用目录")?
             .join("applications");
-        std::fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
+        std::fs::create_dir_all(&directory).map_err(crate::logging::error_message)?;
         let icon_directory = directory
             .parent()
             .ok_or("桌面应用目录无效")?
             .join("icons/hicolor/256x256/apps");
-        std::fs::create_dir_all(&icon_directory).map_err(|error| error.to_string())?;
+        std::fs::create_dir_all(&icon_directory).map_err(crate::logging::error_message)?;
         crate::storage::atomic_write(
             &icon_directory.join("suki-clash.png"),
             include_bytes!("../../assets/logo.png"),
         )
-        .map_err(|error| error.to_string())?;
+        .map_err(crate::logging::error_message)?;
         let command = super::desktop_command(executable)?;
         let entry = format!(
             "[Desktop Entry]\nType=Application\nName=Suki Clash\nExec={command} %u\nTerminal=false\nIcon=suki-clash\nStartupWMClass=suki-clash\nNoDisplay=true\nMimeType=x-scheme-handler/clash;x-scheme-handler/suki-clash;\n"
@@ -89,7 +89,7 @@ pub(crate) fn register() -> Result<(), String> {
             &directory.join("dev.suki.clash-uri.desktop"),
             entry.as_bytes(),
         )
-        .map_err(|error| error.to_string())?;
+        .map_err(crate::logging::error_message)?;
         for scheme in ["clash", "suki-clash"] {
             let status = std::process::Command::new("xdg-mime")
                 .args([
