@@ -403,6 +403,7 @@ impl Render for SukiApp {
             }))
             .child(
                 TitleBar::new()
+                    .on_close_window(|_, window, cx| crate::desktop::close_main(window, cx))
                     .border(stroke::NONE)
                     .bg(cx.theme().background.opacity(opacity::TRANSPARENT))
                     .child(

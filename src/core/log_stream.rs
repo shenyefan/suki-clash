@@ -13,7 +13,7 @@ use std::{
         Arc,
         atomic::{AtomicBool, Ordering},
     },
-    time::{Duration, Instant},
+    time::Duration,
 };
 use tokio::sync::watch;
 #[derive(Clone)]
@@ -185,21 +185,35 @@ pub(super) async fn run(
                 let mut output = Output::new(feed.clone(), Default::default());
                 output.configure(&paths, source.settings.borrow().1);
                 let mut heartbeat = tokio::time::interval(Duration::from_secs(10));
-                let mut alive = Instant::now();
-                let connected_at = Instant::now();
+                heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                let mut alive = tokio::time::Instant::now();
+                let connected_at = tokio::time::Instant::now();
                 loop {
                     use tokio_tungstenite::tungstenite::Message;
                     tokio::select! {biased;
                         _=shutdown.changed()=>{let _=tokio::time::timeout(Duration::from_millis(250),socket.close(None)).await;break 'supervisor;},
                         changed=targets.changed()=>{let _=tokio::time::timeout(Duration::from_millis(250),socket.close(None)).await;if changed.is_err(){break 'supervisor;}backoff=Duration::from_millis(250);continue 'supervisor;},
                         changed=source.settings.changed()=>{if changed.is_err(){break Err("内核日志设置通道已关闭".into());}let limits=source.settings.borrow_and_update().1;output.configure(&paths,limits);},
-                        _=heartbeat.tick()=>{if alive.elapsed()>Duration::from_secs(30){break Err("内核日志心跳超时".into());}
-                            if  !matches!(tokio::time::timeout(Duration::from_secs(2),socket.send(Message::Ping(Default::default()))).await,Ok(Ok(()))){break Err("内核日志心跳发送失败".into());}},
+                        _=heartbeat.tick()=>{
+                            // Mihomo only writes log frames; it does not read client Ping frames.
+                            // A quiet log stream is healthy while its private control API responds.
+                            if alive.elapsed() >= Duration::from_secs(30) {
+                                let health = tokio::select! { biased;
+                                    _ = shutdown.changed() => break 'supervisor,
+                                    changed = targets.changed() => { if changed.is_err() { break 'supervisor; } continue 'supervisor; },
+                                    result = target.client.version() => result,
+                                };
+                                if let Err(error) = health { break Err(error); }
+                                alive = tokio::time::Instant::now();
+                                failures = 0;
+                                failure = None;
+                            }
+                        },
                         next=socket.next()=>match next{
-                            Some(Ok(Message::Text(bytes)))=>{alive=Instant::now();match line(bytes.as_bytes()){Ok(line)=>output.write(line.as_bytes(),&source.settings.borrow().0,false),Err(error)=>break Err(error)}if connected_at.elapsed()>=Duration::from_secs(10){failures=0;}failure=None;backoff=Duration::from_millis(250);},
-                            Some(Ok(Message::Binary(bytes)))=>{alive=Instant::now();match line(&bytes){Ok(line)=>output.write(line.as_bytes(),&source.settings.borrow().0,false),Err(error)=>break Err(error)}},
-                            Some(Ok(Message::Ping(bytes)))=>{alive=Instant::now();if !matches!(tokio::time::timeout(Duration::from_secs(2),socket.send(Message::Pong(bytes))).await,Ok(Ok(()))){break Err("内核日志心跳响应失败".into());}},
-                            Some(Ok(Message::Pong(_)))=>{alive=Instant::now();if connected_at.elapsed()>=Duration::from_secs(10){failures=0;}},
+                            Some(Ok(Message::Text(bytes)))=>{alive=tokio::time::Instant::now();match line(bytes.as_bytes()){Ok(line)=>output.write(line.as_bytes(),&source.settings.borrow().0,false),Err(error)=>break Err(error)}if connected_at.elapsed()>=Duration::from_secs(10){failures=0;}failure=None;backoff=Duration::from_millis(250);},
+                            Some(Ok(Message::Binary(bytes)))=>{alive=tokio::time::Instant::now();match line(&bytes){Ok(line)=>output.write(line.as_bytes(),&source.settings.borrow().0,false),Err(error)=>break Err(error)}},
+                            Some(Ok(Message::Ping(bytes)))=>{alive=tokio::time::Instant::now();if !matches!(tokio::time::timeout(Duration::from_secs(2),socket.send(Message::Pong(bytes))).await,Ok(Ok(()))){break Err("内核日志心跳响应失败".into());}},
+                            Some(Ok(Message::Pong(_)))=>{alive=tokio::time::Instant::now();if connected_at.elapsed()>=Duration::from_secs(10){failures=0;}},
                             Some(Ok(Message::Frame(_)))=>{},
                             _=>break Err("内核日志连接中断".into()),
                         }
@@ -327,6 +341,87 @@ mod tests {
 #[cfg(all(test, unix))]
 mod supervision_tests {
     use super::*;
+    #[tokio::test]
+    async fn quiet_write_only_log_stream_survives_without_pong() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio_tungstenite::tungstenite::Message;
+        let root = tempfile::tempdir().unwrap();
+        let paths = AppPaths::isolated(root.path());
+        paths.create().unwrap();
+        let path = root.path().join("quiet.sock");
+        let listener = tokio::net::UnixListener::bind(&path).unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+            // Match Mihomo: hold the connection without reading client control frames.
+            tokio::time::timeout(Duration::from_secs(40), async {
+                let (mut health, _) = listener.accept().await.unwrap();
+                let mut request = Vec::new();
+                loop {
+                    request.push(health.read_u8().await.unwrap());
+                    if request.ends_with(b"\r\n\r\n") { break; }
+                }
+                assert!(request.starts_with(b"GET /version "));
+                let body = r#"{"version":"v1.test"}"#;
+                health.write_all(format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
+                health.shutdown().await.unwrap();
+                ws.send(Message::Text(r#"{"type":"info","payload":"quiet stream survived"}"#.into())).await.unwrap();
+            }).await.unwrap();
+            ws
+        });
+        let (_settings, updates) = watch::channel((Vec::new(), (7, 1024 * 1024)));
+        let suppressed = Arc::new(AtomicBool::new(false));
+        let target = Target {
+            client: super::super::client::Client::new(
+                super::super::client::Endpoint::Unix(path),
+                "secret".into(),
+            ),
+            logs: Some(Source {
+                service: None,
+                settings: updates,
+                pipe_suppressed: suppressed.clone(),
+            }),
+            http: Default::default(),
+            generation: 1,
+            epoch: 1,
+            order: vec![],
+            proxy_port: 0,
+            proxy_auth: None,
+            dns_mode: None,
+            proxy_error: None,
+        };
+        let (_targets, targets) = watch::channel(Some(target));
+        let (shutdown, cancel) = watch::channel(false);
+        let feed = Feed::default();
+        let worker = tokio::spawn(run(paths, feed.clone(), targets, cancel));
+        let socket = server.await.unwrap();
+        tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                if feed
+                    .since(0)
+                    .iter()
+                    .any(|record| record.message == "quiet stream survived")
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(
+            !feed
+                .since(0)
+                .iter()
+                .any(|record| record.level == Level::Warning)
+        );
+        assert!(suppressed.load(Ordering::Acquire));
+        shutdown.send_replace(true);
+        worker.await.unwrap();
+        drop(socket);
+        assert!(!suppressed.load(Ordering::Acquire));
+    }
+
     #[tokio::test]
     async fn failed_log_connections_stop_after_three_and_publish_the_cause_once() {
         let root = tempfile::tempdir().unwrap();

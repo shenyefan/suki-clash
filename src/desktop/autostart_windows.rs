@@ -92,19 +92,22 @@ pub(super) fn checkpoint() -> Result<Checkpoint, String> {
     Ok(Checkpoint(saved))
 }
 fn register(name: &str, xml: &str) -> Result<(), String> {
-    let file = tempfile::NamedTempFile::new().map_err(|error| error.to_string())?;
+    // Close the writer before Task Scheduler opens the XML in another process.
+    let file = tempfile::NamedTempFile::new()
+        .map_err(|error| error.to_string())?
+        .into_temp_path();
     let bytes = [
         vec![0xff, 0xfe],
         xml.encode_utf16().flat_map(u16::to_le_bytes).collect(),
     ]
     .concat();
-    std::fs::write(file.path(), bytes).map_err(|error| error.to_string())?;
+    std::fs::write(&file, bytes).map_err(|error| error.to_string())?;
     let output = run(&[
         "/Create",
         "/TN",
         name,
         "/XML",
-        file.path().to_str().ok_or("任务路径无效")?,
+        file.to_str().ok_or("任务路径无效")?,
         "/F",
     ])?;
     if output.status.success() {

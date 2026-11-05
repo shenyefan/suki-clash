@@ -291,6 +291,15 @@ impl ChainEditor {
             Err(error) => ui::show_error(error, window, cx),
         }
     }
+    fn restore_choices(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.enabled = self.expected.enabled;
+        self.group.update(cx, |state, cx| {
+            state.set_selected_value(&SharedString::from(self.expected.group.clone()), window, cx)
+        });
+        self.entry
+            .update(cx, |state, cx| state.set_selected_index(None, window, cx));
+        cx.notify();
+    }
     fn save(&mut self, disconnect: bool, window: &mut Window, cx: &mut Context<Self>) {
         if self.pending {
             return;
@@ -299,6 +308,7 @@ impl ChainEditor {
             && self.raw
             && let Err(error) = self.accept_yaml(window, cx)
         {
+            self.restore_choices(window, cx);
             ui::show_error(error, window, cx);
             return;
         }
@@ -308,6 +318,7 @@ impl ChainEditor {
             let custom = match self.yaml() {
                 Ok(yaml) => yaml,
                 Err(error) => {
+                    self.restore_choices(window, cx);
                     ui::show_error(error, window, cx);
                     return;
                 }
@@ -331,6 +342,7 @@ impl ChainEditor {
             }
         };
         if let Err(error) = desired.validate() {
+            self.restore_choices(window, cx);
             ui::show_error(error, window, cx);
             return;
         }
@@ -361,6 +373,8 @@ impl ChainEditor {
                                 source.set_value("proxies: []\n", window, cx)
                             });
                         }
+                    } else {
+                        this.restore_choices(window, cx);
                     }
                     cx.notify();
                 });
@@ -370,7 +384,10 @@ impl ChainEditor {
                 self.pending = true;
                 cx.notify();
             }
-            Err(error) => ui::show_error(error, window, cx),
+            Err(error) => {
+                self.restore_choices(window, cx);
+                ui::show_error(error, window, cx);
+            }
         }
     }
     fn remove(&mut self, name: &str, window: &mut Window, cx: &mut Context<Self>) {

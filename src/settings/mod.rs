@@ -132,9 +132,12 @@ impl SettingsPage {
                     cx.defer(move |cx| {
                         let _ = window.update(cx, |_, window, cx| {
                             let _ = owner.update(cx, |this, cx| {
-                                if this.error.is_none() {
-                                    this.restore_core_fields(&submitted, window, cx);
-                                }
+                                this.restore_core_fields(
+                                    &submitted,
+                                    this.error.is_some(),
+                                    window,
+                                    cx,
+                                );
                                 if this.error.is_none()
                                     && submitted
                                         .get("CoreReleaseIndex")

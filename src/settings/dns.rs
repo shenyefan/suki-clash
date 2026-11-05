@@ -223,9 +223,10 @@ mod synchronization_tests {
                     let yaml: serde_yaml_ng::Value =
                         serde_yaml_ng::from_str(text.as_ref()).unwrap();
                     assert!(yaml.get("override-enabled").is_none());
-                    assert_eq!(yaml[kind.id()]["enable"], false);
+                    // The isolated executor rejects both toggles; YAML keeps committed values.
+                    assert_eq!(yaml[kind.id()]["enable"], true);
                     window.render_frame(cx);
-                    assert!(!page.read(cx).dns_source.read(cx).is_editable());
+                    assert!(page.read(cx).dns_source.read(cx).is_editable());
 
                     if kind == SettingsKind::Dns {
                         assert_eq!(yaml["dns"]["cache-algorithm"], "arc");
@@ -247,7 +248,7 @@ mod synchronization_tests {
                     assert!(!page.read(cx).dns_raw);
                     assert!(matches!(
                         page.read(cx).fields[global].control,
-                        FieldControl::Toggle(false)
+                        FieldControl::Toggle(true)
                     ));
                     assert!(matches!(
                         page.read(cx).fields[service].control,

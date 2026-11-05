@@ -95,8 +95,7 @@ impl ProfilesPage {
                             this.saving = false;
                             this.rejected = core.error().is_some() && !committed;
                         }
-                        if !this.rejected
-                            && let Some(values) = core.settings(store::key(this.overrides))
+                        if let Some(values) = core.settings(store::key(this.overrides))
                             && let Some((documents, _)) = store::load_values(values.clone())
                         {
                             this.documents = documents;

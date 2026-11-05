@@ -213,7 +213,20 @@ mod tests {
                 .update(cx, |_, window, cx| {
                     window.render_frame(cx);
                     window.within("system-proxy-mode").click(index, cx);
-                    assert_eq!(page.read(cx).values(cx)["SystemProxyModeIndex"], label);
+                    // Rejected segmented choices revert, just like the shared Select path.
+                    assert_eq!(page.read(cx).values(cx)["SystemProxyModeIndex"], "手动");
+                    // Select each presentation locally to inspect its retained editor binding.
+                    if let FieldControl::Select(state) =
+                        &page.read(cx).fields["SystemProxyModeIndex"].control
+                    {
+                        state.clone().update(cx, |state, cx| {
+                            state.set_selected_value(
+                                &gpui_kit::SharedString::from(label),
+                                window,
+                                cx,
+                            )
+                        });
+                    }
                     let mode = window.within("system-proxy-mode").find(index);
                     assert!(mode.bounds().origin.x > window.viewport_size().width / 2.);
                     assert!(window.try_find("runtime-tabs").is_none());

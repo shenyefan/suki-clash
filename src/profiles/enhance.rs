@@ -520,9 +520,11 @@ impl EnhancementEditor {
             ))
             .footer(ui::dialog_footer("保存"))
             .on_ok(move |_, w, cx| {
-                let value = match entry.read(cx).value(cx) {
+                let result = entry.read(cx).value(cx);
+                let value = match result {
                     Ok(value) => value,
                     Err(error) => {
+                        entry.update(cx, |entry, cx| entry.restore_choices(w, cx));
                         ui::show_error(error, w, cx);
                         return false;
                     }
@@ -1220,6 +1222,7 @@ struct EntryEditor {
     original: Value,
     fields: BTreeMap<&'static str, Entity<InputState>>,
     types: Entity<SelectState<Vec<EntryType>>>,
+    initial_type: SharedString,
     switches: BTreeMap<&'static str, bool>,
     providers: Entity<ComboboxState<Vec<SharedString>>>,
     sources_task: Option<Task<()>>,
@@ -1365,6 +1368,7 @@ impl EntryEditor {
             original,
             fields,
             types,
+            initial_type: current.into(),
             switches,
             providers,
             sources_task: None,
@@ -1373,6 +1377,37 @@ impl EntryEditor {
             members,
             _types: subscription,
         }
+    }
+    fn restore_choices(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.types.update(cx, |state, cx| {
+            state.set_selected_value(&self.initial_type, window, cx)
+        });
+        self.no_resolve = self
+            .rule_suffix
+            .iter()
+            .any(|part| part.trim() == "no-resolve");
+        for (key, checked) in &mut self.switches {
+            *checked = self
+                .original
+                .get(*key)
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+        }
+        for (key, state) in [("proxies", &self.members), ("use", &self.providers)] {
+            let selected = self
+                .original
+                .get(key)
+                .and_then(Value::as_sequence)
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .map(SharedString::from)
+                .collect::<Vec<_>>();
+            state.update(cx, |state, cx| {
+                state.set_selected_values(&selected, window, cx)
+            });
+        }
+        cx.notify();
     }
     fn value(&self, cx: &App) -> Result<Value, String> {
         let get = |key| {

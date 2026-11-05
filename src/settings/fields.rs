@@ -28,7 +28,16 @@ impl SettingsPage {
             || self.session.read(cx).core_busy();
         let control = match &field.control {
             FieldControl::Toggle(value) => {
-                let checked = if key == "IsTunEnabled" {
+                let checked = if key == "AutoRun" {
+                    self.session
+                        .read(cx)
+                        .core()
+                        .autostart
+                        .as_ref()
+                        .and_then(|result| result.as_ref().ok())
+                        .copied()
+                        .unwrap_or(false)
+                } else if key == "IsTunEnabled" {
                     self.session.read(cx).tun() == Some(true)
                 } else {
                     *value

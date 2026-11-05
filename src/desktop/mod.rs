@@ -42,6 +42,8 @@ pub(crate) async fn startup_script(paths: &crate::storage::AppPaths) -> Result<(
         }
         _ => return Err("启动脚本仅支持 .sh、.ps1 和 Windows .bat".into()),
     };
+    #[cfg(windows)]
+    command.creation_flags(0x08000000);
     let mut child = command
         .current_dir(path.parent().ok_or("启动脚本目录无效")?)
         .stdin(std::process::Stdio::null())
@@ -82,13 +84,72 @@ pub(crate) fn recover(service: instance::Service, cx: &mut App) {
     let app = instance.app.clone();
     install(service, main, app, cx);
 }
+/// Native close and the Linux titlebar button share the same cleanup policy.
+pub(crate) fn close_main(window: &mut Window, cx: &mut App) {
+    if !crate::tray::close_to_tray(cx) {
+        crate::core::quit(cx);
+        return;
+    }
+    #[cfg(target_os = "macos")]
+    cx.hide();
+    #[cfg(target_os = "windows")]
+    {
+        use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+        match HasWindowHandle::window_handle(window).map(|handle| handle.as_raw()) {
+            Ok(RawWindowHandle::Win32(handle)) => unsafe {
+                windows_sys::Win32::UI::WindowsAndMessaging::ShowWindow(
+                    handle.hwnd.get() as _,
+                    windows_sys::Win32::UI::WindowsAndMessaging::SW_HIDE,
+                );
+            },
+            _ => crate::ui::show_error("无法取得主窗口句柄".into(), window, cx),
+        }
+    }
+    // GPUI exposes minimization on both X11 and Wayland, but no hide/show API.
+    #[cfg(target_os = "linux")]
+    window.minimize_window();
+    #[cfg(target_os = "macos")]
+    let _ = window;
+}
+
 /// One foreground entry for Dock/Finder reopen, tray and single-instance activation.
 pub(crate) fn show_main(main: AnyWindowHandle, cx: &mut App) {
     let _ = main.update(cx, |_, window, cx| {
+        #[cfg(target_os = "windows")]
+        {
+            use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+            if let Ok(RawWindowHandle::Win32(handle)) =
+                HasWindowHandle::window_handle(window).map(|handle| handle.as_raw())
+            {
+                unsafe {
+                    windows_sys::Win32::UI::WindowsAndMessaging::ShowWindow(
+                        handle.hwnd.get() as _,
+                        windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOW,
+                    );
+                }
+            }
+        }
         window.activate_window();
         cx.activate(true);
     });
 }
+#[cfg(target_os = "macos")]
+pub(crate) fn configure_icon() {
+    use objc2::{AnyThread, MainThreadMarker};
+    use objc2_app_kit::{NSApplication, NSImage};
+    use objc2_foundation::NSData;
+    if let Some(main_thread) = MainThreadMarker::new()
+        && let Some(icon) = NSImage::initWithData(
+            NSImage::alloc(),
+            &NSData::with_bytes(include_bytes!("../../assets/logo.png")),
+        )
+    {
+        unsafe {
+            NSApplication::sharedApplication(main_thread).setApplicationIconImage(Some(&icon));
+        }
+    }
+}
+
 pub(crate) fn reopen(cx: &mut App) {
     if let Some(instance) = cx.try_global::<Instance>() {
         show_main(instance.main.into(), cx);

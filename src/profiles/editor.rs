@@ -49,6 +49,9 @@ impl SearchableListItem for ScopeChoice {
 pub(super) struct DocumentEditor {
     owner: WeakEntity<ProfilesPage>,
     document: Document,
+    initial: Document,
+    submitting: bool,
+    _submission: Option<Subscription>,
     mode: EditorMode,
     scope: Entity<SelectState<Vec<ScopeChoice>>>,
     scopes: Vec<ScopeChoice>,
@@ -184,7 +187,27 @@ impl DocumentEditor {
                 cx,
             )
         });
+        let submission = owner.upgrade().map(|owner| {
+            cx.observe_in(&owner, window, |this, owner, window, cx| {
+                if this.submitting && !owner.read(cx).saving {
+                    this.submitting = false;
+                    if owner.read(cx).rejected {
+                        this.restore_choices(window, cx);
+                    } else if let Some(document) = owner
+                        .read(cx)
+                        .documents
+                        .iter()
+                        .find(|document| document.id == this.document.id)
+                    {
+                        this.initial = document.clone();
+                    }
+                }
+            })
+        });
         Self {
+            initial: document.clone(),
+            submitting: false,
+            _submission: submission,
             with_proxy: document.with_proxy && !document.self_proxy,
             self_proxy: document.self_proxy,
             accept_invalid_certs: document.accept_invalid_certs,
@@ -205,6 +228,17 @@ impl DocumentEditor {
             content,
         }
     }
+    fn restore_choices(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.document.enabled = self.initial.enabled;
+        self.with_proxy = self.initial.with_proxy && !self.initial.self_proxy;
+        self.self_proxy = self.initial.self_proxy;
+        self.accept_invalid_certs = self.initial.accept_invalid_certs;
+        self.scope.update(cx, |state, cx| {
+            state.set_selected_value(&self.initial.scope_profile, window, cx)
+        });
+        cx.notify();
+    }
+
     pub(super) fn revision(&self, cx: &App) -> Vec<String> {
         vec![
             self.document.enabled.to_string(),
@@ -267,6 +301,7 @@ impl DocumentEditor {
             if document.name.is_empty() && self.mode != EditorMode::Import {
                 ui::show_error("填写配置名称".into(), window, cx);
                 cx.notify();
+                self.restore_choices(window, cx);
                 return false;
             }
             if (self.mode == EditorMode::Import || !document.url.is_empty())
@@ -278,6 +313,7 @@ impl DocumentEditor {
                     cx,
                 );
                 cx.notify();
+                self.restore_choices(window, cx);
                 return false;
             }
             document.interval = self.interval.read(cx).value().to_string();
@@ -291,6 +327,7 @@ impl DocumentEditor {
                     .is_none()
             {
                 ui::show_error("更新间隔需为 0–525600 分钟".into(), window, cx);
+                self.restore_choices(window, cx);
                 return false;
             }
             if document.is_remote()
@@ -303,6 +340,7 @@ impl DocumentEditor {
             {
                 ui::show_error("下载超时需为大于 0 的整数".into(), window, cx);
                 cx.notify();
+                self.restore_choices(window, cx);
                 return false;
             }
             document.token = self.token.read(cx).value().to_string();
@@ -313,8 +351,12 @@ impl DocumentEditor {
         match self.owner.update(cx, |owner, cx| {
             owner.save_document_with(document, Some(editor), window, cx)
         }) {
-            Ok(Ok(())) => false,
+            Ok(Ok(())) => {
+                self.submitting = true;
+                false
+            }
             Ok(Err(error)) => {
+                self.restore_choices(window, cx);
                 ui::show_error(error, window, cx);
                 cx.notify();
                 false

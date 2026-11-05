@@ -89,6 +89,9 @@ impl Editor {
     }
     fn saved(&mut self, succeeded: bool, window: &mut Window, cx: &mut Context<Self>) {
         self.busy = false;
+        if !succeeded {
+            self.selected = self.expected.iter().cloned().collect();
+        }
         if succeeded && self.open {
             self.open = false;
             window.close_dialog(cx);
@@ -149,7 +152,10 @@ impl Editor {
                 self.busy = true;
                 cx.notify()
             }
-            Err(error) => ui::show_error(error, window, cx),
+            Err(error) => {
+                self.saved(false, window, cx);
+                ui::show_error(error, window, cx);
+            }
         }
     }
 }
@@ -299,7 +305,14 @@ mod tests {
             let editor = Editor::show(Vec::new(), window, cx);
             editor.update(cx, |this, cx| {
                 this.busy = true;
+                this.expected = vec!["confirmed-sid".into()];
+                this.selected.insert("rejected-sid".into());
+                this.query.update(cx, |state, cx| {
+                    state.set_value("retained query", window, cx)
+                });
                 this.saved(false, window, cx);
+                assert_eq!(this.selected, this.expected.iter().cloned().collect());
+                assert_eq!(this.query.read(cx).value().as_ref(), "retained query");
             });
             assert!(window.has_active_dialog(cx));
             assert!(editor.read(cx).open);

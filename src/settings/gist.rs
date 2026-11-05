@@ -153,13 +153,18 @@ impl Configuration {
                             .update(cx, |input, cx| input.set_value("", window, cx));
                         this.key
                             .update(cx, |input, cx| input.set_value("", window, cx));
+                    } else {
+                        this.encrypt = this.expected.encrypt;
                     }
                     cx.notify();
                 });
             },
         ) {
             Ok(_) => self.busy = true,
-            Err(error) => ui::show_error(error, window, cx),
+            Err(error) => {
+                self.encrypt = self.expected.encrypt;
+                ui::show_error(error, window, cx);
+            }
         }
         cx.notify();
     }

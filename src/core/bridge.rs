@@ -757,7 +757,7 @@ mod settings_sync_tests {
     use gpui_kit::{AppContext, TestAppContext, WindowOptions, test::TestWindowExt};
 
     #[gpui_kit::test]
-    fn settings_follow_external_commits_preserve_failed_drafts_and_refresh_on_reentry(
+    fn settings_follow_external_commits_revert_failed_toggles_and_refresh_on_reentry(
         cx: &mut TestAppContext,
     ) {
         let root = tempfile::tempdir().unwrap();
@@ -812,8 +812,7 @@ mod settings_sync_tests {
             .update(cx, |_, window, cx| {
                 window.render_frame(cx);
                 assert_eq!(window.find("setting-SilentStart").checked(), Some(true));
-                // The isolated UI executor rejects the change: retain the requested
-                // draft instead of replacing it when another committed field changes.
+                // The isolated UI executor rejects the change: restore the committed toggle.
                 window.click("setting-SilentStart", cx);
             })
             .unwrap();
@@ -833,7 +832,7 @@ mod settings_sync_tests {
         window
             .update(cx, |_, window, cx| {
                 window.render_frame(cx);
-                assert_eq!(window.find("setting-SilentStart").checked(), Some(false));
+                assert_eq!(window.find("setting-SilentStart").checked(), Some(true));
                 // Leaving and re-entering discards the rejected draft and reads the
                 // latest committed source for every settings destination.
                 page.update(cx, |page, cx| page.reopen(window, cx));

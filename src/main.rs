@@ -1,3 +1,5 @@
+#![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
+
 mod platform_access;
 use crate::ui::theme::opacity;
 mod app;
@@ -74,6 +76,9 @@ fn main() {
     });
     application.on_reopen(desktop::reopen);
     application.run(move |cx| {
+        #[cfg(target_os = "macos")]
+        desktop::configure_icon();
+        cx.set_app_identity("suki-clash", "Suki Clash");
         integration::init(service, instance_error, cx);
         init(cx);
         gpui_kit::component::set_locale("zh-CN");
@@ -103,12 +108,8 @@ fn main() {
         options.focus = !silent;
         let main_window = cx
             .open_window(options, |window, cx| {
-                window.on_window_should_close(cx, |_, cx| {
-                    if tray::close_to_tray(cx) {
-                        cx.hide();
-                        return false;
-                    }
-                    core::quit(cx);
+                window.on_window_should_close(cx, |window, cx| {
+                    desktop::close_main(window, cx);
                     false
                 });
                 let view = cx.new(|cx| app::SukiApp::new(window, cx));

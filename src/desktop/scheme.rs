@@ -53,6 +53,11 @@ pub(crate) fn register() -> Result<(), String> {
             write(&path, "", "URL:Suki Clash subscription")?;
             write(&path, "URL Protocol", "")?;
             write(
+                &format!(r"{path}\DefaultIcon"),
+                "",
+                &format!("\"{executable}\",0"),
+            )?;
+            write(
                 &format!(r"{path}\shell\open\command"),
                 "",
                 &format!("\"{executable}\" \"%1\""),
@@ -66,6 +71,16 @@ pub(crate) fn register() -> Result<(), String> {
             .ok_or("无法确定桌面应用目录")?
             .join("applications");
         std::fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
+        let icon_directory = directory
+            .parent()
+            .ok_or("桌面应用目录无效")?
+            .join("icons/hicolor/256x256/apps");
+        std::fs::create_dir_all(&icon_directory).map_err(|error| error.to_string())?;
+        crate::storage::atomic_write(
+            &icon_directory.join("suki-clash.png"),
+            include_bytes!("../../assets/logo.png"),
+        )
+        .map_err(|error| error.to_string())?;
         let escaped = executable
             .replace('\\', "\\\\")
             .replace('"', "\\\"")
@@ -73,7 +88,7 @@ pub(crate) fn register() -> Result<(), String> {
             .replace('$', "\\$")
             .replace('%', "%%");
         let entry = format!(
-            "[Desktop Entry]\nType=Application\nName=Suki Clash\nExec=\"{escaped}\" %u\nTerminal=false\nNoDisplay=true\nMimeType=x-scheme-handler/clash;x-scheme-handler/suki-clash;\n"
+            "[Desktop Entry]\nType=Application\nName=Suki Clash\nExec=\"{escaped}\" %u\nTerminal=false\nIcon=suki-clash\nStartupWMClass=suki-clash\nNoDisplay=true\nMimeType=x-scheme-handler/clash;x-scheme-handler/suki-clash;\n"
         );
         crate::storage::atomic_write(
             &directory.join("dev.suki.clash-uri.desktop"),

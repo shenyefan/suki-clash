@@ -421,21 +421,7 @@ impl TunnelEditor {
             _subscription: subscription,
         };
         editor.sync(window, cx);
-        if let Some(entry) = &editor.previous {
-            let network = SharedString::from(if entry.network.len() == 2 {
-                "tcp+udp".into()
-            } else {
-                entry.network.join("+")
-            });
-            editor.transport.update(cx, |state, cx| {
-                state.set_selected_value(&network, window, cx)
-            });
-            if let Some(proxy) = &entry.proxy {
-                editor.proxy.update(cx, |state, cx| {
-                    state.set_selected_value(&SharedString::from(proxy.clone()), window, cx)
-                });
-            }
-        }
+        editor.restore_choices(window, cx);
         editor
     }
     fn sync(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -476,8 +462,36 @@ impl TunnelEditor {
             self.pending = None;
             if error.is_none() {
                 window.close_dialog(cx);
+            } else {
+                self.restore_choices(window, cx);
             }
         }
+    }
+
+    fn restore_choices(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let network = self
+            .previous
+            .as_ref()
+            .map(|entry| {
+                if entry.network.len() == 2 {
+                    "tcp+udp".into()
+                } else {
+                    entry.network.join("+")
+                }
+            })
+            .unwrap_or_else(|| "tcp+udp".into());
+        let proxy = self
+            .previous
+            .as_ref()
+            .and_then(|entry| entry.proxy.clone())
+            .unwrap_or_else(|| "DIRECT".into());
+        self.transport.update(cx, |state, cx| {
+            state.set_selected_value(&SharedString::from(network), window, cx)
+        });
+        self.proxy.update(cx, |state, cx| {
+            state.set_selected_value(&SharedString::from(proxy), window, cx)
+        });
+        cx.notify();
     }
 
     fn save(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -527,6 +541,7 @@ impl TunnelEditor {
         let entry = match entry {
             Ok(entry) => entry,
             Err(error) => {
+                self.restore_choices(window, cx);
                 ui::show_error(error, window, cx);
                 return;
             }
@@ -540,7 +555,10 @@ impl TunnelEditor {
         };
         match core::submit(core::Command::Tunnel(change), window, cx) {
             Ok(id) => self.pending = Some(id),
-            Err(error) => ui::show_error(error, window, cx),
+            Err(error) => {
+                self.restore_choices(window, cx);
+                ui::show_error(error, window, cx);
+            }
         }
         cx.notify();
     }

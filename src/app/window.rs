@@ -13,6 +13,10 @@ pub(crate) fn options(cx: &App) -> WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(bounds)),
         window_min_size: Some(size(window::MIN_WIDTH, window::MIN_HEIGHT)),
         window_background: background_appearance(cx),
+        app_id: Some("suki-clash".into()),
+        icon: image::load_from_memory(include_bytes!("../../assets/logo.png"))
+            .map(|image| std::sync::Arc::new(image.into_rgba8()))
+            .ok(),
         ..TitleBar::window_options()
     }
 }

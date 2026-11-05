@@ -87,7 +87,7 @@ def prepare(args, version, os_name, arch):
         shutil.copy2(ROOT / "assets/logo.png", package / "suki-clash.png")
         (package / "suki-clash.desktop").write_text(
             "[Desktop Entry]\nType=Application\nName=Suki Clash\nExec=suki-clash\n"
-            f"Icon=suki-clash\nCategories=Network;\nX-AppImage-Version={version}\n"
+            f"Icon=suki-clash\nTerminal=false\nStartupWMClass=suki-clash\nCategories=Network;\nX-AppImage-Version={version}\n"
             "MimeType=x-scheme-handler/suki-clash;x-scheme-handler/clash;\n")
     else:
         package = stage
@@ -161,16 +161,7 @@ def main():
                "--delta", "None", "--outputDir", output]
     signed = False
     if os_name == "win":
-        icon = args.work / "suki-clash.ico"
-        icon_env = os.environ.copy()
-        icon_env.update(SUKI_ICON_SOURCE=str(ROOT / "assets/logo.png"), SUKI_ICON_TARGET=str(icon))
-        run(["pwsh", "-NoProfile", "-Command",
-             "Add-Type -AssemblyName System.Drawing; "
-             "$image=[System.Drawing.Bitmap]::new($env:SUKI_ICON_SOURCE); "
-             "$icon=[System.Drawing.Icon]::FromHandle($image.GetHicon()); "
-             "$stream=[System.IO.File]::Create($env:SUKI_ICON_TARGET); "
-             "try {$icon.Save($stream)} finally {$stream.Dispose(); $icon.Dispose(); $image.Dispose()}"], env=icon_env)
-        command.extend(["--icon", icon])
+        command.extend(["--icon", ROOT / "assets/logo.ico"])
         if thumbprint := os.environ.get("SUKI_WINDOWS_CERT_THUMBPRINT"):
             command.extend(["--signParams", f"/sha1 {thumbprint} /fd SHA256 /tr http://timestamp.digicert.com /td SHA256"])
             signed = True

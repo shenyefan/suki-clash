@@ -26,10 +26,8 @@ impl ProfilesPage {
             return;
         };
         document.enabled = enabled;
-        let draft = documents.clone();
-        match self.persist_documents(documents, None, window, cx, |_, _, _| {}) {
-            Ok(()) => self.documents = draft,
-            Err(error) => ui::show_error(error, window, cx),
+        if let Err(error) = self.persist_documents(documents, None, window, cx, |_, _, _| {}) {
+            ui::show_error(error, window, cx);
         }
     }
 
