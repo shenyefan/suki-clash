@@ -1623,7 +1623,8 @@ impl Actor {
             SettingsKind::Sniffer => "SnifferOverrideEnabled",
             _ => "",
         };
-        if patch.get(enable_key).is_some_and(|value| value == "true")
+        if self.running.is_some()
+            && patch.get(enable_key).is_some_and(|value| value == "true")
             && previous.get(enable_key).is_none_or(|value| value != "true")
         {
             crate::bootstrap::require_core(&self.paths)?;
@@ -1884,7 +1885,7 @@ impl Actor {
                     .get("tproxy-port")
                     .and_then(serde_yaml_ng::Value::as_u64)
                     .is_some_and(|port| port > 0));
-        let use_service = if enabling {
+        let use_service = if enabling && self.running.is_some() {
             crate::bootstrap::require_core(&self.paths)?;
             super::privileged::tun_service_required().await?
         } else {
@@ -2424,21 +2425,9 @@ impl Actor {
 }
 
 pub(super) async fn terminate(child: &mut Child) -> Result<(), String> {
-    if child
-        .try_wait()
-        .map_err(|error| format!("检查进程退出失败：{}", error.kind()))?
-        .is_some()
-    {
-        return Ok(());
-    }
-    child
-        .start_kill()
-        .map_err(|error| format!("停止本应用内核失败：{}", error.kind()))?;
-    tokio::time::timeout(Duration::from_secs(2), child.wait())
+    suki_service::execution::stop_child(child, Duration::from_secs(1))
         .await
-        .map_err(|_| "停止内核后未能确认进程退出".to_owned())?
-        .map_err(|error| format!("等待本应用内核退出失败：{}", error.kind()))?;
-    Ok(())
+        .map_err(|error| format!("停止本应用内核失败：{error}"))
 }
 
 #[cfg(all(test, unix))]

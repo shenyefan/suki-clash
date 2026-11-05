@@ -381,6 +381,53 @@ mod tests {
         }
     }
     #[test]
+    fn mihomo_process_metadata_reaches_rows_and_refreshes_without_traffic_changes() {
+        let at = Instant::now();
+        let mut runtime = frame("process-connection", 1, at, 100);
+        let mut tracker = Tracker::default();
+        assert!(tracker.update(&runtime));
+        let id = tracker.rows()[0].id;
+        assert_eq!(tracker.rows()[0].cells[7], "未知进程");
+
+        // Exercise the API JSON boundary, including Windows paths and metadata-only updates.
+        for (process, path, displayed) in [
+            (
+                "browser.exe",
+                r"C:\Program Files\Browser\browser.exe",
+                "browser.exe",
+            ),
+            (
+                "",
+                "/Applications/Browser.app/Contents/MacOS/Browser",
+                "/Applications/Browser.app/Contents/MacOS/Browser",
+            ),
+            ("browser", "/usr/bin/browser", "browser"),
+        ] {
+            let payload = serde_json::json!({
+                "uploadTotal": 100, "downloadTotal": 200,
+                "connections": [{
+                    "id": "process-connection", "upload": 100, "download": 200,
+                    "metadata": {
+                        "network": "tcp", "type": "HTTP", "host": "example.test",
+                        "sourceIP": "127.0.0.1", "sourcePort": "50123",
+                        "destinationPort": "443", "process": process, "processPath": path,
+                        "uid": 501
+                    }
+                }]
+            });
+            runtime.connections = Arc::new(serde_json::from_value(payload).unwrap());
+            runtime.connections_at = Some(at + Duration::from_secs(1));
+            assert!(tracker.update(&runtime));
+            let row = &tracker.rows()[0];
+            assert_eq!(row.id, id);
+            assert_eq!(row.cells[7], displayed);
+            assert!(row.details.contains(&format!("进程路径\t{path}")));
+        }
+        tracker.stopped();
+        assert_eq!(tracker.rows()[0].cells[7], "browser");
+    }
+
+    #[test]
     fn connection_detail_formats_full_time_path_remote_target_and_ipv6() {
         let connection = Connection {
             id: "connection-id".into(),

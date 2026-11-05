@@ -35,7 +35,7 @@ class OfflineRuntimeTests(unittest.TestCase):
             runtime.prepare({"targets": {target: assets}}, target, output)
         return core
 
-    def test_all_six_targets_install_exact_five_assets_with_correct_manifest(self):
+    def test_all_release_targets_install_exact_five_assets_with_correct_manifest(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             for target in velopack.TARGETS:

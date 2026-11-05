@@ -16,10 +16,8 @@ LIMIT = 256 * 1024 * 1024
 CORES = {
     "x86_64-pc-windows-msvc": "mihomo-windows-amd64-compatible",
     "aarch64-pc-windows-msvc": "mihomo-windows-arm64",
-    "x86_64-apple-darwin": "mihomo-darwin-amd64-v1-go122",
     "aarch64-apple-darwin": "mihomo-darwin-arm64-go122",
     "x86_64-unknown-linux-gnu": "mihomo-linux-amd64-v1",
-    "aarch64-unknown-linux-gnu": "mihomo-linux-arm64",
 }
 GEO = {
     "Country.mmdb": "geoip.metadb",

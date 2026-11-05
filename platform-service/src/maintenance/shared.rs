@@ -1,4 +1,4 @@
-//! Privileged maintenance shared by the installer and uninstaller binaries.
+//! Privileged maintenance shared by the service installation and removal commands.
 
 use anyhow::Error;
 
@@ -19,15 +19,6 @@ pub(crate) fn enter_repair_gate() -> Result<suki_clash_service::ServiceRepairGat
             std::process::exit(suki_clash_service::REPAIR_IN_PROGRESS_EXIT_CODE);
         }
     }
-}
-
-pub(crate) fn run_maintenance_if_requested() -> Result<bool, Error> {
-    if !std::env::args_os().any(|argument| argument == "--cleanup-stale-owners") {
-        return Ok(false);
-    }
-    let removed = suki_clash_service::cleanup_stale_owner_state()?;
-    println!("Removed {} stale owner state directories", removed.len());
-    Ok(true)
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -168,7 +159,10 @@ mod tests {
             return Ok(());
         }
         let status = std::process::Command::new(std::env::current_exe()?)
-            .args(["--exact", "shared::tests::netsh_ignores_caller_system_root"])
+            .args([
+                "--exact",
+                "maintenance::shared::tests::netsh_ignores_caller_system_root",
+            ])
             .env(EXPECTED, super::netsh_path()?)
             .env(
                 "SystemRoot",

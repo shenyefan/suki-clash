@@ -159,6 +159,10 @@ impl Drop for Worker {
 #[derive(Default)]
 pub(crate) struct Controller {
     #[cfg(target_os = "macos")]
+    network_service: Option<String>,
+    #[cfg(all(test, target_os = "macos"))]
+    pub(crate) network_probe: Option<fn() -> Option<String>>,
+    #[cfg(target_os = "macos")]
     service: Option<(
         suki_service::OwnerCredentials,
         suki_service::OwnerSessionProof,
@@ -171,11 +175,46 @@ pub(crate) struct Controller {
     rollback: Option<(Option<Target>, Option<Instant>, Option<String>)>,
     automatic_suspended: bool,
 }
+#[cfg(target_os = "macos")]
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum NetworkStatus {
+    Unavailable,
+    Changed,
+    Unchanged,
+}
 impl Controller {
     pub(crate) fn new(paths: crate::storage::AppPaths) -> Self {
         Self {
             paths: Some(paths),
             ..Default::default()
+        }
+    }
+    #[cfg(target_os = "macos")]
+    pub(crate) fn refresh_network(&mut self) -> Result<NetworkStatus, String> {
+        #[cfg(not(test))]
+        let current = suki_service::macos_proxy::active_service_id()?;
+        #[cfg(test)]
+        let current = self
+            .network_probe
+            .unwrap_or(|| Some("test-network".to_owned()))();
+        Ok(self.update_network(current))
+    }
+    #[cfg(target_os = "macos")]
+    fn update_network(&mut self, current: Option<String>) -> NetworkStatus {
+        let changed = self.network_service != current;
+        if changed {
+            // The cached target and guard refer to the previous network service.
+            // Native ownership checkpoints remain in the worker for cleanup.
+            self.network_service = current;
+            self.target = None;
+            self.guard_at = None;
+        }
+        if self.network_service.is_none() {
+            NetworkStatus::Unavailable
+        } else if changed {
+            NetworkStatus::Changed
+        } else {
+            NetworkStatus::Unchanged
         }
     }
     /// Switch execution only after the previous proxy owner has completed cleanup.
@@ -278,6 +317,8 @@ impl Controller {
         port: u16,
         interactive: bool,
     ) -> Result<Observation, String> {
+        #[cfg(target_os = "macos")]
+        self.refresh_network()?;
         self.automatic_suspended = false;
         let auto = values
             .get("SystemProxyModeIndex")

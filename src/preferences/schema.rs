@@ -1234,7 +1234,7 @@ fn original_sections(kind: SettingsKind) -> Vec<SectionSpec> {
                     FieldSpec {
                         key: "FindProcessIndex",
                         label: "进程查找模式",
-                        description: "控制连接的进程识别方式",
+                        description: "严格模式仅按规则需要查询进程；始终模式尝试识别所有本机连接",
                         kind: FieldKind::Select,
                         default: "严格（strict）",
                         options: &["关闭（off）", "严格（strict）", "始终（always）"],

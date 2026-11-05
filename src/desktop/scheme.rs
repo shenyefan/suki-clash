@@ -1,7 +1,7 @@
 //! Platform registration outside GPUI on backends whose official method is unavailable.
 #[cfg(not(target_os = "macos"))]
 pub(crate) fn register() -> Result<(), String> {
-    let executable = std::env::current_exe().map_err(|error| error.to_string())?;
+    let executable = super::executable()?;
     let executable = executable.to_str().ok_or("程序路径不是有效 UTF-8")?;
     #[cfg(windows)]
     {
@@ -81,14 +81,9 @@ pub(crate) fn register() -> Result<(), String> {
             include_bytes!("../../assets/logo.png"),
         )
         .map_err(|error| error.to_string())?;
-        let escaped = executable
-            .replace('\\', "\\\\")
-            .replace('"', "\\\"")
-            .replace('`', "\\`")
-            .replace('$', "\\$")
-            .replace('%', "%%");
+        let command = super::desktop_command(executable)?;
         let entry = format!(
-            "[Desktop Entry]\nType=Application\nName=Suki Clash\nExec=\"{escaped}\" %u\nTerminal=false\nIcon=suki-clash\nStartupWMClass=suki-clash\nNoDisplay=true\nMimeType=x-scheme-handler/clash;x-scheme-handler/suki-clash;\n"
+            "[Desktop Entry]\nType=Application\nName=Suki Clash\nExec={command} %u\nTerminal=false\nIcon=suki-clash\nStartupWMClass=suki-clash\nNoDisplay=true\nMimeType=x-scheme-handler/clash;x-scheme-handler/suki-clash;\n"
         );
         crate::storage::atomic_write(
             &directory.join("dev.suki.clash-uri.desktop"),

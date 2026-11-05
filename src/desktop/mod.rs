@@ -1,6 +1,10 @@
 //! Desktop integration owns OS launch behavior and instance lifetime.
 pub(crate) mod autostart;
 pub(crate) mod instance;
+mod launch;
+#[cfg(target_os = "linux")]
+use launch::desktop_command;
+pub(crate) use launch::executable;
 #[cfg(not(target_os = "macos"))]
 pub(crate) mod scheme;
 

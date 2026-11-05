@@ -1,5 +1,8 @@
 //! Cross-platform IPC daemon, run standalone or as a Windows service.
 
+#[path = "../maintenance/mod.rs"]
+mod maintenance;
+
 use anyhow::Result;
 use suki_clash_service::{
     acquire_service_owner, flush_service_log, init_service_logging, reconcile_service_startup,
@@ -22,9 +25,16 @@ use {
     std::time::Duration,
 };
 
+fn main() -> Result<()> {
+    if maintenance::run_if_requested()? {
+        return Ok(());
+    }
+    run_daemon()
+}
+
 #[cfg(not(windows))]
 #[tokio::main(flavor = "current_thread")]
-async fn main() -> Result<()> {
+async fn run_daemon() -> Result<()> {
     set_secure_process_umask();
     init_service_logging();
     let result = run_standalone().await;
@@ -44,7 +54,7 @@ fn set_secure_process_umask() {
 
 /// Runs as a Windows service when possible, otherwise standalone.
 #[cfg(windows)]
-fn main() -> Result<()> {
+fn run_daemon() -> Result<()> {
     init_service_logging();
     if service_dispatcher::start(suki_clash_service::WINDOWS_SERVICE_NAME, ffi_service_main)
         .is_err()

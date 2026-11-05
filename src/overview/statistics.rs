@@ -191,7 +191,7 @@ impl Recorder {
                 download,
             },
         ));
-        let cutoff = time - chrono::Duration::minutes(10);
+        let cutoff = time - chrono::Duration::seconds(30);
         while self.rates.len() > 600 || self.rates.front().is_some_and(|(time, _)| *time <= cutoff)
         {
             self.rates.pop_front();
@@ -282,13 +282,31 @@ mod tests {
         let mut recorder = Recorder::default();
         let start = chrono::Local::now();
         recorder.record_rate(start, 10, 20);
-        let points = recorder.record_rate(start + chrono::Duration::minutes(10), 30, 40);
+        let points = recorder.record_rate(start + chrono::Duration::seconds(30), 30, 40);
         assert_eq!(points.len(), 1);
         assert_eq!((points[0].upload, points[0].download), (30, 40));
         recorder.gap();
-        let points = recorder.record_rate(start + chrono::Duration::minutes(11), 50, 60);
+        let points = recorder.record_rate(start + chrono::Duration::seconds(31), 50, 60);
         assert_eq!(points.len(), 1);
         assert_eq!((points[0].upload, points[0].download), (50, 60));
+    }
+
+    #[test]
+    fn traffic_window_rolls_forward_with_both_rates_for_the_last_thirty_seconds() {
+        let mut recorder = Recorder::default();
+        let start = chrono::Local::now();
+        for second in 0..65 {
+            let points = recorder.record_rate(
+                start + chrono::Duration::seconds(second),
+                second as u64,
+                second as u64 * 2,
+            );
+            let first = (second - 29).max(0) as u64;
+            assert_eq!(points.len(), (second + 1).min(30) as usize);
+            assert_eq!((points[0].upload, points[0].download), (first, first * 2));
+            assert_eq!(points.last().unwrap().upload, second as u64);
+            assert_eq!(points.last().unwrap().download, second as u64 * 2);
+        }
     }
 
     #[test]

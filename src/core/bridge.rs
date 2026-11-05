@@ -520,10 +520,7 @@ fn finish(exit: Exit, cx: &mut App) {
                 if let Exit::Restart = exit {
                     // Resolve the executable before giving up instance ownership.
                     let executable = cx
-                        .background_spawn(async {
-                            std::env::current_exe()
-                                .map_err(|error| format!("无法定位程序：{error}"))
-                        })
+                        .background_spawn(async { crate::desktop::executable() })
                         .await?;
                     let paths = cx
                         .update(|cx| crate::integration::paths(cx))
@@ -582,9 +579,8 @@ fn finish(exit: Exit, cx: &mut App) {
                 cx.update(|cx| {
                     crate::integration::announce("ERROR", format!("退出清理未完成：{error}"), cx);
                     if let Some(window) = window.or_else(|| cx.active_window()) {
+                        crate::desktop::show_main(window, cx);
                         let _ = window.update(cx, |_, window, cx| {
-                            window.activate_window();
-                            cx.activate(true);
                             crate::ui::show_error(format!("退出清理未完成：{error}"), window, cx)
                         });
                     }

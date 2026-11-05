@@ -62,6 +62,9 @@ fn active() -> Result<Option<Service>, String> {
     }
     Ok(None)
 }
+pub(crate) fn active_service_id() -> Result<Option<String>, String> {
+    Ok(active()?.map(|service| service.id))
+}
 fn dictionary(service: &Service) -> Result<CFDictionary<CFString, CFType>, String> {
     // CopyProtocol is owned; the dictionary is retained before releasing it.
     unsafe {
@@ -157,12 +160,13 @@ fn write_snapshot(
     service: &Service,
     before: &OsSnapshot,
     after: &OsSnapshot,
+    authorization: &mut Option<Authorization>,
     interactive: &mut bool,
 ) -> Result<(), String> {
     if crate::proxy_owner::equivalent(before, after) {
         return Ok(());
     }
-    write_native(&service.id, after, interactive)
+    write_native(&service.id, after, authorization, interactive)
 }
 
 /// PAC is an SC protocol dictionary, not a shell URL argument. In particular,
@@ -259,10 +263,46 @@ fn proxy_dictionary(
     CFDictionary::from_CFType_pairs(&pairs)
 }
 
-fn write_native(id: &str, snapshot: &OsSnapshot, interactive: &mut bool) -> Result<(), String> {
-    use security_framework_sys::authorization::{
-        AuthorizationCreate, AuthorizationFree, kAuthorizationFlagDefaults,
-    };
+// Owned by the serial proxy worker, including cleanup and rollback. Keeping the
+// reference lets macOS reuse rights granted for this authorization session.
+struct Authorization(security_framework_sys::authorization::AuthorizationRef);
+impl Authorization {
+    fn new() -> Result<Self, String> {
+        use security_framework_sys::authorization::{
+            AuthorizationCreate, kAuthorizationFlagDefaults,
+        };
+        let mut authorization = std::ptr::null_mut();
+        let status = unsafe {
+            AuthorizationCreate(
+                std::ptr::null(),
+                std::ptr::null(),
+                kAuthorizationFlagDefaults,
+                &mut authorization,
+            )
+        };
+        if status != 0 {
+            return Err(format!("无法取得系统代理授权（{status}）"));
+        }
+        Ok(Self(authorization))
+    }
+}
+impl Drop for Authorization {
+    fn drop(&mut self) {
+        use security_framework_sys::authorization::{
+            AuthorizationFree, kAuthorizationFlagDefaults,
+        };
+        unsafe {
+            AuthorizationFree(self.0, kAuthorizationFlagDefaults);
+        }
+    }
+}
+
+fn write_native(
+    id: &str,
+    snapshot: &OsSnapshot,
+    authorization: &mut Option<Authorization>,
+    interactive: &mut bool,
+) -> Result<(), String> {
     use system_configuration::sys::{
         network_configuration::SCNetworkProtocolSetConfiguration,
         preferences::{
@@ -270,14 +310,6 @@ fn write_native(id: &str, snapshot: &OsSnapshot, interactive: &mut bool) -> Resu
             SCPreferencesCreateWithAuthorization, SCPreferencesLock, SCPreferencesUnlock,
         },
     };
-    struct Authorization(security_framework_sys::authorization::AuthorizationRef);
-    impl Drop for Authorization {
-        fn drop(&mut self) {
-            unsafe {
-                AuthorizationFree(self.0, kAuthorizationFlagDefaults);
-            }
-        }
-    }
     unsafe extern "C" {
         fn SCError() -> i32;
         fn SCErrorString(status: i32) -> *const std::ffi::c_char;
@@ -294,19 +326,10 @@ fn write_native(id: &str, snapshot: &OsSnapshot, interactive: &mut bool) -> Resu
         };
         format!("{stage}：{reason}（{code}）")
     }
-    let mut authorization = std::ptr::null_mut();
-    let status = unsafe {
-        AuthorizationCreate(
-            std::ptr::null(),
-            std::ptr::null(),
-            kAuthorizationFlagDefaults,
-            &mut authorization,
-        )
+    let authorization = match authorization {
+        Some(authorization) => authorization,
+        slot @ None => slot.insert(Authorization::new()?),
     };
-    if status != 0 {
-        return Err(format!("无法取得系统代理授权（{status}）"));
-    }
-    let authorization = Authorization(authorization);
     let raw = unsafe {
         SCPreferencesCreateWithAuthorization(
             std::ptr::null(),
@@ -403,17 +426,23 @@ fn write_native(id: &str, snapshot: &OsSnapshot, interactive: &mut bool) -> Resu
     }
     result
 }
-fn restore(checkpoint: &Checkpoint, interactive: &mut bool) -> Result<(), String> {
+fn restore(
+    checkpoint: &Checkpoint,
+    authorization: &mut Option<Authorization>,
+    interactive: &mut bool,
+) -> Result<(), String> {
     let service = service(&checkpoint.service.id)?.ok_or("待恢复的网络服务已不存在")?;
     write_snapshot(
         &service,
         &read_service(&service)?,
         &checkpoint.snapshot,
+        authorization,
         interactive,
     )
 }
 #[derive(Default)]
 pub(crate) struct Adapter {
+    authorization: Option<Authorization>,
     interactive: bool,
     owned: BTreeMap<String, Vec<Target>>,
     pending: Option<String>,
@@ -427,7 +456,7 @@ impl Adapter {
         self.interactive = allowed;
     }
     pub(crate) fn restore(&mut self, checkpoint: &Checkpoint) -> Result<(), String> {
-        restore(checkpoint, &mut self.interactive)
+        restore(checkpoint, &mut self.authorization, &mut self.interactive)
     }
     pub(crate) fn new(
         journal: Option<std::path::PathBuf>,
@@ -445,6 +474,7 @@ impl Adapter {
             BTreeMap::new()
         };
         let mut adapter = Self {
+            authorization: None,
             owned,
             interactive,
             pending: None,
@@ -513,7 +543,13 @@ impl Adapter {
             after.auto.url = target.auto.url.clone();
         }
         after.auto_detect = false;
-        write_snapshot(&service, &before, &after, &mut self.interactive)
+        write_snapshot(
+            &service,
+            &before,
+            &after,
+            &mut self.authorization,
+            &mut self.interactive,
+        )
     }
     pub(crate) fn clear(&mut self, target: Option<&Target>) -> Result<OsSnapshot, String> {
         if let (Some(target), Some(service)) = (target, active()?)
@@ -532,7 +568,13 @@ impl Adapter {
                 };
                 let before = read_service(&service)?;
                 let after = without_owned(&before, &targets);
-                write_snapshot(&service, &before, &after, &mut self.interactive)?;
+                write_snapshot(
+                    &service,
+                    &before,
+                    &after,
+                    &mut self.authorization,
+                    &mut self.interactive,
+                )?;
                 let observed = read_service(&service)?;
                 if !crate::proxy_owner::equivalent(&after, &observed) {
                     return Err("网络服务代理清理后回读不一致".into());

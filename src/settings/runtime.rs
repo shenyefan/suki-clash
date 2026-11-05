@@ -42,7 +42,7 @@ impl SettingsPage {
             SettingsKind::Sniffer => &["常规", "协议", "过滤"],
             SettingsKind::Resources => &["数据库", "代理集合", "规则集合"],
             SettingsKind::Tun => &["常规", "路由与 DNS"],
-            _ => &["常规", "外观", "托盘", "网络", "同步与维护"],
+            _ => &["常规", "外观", "托盘", "网络", "维护"],
         };
         let query = self.filter.read(cx).value().to_lowercase();
         let heading = if matches!(self.kind, SettingsKind::Dns | SettingsKind::Sniffer) {

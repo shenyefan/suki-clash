@@ -146,36 +146,7 @@ impl ChildGuard {
     }
 }
 
-/// SIGTERM, then SIGKILL after `grace`; Windows has no SIGTERM.
-async fn stop_child(child: &mut Child, grace: Duration) -> std::io::Result<()> {
-    #[cfg(not(unix))]
-    let _ = grace;
-    // `id()` is `None` once reaped, so the PID cannot have been reused.
-    #[cfg(unix)]
-    if let Some(pid) = child.id().and_then(|pid| i32::try_from(pid).ok())
-        && !grace.is_zero()
-    {
-        if unsafe { platform_lib::kill(pid, platform_lib::SIGTERM) } == 0 {
-            info!("Sent SIGTERM to core ({pid})");
-            match tokio::time::timeout(grace, child.wait()).await {
-                Ok(Ok(status)) => {
-                    info!("Core ({pid}) exited after SIGTERM: {status}");
-                    return Ok(());
-                }
-                Ok(Err(error)) => warn!("Failed to wait for core ({pid}) after SIGTERM: {error}"),
-                Err(_) => {
-                    warn!("Core ({pid}) did not exit within {grace:?} of SIGTERM, sending SIGKILL")
-                }
-            }
-        } else {
-            warn!(
-                "Failed to send SIGTERM to core ({pid}): {}",
-                std::io::Error::last_os_error()
-            );
-        }
-    }
-    child.kill().await
-}
+use crate::execution::stop_child;
 
 impl Drop for ChildGuard {
     fn drop(&mut self) {

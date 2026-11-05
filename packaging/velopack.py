@@ -19,16 +19,13 @@ PACK_ID = "SukiClash"
 TARGETS = {
     "x86_64-pc-windows-msvc": ("win", "x64"),
     "aarch64-pc-windows-msvc": ("win", "arm64"),
-    "x86_64-apple-darwin": ("osx", "x64"),
     "aarch64-apple-darwin": ("osx", "arm64"),
     "x86_64-unknown-linux-gnu": ("linux", "x64"),
-    "aarch64-unknown-linux-gnu": ("linux", "arm64"),
 }
 LINUXDEPLOY = {
     "x64": ("x86_64", "c20cd71e3a4e3b80c3483cef793cda3f4e990aca14014d23c544ca3ce1270b4d"),
-    "arm64": ("aarch64", "620095110d693282b8ebeb244a95b5e911cf8f65f76c88b4b47d16ae6346fcff"),
 }
-BINARIES = ("suki-clash", "suki-clash-service", "suki-clash-service-install", "suki-clash-service-uninstall")
+BINARIES = ("suki-clash", "suki-clash-service")
 
 
 def run(args, **kwargs):

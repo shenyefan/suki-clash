@@ -6,14 +6,10 @@ fn main() {
     {
         embed_resource::compile_for(
             "../packaging/windows/service.rc",
-            [
-                "suki-clash-service",
-                "suki-clash-service-install",
-                "suki-clash-service-uninstall",
-            ],
+            ["suki-clash-service"],
             embed_resource::NONE,
         )
         .manifest_required()
-        .expect("无法嵌入 Windows 服务及管理工具图标");
+        .expect("无法嵌入 Windows 服务图标");
     }
 }

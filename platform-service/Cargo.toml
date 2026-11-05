@@ -15,16 +15,6 @@ path = "src/bin/service.rs"
 required-features = ["standalone"]
 
 [[bin]]
-name = "suki-clash-service-install"
-path = "src/bin/install_service.rs"
-required-features = ["standalone", "client"]
-
-[[bin]]
-name = "suki-clash-service-uninstall"
-path = "src/bin/uninstall_service.rs"
-required-features = ["standalone"]
-
-[[bin]]
 name = "mock_binary"
 path = "src/bin/mock_binary.rs"
 required-features = ["test"]
@@ -47,6 +37,7 @@ required-features = ["client"]
 [features]
 development-channel = []
 standalone = [
+    "client",
     "kode-bridge",
     "kode-bridge/client",
     "http",
