@@ -14,12 +14,13 @@ import velopack
 
 
 class OfflineRuntimeTests(unittest.TestCase):
-    def bundle(self, target, output, corrupt=False):
+    def bundle(self, target, output, corrupt=False, windows_entries=None):
         core = b"verified kernel"
         if "windows" in target:
             buffer = io.BytesIO()
             with zipfile.ZipFile(buffer, "w") as archive:
-                archive.writestr("mihomo.exe", core)
+                for entry in windows_entries if windows_entries is not None else [runtime.CORES[target] + ".exe"]:
+                    archive.writestr(entry, core)
             archive_bytes = buffer.getvalue()
             name = "mihomo.exe"
         else:
@@ -53,6 +54,22 @@ class OfflineRuntimeTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "SHA-256 mismatch"):
                 self.bundle("x86_64-unknown-linux-gnu", bundle, corrupt=True)
             self.assertFalse((bundle / "manifest.json").exists())
+
+    def test_windows_archive_requires_one_mihomo_executable(self):
+        target = "x86_64-pc-windows-msvc"
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            for index, entries in enumerate([
+                [], ["other.exe"],
+                ["mihomo-windows-amd64-compatible.exe", "bin/mihomo.exe"],
+            ]):
+                bundle = root / str(index)
+                with self.assertRaisesRegex(ValueError, "invalid Mihomo zip entry"):
+                    self.bundle(target, bundle, windows_entries=entries)
+                self.assertFalse((bundle / "manifest.json").exists())
+            bundle = root / "nested"
+            core = self.bundle(target, bundle, windows_entries=["bin/mihomo-windows-amd64-compatible.exe", "helper.exe"])
+            self.assertEqual((bundle / "mihomo.exe").read_bytes(), core)
 
     def test_packaging_rejects_missing_wrong_target_and_changed_assets(self):
         with tempfile.TemporaryDirectory() as temporary:

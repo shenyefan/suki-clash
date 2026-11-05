@@ -64,3 +64,5 @@ macOS只有NSBundle具有bundleIdentifier时才执行订阅协议注册，cargo 
 补充实际打包：使用本轮真实debug主程序及三个真实服务工具，已生成未签名／未公证macOS ARM64 pkg、Portable.zip及full.nupkg（/tmp/suki-velopack-real-macos-retry-20261103/Releases）。四程序存在、正式bundle ID、feed大小／SHA-256及signed:false已核验。未运行或安装这些产物；这仍不是release优化构建、签名或端到端更新验收。
 
 2026-11-05修复验证：Linux两架构依赖图均只启用ashpd/async-io；本机Rust全量352项通过、16项忽略，随后新增共享代理设置回归通过，严格Clippy／fmt通过；Python打包回归4项通过。真实下载Mihomo v1.19.33和四份Geo并验证上游摘要，macOS ARM64已暂存四个应用／服务程序和五份完整离线资源，复核包内manifest、大小及摘要；未生成本轮正式安装器。默认get.syf.sh按应用User-Agent请求版本和实际tags API成功，Raw、GeoIP与内核归档完整内容摘要与官方直连一致。Linux交叉编译因本机缺aarch64-linux-gnu-gcc未完成；真实六平台CI、Windows Developer PowerShell和Linux AppImage运行仍待runner验证。
+
+Windows ZIP条目修复：官方v1.19.33的x64／ARM64归档分别包含`mihomo-windows-amd64-compatible.exe`和`mihomo-windows-arm64.exe`。资源准备识别归档中唯一的`mihomo*.exe`并统一输出`mihomo.exe`；不再假设上游条目已经使用应用内文件名。打包回归5项通过；两份官方归档均已核对上游SHA-256，完成解包、五项资源manifest生成和打包复制校验，尚未执行Windows完整安装器构建。

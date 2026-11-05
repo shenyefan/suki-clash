@@ -6,7 +6,7 @@ import hashlib
 import io
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import urllib.request
 import zipfile
 
@@ -69,7 +69,11 @@ def prepare(lock, target, output):
         name = asset["name"]
         if name == "mihomo.exe":
             with zipfile.ZipFile(io.BytesIO(data)) as archive:
-                entries = [entry for entry in archive.infolist() if Path(entry.filename).name == name]
+                # Upstream names the executable after its platform/build, not mihomo.exe.
+                entries = [entry for entry in archive.infolist()
+                           if PurePosixPath(entry.filename).name.startswith("mihomo")
+                           and PurePosixPath(entry.filename).suffix == ".exe"
+                           and not entry.is_dir()]
                 if len(entries) != 1 or not 0 < entries[0].file_size <= LIMIT:
                     raise ValueError("invalid Mihomo zip entry")
                 data = archive.read(entries[0])
