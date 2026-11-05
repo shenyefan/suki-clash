@@ -90,8 +90,8 @@ fn sync_key(name: &str) -> bool {
     name.contains("gist") || name.contains("github") || name.contains("sync") || name == "autorun"
 }
 fn sanitized_settings(bytes: &[u8], local: Option<&[u8]>) -> Result<Vec<u8>, String> {
-    let mut root: serde_json::Map<String, serde_json::Value> =
-        serde_json::from_slice(bytes).map_err(|_| "备份程序设置格式无效")?;
+    let mut root: serde_json::Map<String, serde_json::Value> = serde_json::from_slice(bytes)
+        .map_err(|error| crate::logging::diagnostic_error("备份程序设置格式无效", error))?;
     if root
         .get("schema_version")
         .and_then(serde_json::Value::as_u64)
@@ -103,7 +103,9 @@ fn sanitized_settings(bytes: &[u8], local: Option<&[u8]>) -> Result<Vec<u8>, Str
     let local = local
         .map(serde_json::from_slice::<serde_json::Value>)
         .transpose()
-        .map_err(|_| "本机程序设置格式无效，不能恢复覆盖")?;
+        .map_err(|error| {
+            crate::logging::diagnostic_error("本机程序设置格式无效，不能恢复覆盖", error)
+        })?;
     let general = root
         .entry("general")
         .or_insert_with(|| serde_json::json!({}))
@@ -123,7 +125,8 @@ fn sanitized_settings(bytes: &[u8], local: Option<&[u8]>) -> Result<Vec<u8>, Str
         root.insert("backup".into(), backup.clone());
     }
     // The independent secure credential store is deliberately not an archive member.
-    serde_json::to_vec_pretty(&root).map_err(|_| "无法编码备份设置".into())
+    serde_json::to_vec_pretty(&root)
+        .map_err(|error| crate::logging::diagnostic_error("无法编码备份设置".into(), error))
 }
 fn collect(paths: &AppPaths) -> Result<BTreeMap<String, Vec<u8>>, String> {
     let mut files = BTreeMap::new();
@@ -140,15 +143,26 @@ fn collect(paths: &AppPaths) -> Result<BTreeMap<String, Vec<u8>>, String> {
             }
             Ok(_) => {}
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(_) => return Err(format!("{}：无法读取备份目录", root.display())),
+            Err(error) => {
+                return Err(crate::logging::diagnostic_error(
+                    format!("{}：无法读取备份目录", root.display()),
+                    error,
+                ));
+            }
         }
         let entries = match fs::read_dir(&root) {
             Ok(entries) => entries,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(_) => return Err(format!("{}：无法读取备份来源", root.display())),
+            Err(error) => {
+                return Err(crate::logging::diagnostic_error(
+                    format!("{}：无法读取备份来源", root.display()),
+                    error,
+                ));
+            }
         };
         for entry in entries {
-            let entry = entry.map_err(|_| "无法读取备份目录条目")?;
+            let entry = entry
+                .map_err(|error| crate::logging::diagnostic_error("无法读取备份目录条目", error))?;
             let name = format!(
                 "{directory}/{}",
                 entry.file_name().to_str().ok_or("备份文件名不是UTF-8")?
@@ -156,16 +170,21 @@ fn collect(paths: &AppPaths) -> Result<BTreeMap<String, Vec<u8>>, String> {
             if !managed(&name) {
                 continue;
             }
-            let metadata = entry.file_type().map_err(|_| "无法读取备份文件类型")?;
+            let metadata = entry
+                .file_type()
+                .map_err(|error| crate::logging::diagnostic_error("无法读取备份文件类型", error))?;
             if !metadata.is_file() || metadata.is_symlink() {
                 return Err(format!("{name}：备份只接受普通文件"));
             }
-            let file =
-                fs::File::open(entry.path()).map_err(|_| format!("{name}：无法读取备份文件"))?;
+            let file = fs::File::open(entry.path()).map_err(|error| {
+                crate::logging::diagnostic_error(format!("{name}：无法读取备份文件"), error)
+            })?;
             let mut bytes = Vec::new();
             file.take((TOTAL_LIMIT + 1) as u64)
                 .read_to_end(&mut bytes)
-                .map_err(|_| format!("{name}：无法读取备份文件"))?;
+                .map_err(|error| {
+                    crate::logging::diagnostic_error(format!("{name}：无法读取备份文件"), error)
+                })?;
             total = total.checked_add(bytes.len()).ok_or("备份超过大小上限")?;
             if total > TOTAL_LIMIT {
                 return Err("备份超过32MiB上限".into());
@@ -203,19 +222,24 @@ impl Archive {
             .compression_method(zip::CompressionMethod::Deflated);
         writer
             .start_file("manifest.json", options)
-            .map_err(|_| "无法创建备份清单")?;
+            .map_err(|error| crate::logging::diagnostic_error("无法创建备份清单", error))?;
         writer
-            .write_all(&serde_json::to_vec(&manifest).map_err(|_| "无法编码备份清单")?)
-            .map_err(|_| "无法写入备份清单")?;
+            .write_all(
+                &serde_json::to_vec(&manifest)
+                    .map_err(|error| crate::logging::diagnostic_error("无法编码备份清单", error))?,
+            )
+            .map_err(|error| crate::logging::diagnostic_error("无法写入备份清单", error))?;
         for (name, bytes) in &self.files {
             writer
                 .start_file(name, options)
-                .map_err(|_| "无法创建备份条目")?;
-            writer.write_all(bytes).map_err(|_| "无法写入备份条目")?;
+                .map_err(|error| crate::logging::diagnostic_error("无法创建备份条目", error))?;
+            writer
+                .write_all(bytes)
+                .map_err(|error| crate::logging::diagnostic_error("无法写入备份条目", error))?;
         }
         let bytes = writer
             .finish()
-            .map_err(|_| "无法完成备份压缩")?
+            .map_err(|error| crate::logging::diagnostic_error("无法完成备份压缩", error))?
             .into_inner();
         let text = format!(
             "{HEADER}{}",
@@ -224,27 +248,30 @@ impl Archive {
         let text = if let Some(recipient) = recipient {
             let recipient = recipient
                 .parse::<age::x25519::Recipient>()
-                .map_err(|_| "Age接收方公钥无效")?;
+                .map_err(|error| crate::logging::diagnostic_error("Age接收方公钥无效", error))?;
             let encryptor =
                 age::Encryptor::with_recipients(std::iter::once(&recipient as &dyn age::Recipient))
-                    .map_err(|_| "无法建立Age备份加密")?;
+                    .map_err(|error| {
+                        crate::logging::diagnostic_error("无法建立Age备份加密", error)
+                    })?;
             let mut encrypted = Vec::new();
             let armor = age::armor::ArmoredWriter::wrap_output(
                 &mut encrypted,
                 age::armor::Format::AsciiArmor,
             )
-            .map_err(|_| "无法创建Age备份")?;
+            .map_err(|error| crate::logging::diagnostic_error("无法创建Age备份", error))?;
             let mut output = encryptor
                 .wrap_output(armor)
-                .map_err(|_| "无法创建Age备份")?;
+                .map_err(|error| crate::logging::diagnostic_error("无法创建Age备份", error))?;
             output
                 .write_all(text.as_bytes())
-                .map_err(|_| "无法加密备份")?;
+                .map_err(|error| crate::logging::diagnostic_error("无法加密备份", error))?;
             output
                 .finish()
                 .and_then(|armor| armor.finish())
-                .map_err(|_| "无法完成Age备份")?;
-            String::from_utf8(encrypted).map_err(|_| "Age备份编码无效")?
+                .map_err(|error| crate::logging::diagnostic_error("无法完成Age备份", error))?;
+            String::from_utf8(encrypted)
+                .map_err(|error| crate::logging::diagnostic_error("Age备份编码无效", error))?
         } else {
             text
         };
@@ -262,21 +289,22 @@ impl Archive {
             let identity = identity
                 .ok_or("此备份需要Age私钥")?
                 .parse::<age::x25519::Identity>()
-                .map_err(|_| "Age私钥无效")?;
+                .map_err(|error| crate::logging::diagnostic_error("Age私钥无效", error))?;
             let decryptor = age::Decryptor::new(age::armor::ArmoredReader::new(text.as_bytes()))
-                .map_err(|_| "Age备份格式无效")?;
+                .map_err(|error| crate::logging::diagnostic_error("Age备份格式无效", error))?;
             let reader = decryptor
                 .decrypt(std::iter::once(&identity as &dyn age::Identity))
-                .map_err(|_| "Age备份解密失败")?;
+                .map_err(|error| crate::logging::diagnostic_error("Age备份解密失败", error))?;
             let mut bytes = Vec::new();
             reader
                 .take((ENCODED_LIMIT + 1) as u64)
                 .read_to_end(&mut bytes)
-                .map_err(|_| "无法读取Age备份")?;
+                .map_err(|error| crate::logging::diagnostic_error("无法读取Age备份", error))?;
             if bytes.len() > ENCODED_LIMIT {
                 return Err("Age备份解密后超过上限".into());
             }
-            decrypted = String::from_utf8(bytes).map_err(|_| "备份不是UTF-8文本")?;
+            decrypted = String::from_utf8(bytes)
+                .map_err(|error| crate::logging::diagnostic_error("备份不是UTF-8文本", error))?;
             decrypted.as_str()
         } else {
             text
@@ -286,8 +314,9 @@ impl Archive {
             .ok_or("不是当前Suki Clash备份格式")?;
         let bytes = base64::engine::general_purpose::STANDARD
             .decode(encoded)
-            .map_err(|_| "备份编码无效")?;
-        let mut zip = zip::ZipArchive::new(Cursor::new(bytes)).map_err(|_| "备份压缩包无效")?;
+            .map_err(|error| crate::logging::diagnostic_error("备份编码无效", error))?;
+        let mut zip = zip::ZipArchive::new(Cursor::new(bytes))
+            .map_err(|error| crate::logging::diagnostic_error("备份压缩包无效", error))?;
         if zip.len() > 10001 {
             return Err("备份文件数量超过上限".into());
         }
@@ -295,8 +324,13 @@ impl Archive {
         let mut manifest = None;
         let mut total = 0usize;
         for index in 0..zip.len() {
-            let mut entry = zip.by_index(index).map_err(|_| "无法读取备份条目")?;
-            let name = entry.name().map_err(|_| "备份文件名编码无效")?.into_owned();
+            let mut entry = zip
+                .by_index(index)
+                .map_err(|error| crate::logging::diagnostic_error("无法读取备份条目", error))?;
+            let name = entry
+                .name()
+                .map_err(|error| crate::logging::diagnostic_error("备份文件名编码无效", error))?
+                .into_owned();
             if entry.is_dir()
                 || entry
                     .unix_mode()
@@ -312,7 +346,7 @@ impl Archive {
             (&mut entry)
                 .take((TOTAL_LIMIT + 1) as u64)
                 .read_to_end(&mut bytes)
-                .map_err(|_| "无法解压备份条目")?;
+                .map_err(|error| crate::logging::diagnostic_error("无法解压备份条目", error))?;
             total = total.checked_add(bytes.len()).ok_or("备份超过上限")?;
             if total > TOTAL_LIMIT {
                 return Err("解压备份超过32MiB上限".into());
@@ -321,9 +355,9 @@ impl Archive {
                 if manifest.is_some() {
                     return Err("备份清单重复".into());
                 }
-                manifest = Some(
-                    serde_json::from_slice::<Manifest>(&bytes).map_err(|_| "备份清单格式无效")?,
-                );
+                manifest = Some(serde_json::from_slice::<Manifest>(&bytes).map_err(|error| {
+                    crate::logging::diagnostic_error("备份清单格式无效", error)
+                })?);
             } else if files.insert(name, bytes).is_some() {
                 return Err("备份文件名重复".into());
             }
@@ -344,13 +378,19 @@ impl Archive {
         Ok(Self { files })
     }
     pub(crate) fn stage(&self, live: &AppPaths) -> Result<Staged, String> {
-        let directory = tempfile::tempdir().map_err(|_| "无法建立恢复预检目录")?;
+        let directory = tempfile::tempdir()
+            .map_err(|error| crate::logging::diagnostic_error("无法建立恢复预检目录", error))?;
         let paths = AppPaths::staged(directory.path());
-        paths.create().map_err(|error| error.to_string())?;
+        paths.create().map_err(crate::logging::error_message)?;
         let local_settings = match fs::read(crate::preferences::app::path(live)) {
             Ok(bytes) => Some(bytes),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-            Err(_) => return Err("无法读取本机设置，恢复未开始".into()),
+            Err(error) => {
+                return Err(crate::logging::diagnostic_error(
+                    "无法读取本机设置，恢复未开始".into(),
+                    error,
+                ));
+            }
         };
         for (name, bytes) in &self.files {
             let bytes = if name == "settings/settings.json" {
@@ -360,14 +400,15 @@ impl Archive {
             };
             let path = target(&paths, name);
             if let Some(parent) = path.parent() {
-                fs::create_dir_all(parent).map_err(|_| "无法创建恢复目录")?;
+                fs::create_dir_all(parent)
+                    .map_err(|error| crate::logging::diagnostic_error("无法创建恢复目录", error))?;
             }
-            atomic_write(&path, &bytes).map_err(|error| error.to_string())?;
+            atomic_write(&path, &bytes).map_err(crate::logging::error_message)?;
         }
-        let repository = Repository::open(paths.clone()).map_err(|error| error.to_string())?;
+        let repository = Repository::open(paths.clone()).map_err(crate::logging::error_message)?;
         for kind in crate::preferences::SettingsKind::ALL {
-            let values =
-                crate::preferences::values(&repository, kind).map_err(|error| error.to_string())?;
+            let values = crate::preferences::values(&repository, kind)
+                .map_err(crate::logging::error_message)?;
             crate::preferences::validate(kind, &values)?;
         }
         crate::configuration::Preferences::load(&paths)?;
@@ -390,8 +431,8 @@ impl Archive {
                 .and_then(|name| name.strip_suffix(".json"))
                 .ok_or("增强备份路径无效")?;
             let values = repository
-                .read(&Namespace::parse(namespace).map_err(|error| error.to_string())?)
-                .map_err(|error| error.to_string())?;
+                .read(&Namespace::parse(namespace).map_err(crate::logging::error_message)?)
+                .map_err(crate::logging::error_message)?;
             crate::configuration::enhancement::apply(b"{}", &values)?;
         }
         Ok(Staged {
@@ -423,13 +464,15 @@ fn replace(paths: &AppPaths, files: &BTreeMap<String, Vec<u8>>) -> Result<(), St
     for (name, bytes) in files {
         let path = target(paths, name);
         if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).map_err(|_| "无法创建恢复目录")?;
+            fs::create_dir_all(parent)
+                .map_err(|error| crate::logging::diagnostic_error("无法创建恢复目录", error))?;
         }
-        atomic_write(&path, bytes).map_err(|error| error.to_string())?;
+        atomic_write(&path, bytes).map_err(crate::logging::error_message)?;
     }
     for name in current.keys().filter(|name| !files.contains_key(*name)) {
-        fs::remove_file(target(paths, name))
-            .map_err(|_| format!("{name}：无法清理本次恢复替换的配置"))?;
+        fs::remove_file(target(paths, name)).map_err(|error| {
+            crate::logging::diagnostic_error(format!("{name}：无法清理本次恢复替换的配置"), error)
+        })?;
     }
     Ok(())
 }

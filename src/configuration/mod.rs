@@ -70,9 +70,9 @@ fn ordered_overrides(values: &Values) -> Result<Vec<Override<'_>>, CompositionEr
     let mut seen = BTreeSet::new();
     let mut overrides = Vec::new();
     for raw_id in ids.split(',') {
-        let id = raw_id
-            .parse::<u64>()
-            .map_err(|_| CompositionError::InvalidIndex)?;
+        let id = raw_id.parse::<u64>().map_err(|error| {
+            crate::logging::diagnostic_error(CompositionError::InvalidIndex, error)
+        })?;
         if seen.len() >= OVERRIDE_LIMIT || !seen.insert(id) {
             return Err(CompositionError::InvalidIndex);
         }
@@ -90,7 +90,10 @@ fn ordered_overrides(values: &Values) -> Result<Vec<Override<'_>>, CompositionEr
         };
         let scope = match field("scope-profile") {
             None | Some("") => Scope::Global,
-            Some(id) => Scope::Profile(id.parse().map_err(|_| invalid())?),
+            Some(id) => Scope::Profile(
+                id.parse()
+                    .map_err(|error| crate::logging::diagnostic_error(invalid(), error))?,
+            ),
         };
         let content = field("content").ok_or_else(invalid)?;
         overrides.push(Override {
@@ -108,9 +111,10 @@ fn object(bytes: &[u8], identity: &str) -> Result<Mapping, CompositionError> {
     if bytes.len() as u64 > INPUT_LIMIT {
         return Err(CompositionError::Budget(identity.into()));
     }
-    // Do not include parser diagnostics: they can contain source credentials.
-    let value: Value = serde_yaml_ng::from_slice(bytes)
-        .map_err(|_| CompositionError::InvalidYaml(identity.into()))?;
+    // Parser diagnostics go only to the redacted log; keep the UI error concise.
+    let value: Value = serde_yaml_ng::from_slice(bytes).map_err(|error| {
+        crate::logging::diagnostic_error(CompositionError::InvalidYaml(identity.into()), error)
+    })?;
     let mut remaining = NODE_LIMIT;
     validate_budget(&value, 0, &mut remaining)
         .map_err(|()| CompositionError::Budget(identity.into()))?;
@@ -262,7 +266,9 @@ pub(crate) fn compose_reporting(
             }
         }
     }
-    let yaml = serde_yaml_ng::to_string(&config).map_err(|_| CompositionError::Serialization)?;
+    let yaml = serde_yaml_ng::to_string(&config).map_err(|error| {
+        crate::logging::diagnostic_error(CompositionError::Serialization, error)
+    })?;
     if yaml.len() as u64 > INPUT_LIMIT {
         return Err(CompositionError::Budget("合成结果".into()));
     }

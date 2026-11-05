@@ -36,8 +36,9 @@ pub(crate) fn confirm_local_cache(path: &Path, url: &str, bytes: &[u8]) -> Resul
         url_sha256: digest(url.as_bytes()),
         content_sha256: digest(bytes),
     })
-    .map_err(|_| "无法编码 Provider 来源证明")?;
-    crate::storage::atomic_write(&proof_path(path), &encoded).map_err(|error| error.to_string())?;
+    .map_err(|error| crate::logging::diagnostic_error("无法编码 Provider 来源证明", error))?;
+    crate::storage::atomic_write(&proof_path(path), &encoded)
+        .map_err(crate::logging::error_message)?;
     Ok(true)
 }
 /// Publish a verified cache and its source proof without storing a secret-bearing URL.
@@ -52,20 +53,19 @@ pub(crate) fn publish_cache(path: &Path, url: &str, bytes: &[u8]) -> Result<(), 
         url_sha256: digest(url.as_bytes()),
         content_sha256: digest(bytes),
     })
-    .map_err(|_| "无法编码 Provider 来源证明")?;
+    .map_err(|error| crate::logging::diagnostic_error("无法编码 Provider 来源证明", error))?;
     let changed = previous.as_deref() != Some(bytes);
     if changed {
-        crate::storage::atomic_write(path, bytes).map_err(|error| error.to_string())?;
+        crate::storage::atomic_write(path, bytes).map_err(crate::logging::error_message)?;
     }
     if let Err(error) = crate::storage::atomic_write(&proof, &encoded) {
         let recovery = if !changed {
             Ok(())
         } else {
             match previous {
-                Some(previous) => {
-                    crate::storage::atomic_write(path, &previous).map_err(|error| error.to_string())
-                }
-                None => std::fs::remove_file(path).map_err(|error| error.to_string()),
+                Some(previous) => crate::storage::atomic_write(path, &previous)
+                    .map_err(crate::logging::error_message),
+                None => std::fs::remove_file(path).map_err(crate::logging::error_message),
             }
         };
         return Err(match recovery {
@@ -214,8 +214,12 @@ fn provider_nodes(provider: &Value, directory: &Path) -> Result<Vec<ProviderNode
     Ok(result)
 }
 fn provider_regex(pattern: &str) -> Result<regex::Regex, String> {
-    regex::Regex::new(pattern)
-        .map_err(|_| "Provider正则无法用于链物化；不支持的高级表达式需改为普通节点定义".into())
+    regex::Regex::new(pattern).map_err(|error| {
+        crate::logging::diagnostic_error(
+            "Provider正则无法用于链物化；不支持的高级表达式需改为普通节点定义".into(),
+            error,
+        )
+    })
 }
 // Normalize the supported .NET replacement tokens instead of guessing Rust's $name grammar.
 fn provider_replacement(regex: &regex::Regex, target: &str) -> Result<String, String> {
@@ -292,10 +296,10 @@ fn raw_provider_nodes(provider: &Value, directory: &Path) -> Result<Vec<Value>, 
     use std::io::Read as _;
     let mut bytes = Vec::new();
     std::fs::File::open(&path)
-        .map_err(|_| "Provider 缓存尚不可用")?
+        .map_err(|error| crate::logging::diagnostic_error("Provider 缓存尚不可用", error))?
         .take(PROVIDER_CACHE_LIMIT + 1)
         .read_to_end(&mut bytes)
-        .map_err(|_| "无法读取 Provider 缓存")?;
+        .map_err(|error| crate::logging::diagnostic_error("无法读取 Provider 缓存", error))?;
     if bytes.len() as u64 > PROVIDER_CACHE_LIMIT {
         return Err("Provider 缓存超过读取上限".into());
     }
@@ -304,16 +308,22 @@ fn raw_provider_nodes(provider: &Value, directory: &Path) -> Result<Vec<Value>, 
             .get("url")
             .and_then(Value::as_str)
             .ok_or("Provider URL 缺失")?;
-        let proof: CacheSource = serde_json::from_slice(
-            &std::fs::read(proof_path(&path))
-                .map_err(|_| "Provider 缓存来源尚未确认，请先同步当前来源后重试代理链")?,
-        )
-        .map_err(|_| "Provider 缓存来源证明无效")?;
+        let proof: CacheSource =
+            serde_json::from_slice(&std::fs::read(proof_path(&path)).map_err(|error| {
+                crate::logging::diagnostic_error(
+                    "Provider 缓存来源尚未确认，请先同步当前来源后重试代理链",
+                    error,
+                )
+            })?)
+            .map_err(|error| {
+                crate::logging::diagnostic_error("Provider 缓存来源证明无效", error)
+            })?;
         if proof.url_sha256 != digest(url.as_bytes()) || proof.content_sha256 != digest(&bytes) {
             return Err("Provider 缓存与当前来源不一致，请同步后重试代理链".into());
         }
     }
-    let value: Value = serde_yaml_ng::from_slice(&bytes).map_err(|_| "Provider 缓存 YAML 无效")?;
+    let value: Value = serde_yaml_ng::from_slice(&bytes)
+        .map_err(|error| crate::logging::diagnostic_error("Provider 缓存 YAML 无效", error))?;
     value
         .get("proxies")
         .and_then(Value::as_sequence)

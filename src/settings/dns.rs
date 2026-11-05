@@ -10,7 +10,8 @@ impl SettingsPage {
         } else {
             self.dns_document.clone()
         };
-        serde_yaml_ng::to_string(&root).map_err(|_| "无法编码 YAML 配置".into())
+        serde_yaml_ng::to_string(&root)
+            .map_err(|error| crate::logging::diagnostic_error("无法编码 YAML 配置".into(), error))
     }
     pub(super) fn read_dns_yaml(
         &mut self,
@@ -30,8 +31,8 @@ impl SettingsPage {
                 .unwrap_or_else(|| "false".into()),
         );
         let key = crate::preferences::native::key(self.kind).ok_or("不是 YAML 设置")?;
-        self.dns_document =
-            serde_yaml_ng::from_str(&values[key]).map_err(|_| "无法读取 YAML 文档")?;
+        self.dns_document = serde_yaml_ng::from_str(&values[key])
+            .map_err(|error| crate::logging::diagnostic_error("无法读取 YAML 文档", error))?;
         self.core_syncing = true;
         self.assign_values(&crate::preferences::choices::decode(values), window, cx);
         self.core_syncing = false;

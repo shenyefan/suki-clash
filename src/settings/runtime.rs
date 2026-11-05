@@ -22,6 +22,7 @@ pub(super) enum DeferredAction {
     FlushFakeIp,
     Service(crate::core::ServiceAction),
 }
+
 impl DeferredAction {
     fn label(&self) -> &'static str {
         match self {
@@ -45,20 +46,38 @@ impl SettingsPage {
             _ => &["常规", "外观", "托盘", "网络", "维护"],
         };
         let query = self.filter.read(cx).value().to_lowercase();
-        let heading = if matches!(self.kind, SettingsKind::Dns | SettingsKind::Sniffer) {
-            let key = crate::preferences::native::flag(self.kind);
-            let checked = self
-                .values(cx)
-                .get(key)
-                .is_some_and(|value| value == "true");
+        let heading = if matches!(
+            self.kind,
+            SettingsKind::Dns | SettingsKind::Sniffer | SettingsKind::Tun
+        ) {
+            let key = if self.kind == SettingsKind::Tun {
+                "IsTunEnabled"
+            } else {
+                crate::preferences::native::flag(self.kind)
+            };
+            let checked = if self.kind == SettingsKind::Tun {
+                self.session.read(cx).tun() == Some(true)
+            } else {
+                self.values(cx)
+                    .get(key)
+                    .is_some_and(|value| value == "true")
+            };
             ui::workspace_header_control(
                 self.kind.label(),
                 "",
                 Switch::new(SharedString::from(format!("setting-{key}")))
                     .with_size(control::STANDARD)
                     .checked(checked)
-                    .disabled(self.saving || self.session.read(cx).core_busy())
-                    .accessibility_label(if self.kind == SettingsKind::Dns {
+                    .disabled(
+                        self.saving
+                            || self.session.read(cx).core_busy()
+                            || (self.kind == SettingsKind::Tun
+                                && self.session.read(cx).core().phase()
+                                    == crate::core::Phase::Failed),
+                    )
+                    .accessibility_label(if self.kind == SettingsKind::Tun {
+                        "启用虚拟网卡"
+                    } else if self.kind == SettingsKind::Dns {
                         "使用全局 DNS 配置"
                     } else {
                         "使用全局嗅探配置"
@@ -309,5 +328,48 @@ impl SettingsPage {
             return;
         }
         integration::request_with(action, values, window, cx);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{SettingsKind, SettingsPage};
+    use gpui_kit::{AppContext, TestAppContext, WindowOptions, test::TestWindowExt};
+
+    #[gpui_kit::test]
+    fn tun_title_has_one_switch_and_rejected_toggle_keeps_actual_state(cx: &mut TestAppContext) {
+        let root = tempfile::tempdir().unwrap();
+        let service = crate::integration::Service::start(
+            crate::storage::Repository::open(crate::storage::AppPaths::isolated(root.path()))
+                .unwrap(),
+        )
+        .unwrap();
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            crate::integration::init(service, None, cx);
+        });
+        let (handle, page) = cx.update(|cx| {
+            gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
+                let session = cx.new(crate::session::Session::new);
+                cx.new(|cx| SettingsPage::new(SettingsKind::Tun, session, window, cx))
+            })
+            .unwrap()
+        });
+        cx.run_until_parked();
+        handle
+            .update(cx, |_, window, cx| {
+                window.render_frame(cx);
+                let switch = window.find("setting-IsTunEnabled");
+                assert_eq!(window.find_all("setting-IsTunEnabled").len(), 1);
+                assert!(switch.bounds().origin.x < window.viewport_size().width / 2.);
+                let tab = window.within("runtime-tabs").find(0).bounds();
+                assert!(switch.bounds().origin.y < tab.origin.y + tab.size.height);
+                assert_eq!(switch.checked(), Some(false));
+                window.click("setting-IsTunEnabled", cx);
+                window.render_frame(cx);
+                assert!(page.read(cx).error.is_some());
+                assert_eq!(window.find("setting-IsTunEnabled").checked(), Some(false));
+            })
+            .unwrap();
     }
 }

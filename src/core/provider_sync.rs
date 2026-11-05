@@ -48,10 +48,10 @@ where
     CF: Future<Output = Result<(), String>>,
 {
     let root = paths.directory(crate::storage::DirectoryKind::Core);
-    let config: serde_yaml_ng::Mapping =
-        serde_yaml_ng::from_str(&launch.composed).map_err(|_| "运行配置无效")?;
+    let config: serde_yaml_ng::Mapping = serde_yaml_ng::from_str(&launch.composed)
+        .map_err(|error| crate::logging::diagnostic_error("运行配置无效", error))?;
     let declarations = super::runtime_bundle::remote_providers_of(&config, &root)
-        .map_err(|error| error.to_string())?;
+        .map_err(crate::logging::error_message)?;
     if declarations.is_empty() {
         return Ok(0);
     }
@@ -210,7 +210,10 @@ async fn local_chunk(path: &Path, offset: u64) -> Result<RuntimeFileOutcome, Str
         }
         Err(error) => return Err(format!("无法读取 Provider 缓存：{error}")),
     };
-    let before = file.metadata().await.map_err(|error| error.to_string())?;
+    let before = file
+        .metadata()
+        .await
+        .map_err(crate::logging::error_message)?;
     if !before.is_file() {
         return Err("Provider 缓存不是普通文件".into());
     }
@@ -219,16 +222,16 @@ async fn local_chunk(path: &Path, offset: u64) -> Result<RuntimeFileOutcome, Str
     if offset < before.len() {
         file.seek(std::io::SeekFrom::Start(offset))
             .await
-            .map_err(|error| error.to_string())?;
+            .map_err(crate::logging::error_message)?;
         (&mut file)
             .take(CHUNK)
             .read_to_end(&mut bytes)
             .await
-            .map_err(|error| error.to_string())?;
+            .map_err(crate::logging::error_message)?;
     }
     let after = tokio::fs::metadata(path)
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(crate::logging::error_message)?;
     if before.len() != after.len() || mtime != modified_ns(&after) {
         return Ok(RuntimeFileOutcome::Absent);
     }

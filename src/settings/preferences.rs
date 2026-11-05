@@ -23,6 +23,7 @@ impl SettingsPage {
                                 .to_lowercase()
                                 .contains(query))
                             && schema::field_visible(self.kind, field.key)
+                            && !(self.kind == SettingsKind::Tun && field.key == "IsTunEnabled")
                             && !(matches!(self.kind, SettingsKind::Dns | SettingsKind::Sniffer)
                                 && field.key == crate::preferences::native::flag(self.kind))
                     })

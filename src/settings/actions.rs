@@ -10,6 +10,7 @@ impl SettingsPage {
         cx: &mut Context<Self>,
     ) -> bool {
         match action {
+            "UWP 应用代理" | "选择应用" => super::uwp::open(window, cx),
             "检查应用更新" => super::update::open(window, cx),
             "创建本地备份" => crate::core::request(
                 crate::core::Command::LocalBackup(crate::core::local_backup::Command::Create),

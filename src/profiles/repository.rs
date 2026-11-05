@@ -6,13 +6,14 @@ use super::{
 use crate::storage::{AppPaths, Namespace, Repository, Values, atomic_write};
 use std::{collections::BTreeSet, path::PathBuf};
 pub(crate) fn namespace() -> Result<Namespace, String> {
-    Namespace::parse("profile-index").map_err(|error| error.to_string())
+    Namespace::parse("profile-index").map_err(crate::logging::error_message)
 }
 pub(crate) fn read(paths: &AppPaths) -> Result<(Values, Vec<Document>), String> {
-    let repository = Repository::open(paths.clone()).map_err(|_| "无法读取订阅目录")?;
+    let repository = Repository::open(paths.clone())
+        .map_err(|error| crate::logging::diagnostic_error("无法读取订阅目录", error))?;
     let mut values = repository
         .read_limited(&namespace()?, crate::configuration::INPUT_LIMIT)
-        .map_err(|_| "无法读取订阅索引")?;
+        .map_err(|error| crate::logging::diagnostic_error("无法读取订阅索引", error))?;
     store::hydrate(paths, false, &mut values)?;
     let documents = decode(&values)?;
     values.remove("active");
@@ -31,7 +32,9 @@ pub(crate) fn decode(values: &Values) -> Result<Vec<Document>, String> {
     let ids = values.get("ids").ok_or("订阅索引缺少列表")?;
     let mut unique = BTreeSet::new();
     for id in ids.split(',').filter(|id| !id.is_empty()) {
-        let id = id.parse::<u64>().map_err(|_| "订阅 ID 无效")?;
+        let id = id
+            .parse::<u64>()
+            .map_err(|error| crate::logging::diagnostic_error("订阅 ID 无效", error))?;
         if id == 0 || !unique.insert(id) {
             return Err("订阅 ID 重复或无效".into());
         }
@@ -63,7 +66,7 @@ pub(crate) fn validate(document: &Document) -> Result<(), String> {
         let timeout = document
             .timeout
             .parse::<u64>()
-            .map_err(|_| "订阅超时无效")?;
+            .map_err(|error| crate::logging::diagnostic_error("订阅超时无效", error))?;
         if !(1..=3600).contains(&timeout) {
             return Err("订阅超时需为 1–3600 秒".into());
         }
@@ -82,7 +85,7 @@ pub(crate) fn validate(document: &Document) -> Result<(), String> {
         Some(document.id),
         &Values::new(),
     )
-    .map_err(|_| "订阅 YAML 无效或超过大小上限")?;
+    .map_err(|error| crate::logging::diagnostic_error("订阅 YAML 无效或超过大小上限", error))?;
     Ok(())
 }
 pub(crate) fn body_path(paths: &AppPaths, id: u64) -> PathBuf {
@@ -118,12 +121,22 @@ impl Recovery {
                 }
                 Ok(_) => {}
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(_) => return Err("无法检查订阅恢复材料".into()),
+                Err(error) => {
+                    return Err(crate::logging::diagnostic_error(
+                        "无法检查订阅恢复材料".into(),
+                        error,
+                    ));
+                }
             }
             let content = match std::fs::read(&path) {
                 Ok(content) => Some(content),
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-                Err(_) => return Err("无法读取订阅恢复材料".into()),
+                Err(error) => {
+                    return Err(crate::logging::diagnostic_error(
+                        "无法读取订阅恢复材料".into(),
+                        error,
+                    ));
+                }
             };
             files.push((path, content));
         }
@@ -176,10 +189,11 @@ pub(crate) fn commit(
             return Err("订阅 ID 重复".into());
         }
     }
-    let repository = Repository::open(paths.clone()).map_err(|_| "无法打开订阅存储")?;
+    let repository = Repository::open(paths.clone())
+        .map_err(|error| crate::logging::diagnostic_error("无法打开订阅存储", error))?;
     let values = store::metadata_values(new);
     if serde_json::to_vec(&values)
-        .map_err(|_| "无法编码订阅")?
+        .map_err(|error| crate::logging::diagnostic_error("无法编码订阅", error))?
         .len() as u64
         > crate::configuration::INPUT_LIMIT
     {
@@ -192,12 +206,12 @@ pub(crate) fn commit(
             .is_none_or(|old| old.content != document.content)
         {
             atomic_write(&body_path(paths, document.id), document.content.as_bytes())
-                .map_err(|_| "订阅文件保存失败")?;
+                .map_err(|error| crate::logging::diagnostic_error("订阅文件保存失败", error))?;
         }
     }
     repository
         .save(&namespace()?, &values)
-        .map_err(|_| "订阅索引保存失败")?;
+        .map_err(|error| crate::logging::diagnostic_error("订阅索引保存失败", error))?;
     crate::configuration::select_profile(paths, selection)?;
     for document in old.iter().filter(|doc| !ids.contains(&doc.id)) {
         for path in [
@@ -209,7 +223,12 @@ pub(crate) fn commit(
             match std::fs::remove_file(path) {
                 Ok(()) => {}
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(_) => return Err("订阅文件删除失败".into()),
+                Err(error) => {
+                    return Err(crate::logging::diagnostic_error(
+                        "订阅文件删除失败".into(),
+                        error,
+                    ));
+                }
             }
         }
     }

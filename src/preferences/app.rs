@@ -16,16 +16,24 @@ fn document(paths: &AppPaths, limit: u64) -> Result<Map<String, Value>, String> 
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             return Ok(Map::from_iter([("schema_version".into(), 1.into())]));
         }
-        Err(_) => return Err(format!("{}：无法读取程序设置", path.display())),
+        Err(error) => {
+            return Err(crate::logging::diagnostic_error(
+                format!("{}：无法读取程序设置", path.display()),
+                error,
+            ));
+        }
     };
     let mut bytes = Vec::new();
     file.take(limit.saturating_add(1))
         .read_to_end(&mut bytes)
-        .map_err(|_| format!("{}：无法读取程序设置", path.display()))?;
+        .map_err(|error| {
+            crate::logging::diagnostic_error(format!("{}：无法读取程序设置", path.display()), error)
+        })?;
     if bytes.len() as u64 > limit {
         return Err(format!("{}：程序设置超过读取上限", path.display()));
     }
     let root: Map<String, Value> = serde_json::from_slice(&bytes).map_err(|error| {
+        log::error!("{}：程序设置解析原始错误：{error}", path.display());
         format!(
             "{}：JSON 格式或类型无效，第 {} 行第 {} 列；请修正文件后重试",
             path.display(),
@@ -44,8 +52,12 @@ pub(crate) fn read<T: DeserializeOwned + Default>(
 ) -> Result<T, String> {
     let root = document(paths, LIMIT)?;
     match root.get(section) {
-        Some(value) => serde_json::from_value(value.clone())
-            .map_err(|_| format!("{}：{section} 设置类型无效", path(paths).display())),
+        Some(value) => serde_json::from_value(value.clone()).map_err(|error| {
+            crate::logging::diagnostic_error(
+                format!("{}：{section} 设置类型无效", path(paths).display()),
+                error,
+            )
+        }),
         None => Ok(T::default()),
     }
 }
@@ -54,14 +66,16 @@ pub(crate) fn write<T: Serialize>(
     section: &str,
     value: &T,
 ) -> Result<(), String> {
-    let value = serde_json::to_value(value).map_err(|_| "无法编码程序设置")?;
+    let value = serde_json::to_value(value)
+        .map_err(|error| crate::logging::diagnostic_error("无法编码程序设置", error))?;
     let mut root = document(paths, LIMIT)?;
     root.insert(section.into(), value);
     atomic_write(
         &path(paths),
-        &serde_json::to_vec_pretty(&root).map_err(|_| "无法编码程序设置")?,
+        &serde_json::to_vec_pretty(&root)
+            .map_err(|error| crate::logging::diagnostic_error("无法编码程序设置", error))?,
     )
-    .map_err(|error| error.to_string())
+    .map_err(crate::logging::error_message)
 }
 pub(crate) fn read_values(paths: &AppPaths, section: &str, limit: u64) -> Result<Values, String> {
     let root = document(paths, limit)?;
@@ -73,12 +87,15 @@ pub(crate) fn read_values(paths: &AppPaths, section: &str, limit: u64) -> Result
         .cloned()
         .ok_or_else(|| format!("{}：程序设置分组需为对象", path(paths).display()))?;
     section.insert("schema_version".into(), 2.into());
-    super::json::decode(&serde_json::to_vec(&section).map_err(|_| "无法读取程序设置")?)
-        .map_err(|error| format!("{}：{error}", path(paths).display()))
+    super::json::decode(
+        &serde_json::to_vec(&section)
+            .map_err(|error| crate::logging::diagnostic_error("无法读取程序设置", error))?,
+    )
+    .map_err(|error| format!("{}：{error}", path(paths).display()))
 }
 pub(crate) fn write_values(paths: &AppPaths, section: &str, values: &Values) -> Result<(), String> {
-    let mut value: Map<String, Value> =
-        serde_json::from_slice(&super::json::encode(values)?).map_err(|_| "无法编码程序设置")?;
+    let mut value: Map<String, Value> = serde_json::from_slice(&super::json::encode(values)?)
+        .map_err(|error| crate::logging::diagnostic_error("无法编码程序设置", error))?;
     value.remove("schema_version");
     write(paths, section, &value)
 }
@@ -116,9 +133,10 @@ pub(crate) fn restore(paths: &AppPaths, snapshot: &Sections) -> Result<(), Strin
     }
     atomic_write(
         &path(paths),
-        &serde_json::to_vec_pretty(&root).map_err(|_| "无法编码程序设置")?,
+        &serde_json::to_vec_pretty(&root)
+            .map_err(|error| crate::logging::diagnostic_error("无法编码程序设置", error))?,
     )
-    .map_err(|error| error.to_string())
+    .map_err(crate::logging::error_message)
 }
 
 #[cfg(test)]

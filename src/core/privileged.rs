@@ -9,7 +9,7 @@ pub(super) struct Session {
 }
 fn credentials(paths: &AppPaths) -> Result<OwnerCredentials, String> {
     super::service_identity::current_owner_credentials_for_root(paths.data())
-        .map_err(|error| error.to_string())
+        .map_err(crate::logging::error_message)
 }
 fn response<T>(response: suki_service::Response<T>) -> Result<T, String> {
     if response.code != 0 {
@@ -21,9 +21,9 @@ fn response<T>(response: suki_service::Response<T>) -> Result<T, String> {
     response.data.ok_or_else(|| "后台服务未返回结果".into())
 }
 pub(super) async fn require_ready() -> Result<(), String> {
-    let version = suki_service::get_version()
-        .await
-        .map_err(|_| "后台服务未就绪，请在虚拟网卡页安装或修复服务")?;
+    let version = suki_service::get_version().await.map_err(|error| {
+        crate::logging::diagnostic_error("后台服务未就绪，请在虚拟网卡页安装或修复服务", error)
+    })?;
     let version = response(version)?;
     if version.protocol != ProtocolVersion::current() {
         return Err("后台服务协议不一致，请修复服务".into());
@@ -84,9 +84,17 @@ impl Session {
         let reply = match suki_service::start_clash(&credentials, &request).await {
             Ok(reply) => reply,
             // The service deduplicates this exact session token. Retry once if the acknowledgement was lost.
-            Err(_) => suki_service::start_clash(&credentials, &request)
-                .await
-                .map_err(|error| format!("服务启动请求未确认；未启动其他内核：{error}"))?,
+            Err(error) => {
+                log::warn!("服务启动应答未确认，重试同一会话：{error:#}");
+                suki_service::start_clash(&credentials, &request)
+                    .await
+                    .map_err(|error| {
+                        crate::logging::diagnostic_error(
+                            format!("服务启动请求未确认；未启动其他内核：{error}"),
+                            format_args!("{error:#}"),
+                        )
+                    })?
+            }
         };
         let started = response(reply)?;
         let proof = OwnerSessionProof {
@@ -107,11 +115,9 @@ impl Session {
         self.pid
     }
     pub(super) async fn status(&mut self) -> Result<ServiceStatusSnapshot, String> {
-        let status = response(
-            suki_service::get_status(&self.credentials)
-                .await
-                .map_err(|_| "后台服务连接中断，未启动第二个内核")?,
-        )?;
+        let status = response(suki_service::get_status(&self.credentials).await.map_err(
+            |error| crate::logging::diagnostic_error("后台服务连接中断，未启动第二个内核", error),
+        )?)?;
         if !status.is_active || status.active_generation != Some(self.proof.generation) {
             return Err("后台服务内核归属已变化，未接管其他会话".into());
         }
@@ -151,7 +157,7 @@ impl Session {
                         },
                     )
                     .await
-                    .map_err(|error| error.to_string())?,
+                    .map_err(crate::logging::error_message)?,
                 )
             },
         )
@@ -177,14 +183,14 @@ impl Session {
                         },
                     )
                     .await
-                    .map_err(|error| error.to_string())?,
+                    .map_err(crate::logging::error_message)?,
                 )
             },
             || async {
                 let status = response(
                     suki_service::get_status(&self.credentials)
                         .await
-                        .map_err(|error| error.to_string())?,
+                        .map_err(crate::logging::error_message)?,
                 )?;
                 if !status.is_active || status.active_generation != Some(self.proof.generation) {
                     return Err("Provider 同步期间后台服务归属已变化".into());
@@ -206,7 +212,7 @@ impl Session {
                 &launch.service_bundle().await?,
             )
             .await
-            .map_err(|error| error.to_string())?,
+            .map_err(crate::logging::error_message)?,
         )?;
         Ok(outcome)
     }
@@ -214,7 +220,7 @@ impl Session {
 
 fn session_token() -> Result<String, String> {
     let mut bytes = [0u8; suki_service::SESSION_TOKEN_HEX_LEN / 2];
-    getrandom::fill(&mut bytes).map_err(|error| error.to_string())?;
+    getrandom::fill(&mut bytes).map_err(crate::logging::error_message)?;
     Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
 }
 #[derive(Clone)]
@@ -231,7 +237,7 @@ pub(super) async fn manage(
 pub(super) async fn uninstall() -> Result<(), String> {
     tokio::task::spawn_blocking(|| {
         let service = std::env::current_exe()
-            .map_err(|error| error.to_string())?
+            .map_err(crate::logging::error_message)?
             .with_file_name(format!(
                 "suki-clash-service{}",
                 std::env::consts::EXE_SUFFIX
@@ -239,10 +245,10 @@ pub(super) async fn uninstall() -> Result<(), String> {
         if !service.is_file() {
             return Err("后台服务程序不存在，请使用完整应用包".into());
         }
-        suki_service::management::uninstall(&service).map_err(|error| error.to_string())
+        suki_service::management::uninstall(&service).map_err(crate::logging::error_message)
     })
     .await
-    .map_err(|_| "服务卸载任务异常退出")?
+    .map_err(|error| crate::logging::diagnostic_error("服务卸载任务异常退出", error))?
 }
 pub(super) async fn publish_core(
     paths: &AppPaths,
@@ -258,7 +264,7 @@ async fn install(
         .join(crate::bootstrap::core_name());
     let outcome = tokio::task::spawn_blocking(move || {
         let service = std::env::current_exe()
-            .map_err(|error| error.to_string())?
+            .map_err(crate::logging::error_message)?
             .with_file_name(format!(
                 "suki-clash-service{}",
                 std::env::consts::EXE_SUFFIX
@@ -280,10 +286,10 @@ async fn install(
             gid,
             "安装 Suki Clash 后台服务",
         )
-        .map_err(|error| error.to_string())
+        .map_err(crate::logging::error_message)
     })
     .await
-    .map_err(|_| "服务安装任务异常退出")??;
+    .map_err(|error| crate::logging::diagnostic_error("服务安装任务异常退出", error))??;
     require_ready()
         .await
         .map_err(|error| format!("安装操作已完成；后台服务状态未确认：{error}"))?;
@@ -304,7 +310,7 @@ pub(super) async fn owner_active(paths: &AppPaths) -> Result<bool, String> {
     Ok(response(
         suki_service::get_status(&credentials(paths)?)
             .await
-            .map_err(|error| error.to_string())?,
+            .map_err(crate::logging::error_message)?,
     )?
     .is_active)
 }

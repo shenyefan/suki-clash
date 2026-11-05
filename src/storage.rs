@@ -331,7 +331,7 @@ pub(crate) fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), StorageError
     // report an uncommitted write or make callers roll back only part of a save.
     #[cfg(unix)]
     if let Err(error) = fs::File::open(directory).and_then(|directory| directory.sync_all()) {
-        eprintln!("文件已替换，但无法同步目录元数据：{error}");
+        log::warn!("文件已替换，但无法同步目录元数据：{error}");
     }
     Ok(())
 }

@@ -105,7 +105,8 @@ impl Runtime {
                     self.memory_live = true;
                     self.memory_error = None;
                 }
-                Err(_) => {
+                Err(error) => {
+                    log::error!("内存流解析原始错误：{error}");
                     self.memory_live = false;
                     self.memory_error = Some("内存流响应无效".into());
                 }
@@ -279,7 +280,7 @@ pub(super) async fn run(
                             #[derive(serde::Deserialize)] struct Traffic {up:u64,down:u64}
                             match serde_json::from_slice::<Traffic>(&packet.bytes) {
                                 Ok(rate)=> {runtime.statistics.upload_rate=Some(rate.up);runtime.statistics.download_rate=Some(rate.down);runtime.statistics.rates=recorder.record_rate(chrono::Local::now(),rate.up,rate.down);runtime.traffic_live=true;traffic_error=None;},
-                                Err(_)=>{traffic_error=Some("流量流响应无效".into());runtime.traffic_live=false;runtime.statistics.upload_rate=None;runtime.statistics.download_rate=None;runtime.statistics.rates.clear();recorder.gap();}
+                                Err(error)=>{log::error!("流量流解析原始错误：{error}");traffic_error=Some("流量流响应无效".into());runtime.traffic_live=false;runtime.statistics.upload_rate=None;runtime.statistics.download_rate=None;runtime.statistics.rates.clear();recorder.gap();}
                             }
                         } else if let Some(error)=state.error {recorder.gap();runtime.statistics.rates.clear();runtime.traffic_live=false;runtime.statistics.upload_rate=None;runtime.statistics.download_rate=None;traffic_error=Some(error);}
                     },
@@ -306,7 +307,10 @@ pub(super) async fn run(
                         }
                         if let Some(task)=probe.as_ref() && task.is_finished() && let Some(task)=probe.take() {
                             match task.await {
-                                Ok(result) if scope==Some((result.generation,result.epoch)) => runtime.apply_probe(result),
+                                Ok(result) if scope==Some((result.generation,result.epoch)) => {
+                                    if let Some(error) = &result.error { log::warn!("出口 IP 检测结束：{error}"); } else { log::info!("出口 IP 检测完成"); }
+                                    runtime.apply_probe(result)
+                                },
                                 Err(error) => runtime.probe_error=Some(format!("出口 IP 查询任务异常：{error}")),
                                 _ => {},
                             }
@@ -341,7 +345,8 @@ pub(super) async fn run(
     updates.close();
 }
 fn decode_connections(bytes: &[u8]) -> Result<Connections, String> {
-    let connections: Connections = serde_json::from_slice(bytes).map_err(|_| "连接流响应无效")?;
+    let connections: Connections = serde_json::from_slice(bytes)
+        .map_err(|error| crate::logging::diagnostic_error("连接流响应无效", error))?;
     if connections.connections.len() > 20000 {
         return Err("连接统计超过上限".into());
     }
@@ -363,7 +368,7 @@ async fn read_control(
         target.client.proxies(&target.order)
     )?;
     let mode = serde_json::from_value(config.get("mode").cloned().ok_or("内核缺少模式信息")?)
-        .map_err(|_| "内核模式无效")?;
+        .map_err(|error| crate::logging::diagnostic_error("内核模式无效", error))?;
     let dns = config
         .get("dns")
         .and_then(|dns| dns.get("enhanced-mode"))
@@ -384,7 +389,8 @@ pub(super) async fn sample(
 ) -> Result<(Connections, ProxyMode, Option<String>, Proxies, Option<u16>), String> {
     let (raw, (mode, dns, proxies, port)) =
         tokio::try_join!(target.client.json("/connections"), read_control(target))?;
-    let bytes = serde_json::to_vec(&raw).map_err(|_| "连接响应无效")?;
+    let bytes = serde_json::to_vec(&raw)
+        .map_err(|error| crate::logging::diagnostic_error("连接响应无效", error))?;
     Ok((decode_connections(&bytes)?, mode, dns, proxies, port))
 }
 struct Probe {
@@ -508,8 +514,8 @@ async fn probe_services(
     result
 }
 fn parse_ip(bytes: &[u8]) -> Result<String, String> {
-    let response: serde_json::Value =
-        serde_json::from_slice(bytes).map_err(|_| "IP 服务响应格式无效")?;
+    let response: serde_json::Value = serde_json::from_slice(bytes)
+        .map_err(|error| crate::logging::diagnostic_error("IP 服务响应格式无效", error))?;
     response
         .get("ip")
         .and_then(serde_json::Value::as_str)
@@ -518,8 +524,8 @@ fn parse_ip(bytes: &[u8]) -> Result<String, String> {
         .ok_or_else(|| "IP 服务未返回有效地址".into())
 }
 fn parse_ip_info(bytes: &[u8]) -> Result<IpInfo, String> {
-    let response: serde_json::Value =
-        serde_json::from_slice(bytes).map_err(|_| "IP 服务响应格式无效")?;
+    let response: serde_json::Value = serde_json::from_slice(bytes)
+        .map_err(|error| crate::logging::diagnostic_error("IP 服务响应格式无效", error))?;
     let ip = parse_ip(bytes)?;
     let text = |key: &str| {
         response

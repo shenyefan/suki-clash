@@ -111,7 +111,8 @@ impl Proxies {
         struct Response {
             proxies: BTreeMap<String, Proxy>,
         }
-        let response: Response = serde_json::from_slice(bytes).map_err(|_| "内核代理响应无效")?;
+        let response: Response = serde_json::from_slice(bytes)
+            .map_err(|error| crate::logging::diagnostic_error("内核代理响应无效", error))?;
         if response.proxies.len() > 20000 {
             return Err("内核代理列表超过上限".into());
         }
@@ -167,7 +168,8 @@ impl Proxies {
         struct Response {
             providers: BTreeMap<String, Provider>,
         }
-        let response: Response = serde_json::from_slice(bytes).map_err(|_| "代理集合响应无效")?;
+        let response: Response = serde_json::from_slice(bytes)
+            .map_err(|error| crate::logging::diagnostic_error("代理集合响应无效", error))?;
         self.entries
             .retain(|name, _| self.core_names.contains(name));
         self.records.retain(|_, proxy| proxy.provider.is_none());
@@ -431,12 +433,18 @@ impl Selections {
                     ..Self::default()
                 });
             }
-            Err(_) => return Err("无法读取代理选择记录".into()),
+            Err(error) => {
+                return Err(crate::logging::diagnostic_error(
+                    "无法读取代理选择记录".into(),
+                    error,
+                ));
+            }
         };
         if bytes.len() > 1024 * 1024 {
             return Err("代理选择记录超过上限".into());
         }
-        let result: Self = serde_json::from_slice(&bytes).map_err(|_| "代理选择记录无效")?;
+        let result: Self = serde_json::from_slice(&bytes)
+            .map_err(|error| crate::logging::diagnostic_error("代理选择记录无效", error))?;
         if result.schema_version != 1 {
             return Err("代理选择记录版本无效".into());
         }
@@ -457,11 +465,13 @@ impl Selections {
         }
     }
     pub(crate) fn save(&self, paths: &AppPaths) -> Result<(), String> {
-        let bytes = serde_json::to_vec_pretty(self).map_err(|_| "无法编码代理选择记录")?;
+        let bytes = serde_json::to_vec_pretty(self)
+            .map_err(|error| crate::logging::diagnostic_error("无法编码代理选择记录", error))?;
         if bytes.len() > 1024 * 1024 {
             return Err("代理选择记录超过上限".into());
         }
-        atomic_write(&Self::path(paths), &bytes).map_err(|_| "代理选择记录保存失败".into())
+        atomic_write(&Self::path(paths), &bytes)
+            .map_err(|error| crate::logging::diagnostic_error("代理选择记录保存失败".into(), error))
     }
 }
 

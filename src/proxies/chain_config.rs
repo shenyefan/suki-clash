@@ -95,8 +95,8 @@ impl Config {
         if self.custom.trim().is_empty() {
             return Ok(vec![]);
         }
-        let root: Value =
-            serde_yaml_ng::from_str(&self.custom).map_err(|_| "自定义链式 YAML 无效")?;
+        let root: Value = serde_yaml_ng::from_str(&self.custom)
+            .map_err(|error| crate::logging::diagnostic_error("自定义链式 YAML 无效", error))?;
         let map = root.as_mapping().ok_or("自定义链式配置需为 proxies 对象")?;
         if map.len() != 1 || !map.contains_key("proxies") {
             return Err("自定义链式配置仅支持 proxies".into());

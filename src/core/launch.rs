@@ -38,11 +38,13 @@ struct Composition {
 
 impl Launch {
     pub(super) fn tun_enabled(&self) -> Result<bool, String> {
-        let value: Value = serde_yaml_ng::from_str(&self.composed).map_err(|_| "运行配置无效")?;
+        let value: Value = serde_yaml_ng::from_str(&self.composed)
+            .map_err(|error| crate::logging::diagnostic_error("运行配置无效", error))?;
         configuration::tun::enabled(&value)
     }
     pub(super) fn privileged_network(&self) -> Result<bool, String> {
-        let config: Value = serde_yaml_ng::from_str(&self.composed).map_err(|_| "运行配置无效")?;
+        let config: Value = serde_yaml_ng::from_str(&self.composed)
+            .map_err(|error| crate::logging::diagnostic_error("运行配置无效", error))?;
         Ok(self.tun_enabled()?
             || (cfg!(target_os = "linux")
                 && ["tproxy-port", "routing-mark"].iter().any(|key| {
@@ -54,12 +56,12 @@ impl Launch {
     }
     pub(super) async fn service_bundle(&self) -> Result<suki_service::RuntimeBundle, String> {
         let core = suki_service::service_paths()
-            .map_err(|error| error.to_string())?
+            .map_err(crate::logging::error_message)?
             .core_dir()
             .join(crate::bootstrap::core_name());
         super::runtime_bundle::collect_runtime_bundle_from(&self.config, &core, &self.work_dir)
             .await
-            .map_err(|error| error.to_string())
+            .map_err(crate::logging::error_message)
     }
     pub(super) fn service_endpoint(&mut self, identity: &suki_service::OwnerIdentity) {
         let path = suki_service::mihomo_ipc_path(identity);
@@ -223,15 +225,15 @@ impl Launch {
         let old: Value = serde_yaml_ng::from_slice(
             &tokio::fs::read(&previous.config)
                 .await
-                .map_err(|_| "无法读取运行配置")?,
+                .map_err(|error| crate::logging::diagnostic_error("无法读取运行配置", error))?,
         )
-        .map_err(|_| "运行配置无效")?;
+        .map_err(|error| crate::logging::diagnostic_error("运行配置无效", error))?;
         let mut candidate: Value = serde_yaml_ng::from_slice(
             &tokio::fs::read(&self.config)
                 .await
-                .map_err(|_| "无法读取候选配置")?,
+                .map_err(|error| crate::logging::diagnostic_error("无法读取候选配置", error))?,
         )
-        .map_err(|_| "候选配置无效")?;
+        .map_err(|error| crate::logging::diagnostic_error("候选配置无效", error))?;
         for key in ["external-controller-unix", "external-controller-pipe"] {
             candidate
                 .as_mapping_mut()
@@ -241,9 +243,10 @@ impl Launch {
                 candidate[key] = value.clone();
             }
         }
-        let yaml = serde_yaml_ng::to_string(&candidate).map_err(|_| "无法编码热更新配置")?;
+        let yaml = serde_yaml_ng::to_string(&candidate)
+            .map_err(|error| crate::logging::diagnostic_error("无法编码热更新配置", error))?;
         crate::storage::atomic_write(&self.config, yaml.as_bytes())
-            .map_err(|_| "无法写入热更新配置")?;
+            .map_err(|error| crate::logging::diagnostic_error("无法写入热更新配置", error))?;
         self.force_service = previous.force_service;
         self.client = previous.client.clone();
         Ok(())
@@ -251,31 +254,35 @@ impl Launch {
     pub(super) async fn yaml(&self) -> Result<String, String> {
         tokio::fs::read_to_string(&self.config)
             .await
-            .map_err(|_| "无法读取私有运行配置".into())
+            .map_err(|error| crate::logging::diagnostic_error("无法读取私有运行配置".into(), error))
     }
     pub(super) fn record_mode(&mut self, mode: crate::session::ProxyMode) -> Result<(), String> {
-        let mut yaml: Value = serde_yaml_ng::from_slice(
-            &std::fs::read(&self.config).map_err(|_| "无法读取私有运行配置")?,
-        )
-        .map_err(|_| "私有运行配置无效")?;
+        let mut yaml: Value =
+            serde_yaml_ng::from_slice(&std::fs::read(&self.config).map_err(|error| {
+                crate::logging::diagnostic_error("无法读取私有运行配置", error)
+            })?)
+            .map_err(|error| crate::logging::diagnostic_error("私有运行配置无效", error))?;
         yaml["mode"] = mode.label().into();
-        let text = serde_yaml_ng::to_string(&yaml).map_err(|_| "无法编码运行模式")?;
-        let mut composed: Value =
-            serde_yaml_ng::from_str(&self.composed).map_err(|_| "已应用配置无效")?;
+        let text = serde_yaml_ng::to_string(&yaml)
+            .map_err(|error| crate::logging::diagnostic_error("无法编码运行模式", error))?;
+        let mut composed: Value = serde_yaml_ng::from_str(&self.composed)
+            .map_err(|error| crate::logging::diagnostic_error("已应用配置无效", error))?;
         composed["mode"] = mode.label().into();
-        let composed = serde_yaml_ng::to_string(&composed).map_err(|_| "无法记录运行模式")?;
+        let composed = serde_yaml_ng::to_string(&composed)
+            .map_err(|error| crate::logging::diagnostic_error("无法记录运行模式", error))?;
         crate::storage::atomic_write(&self.config, text.as_bytes())
-            .map_err(|_| "运行模式文件保存失败")?;
+            .map_err(|error| crate::logging::diagnostic_error("运行模式文件保存失败", error))?;
         self.composed = composed;
         Ok(())
     }
     pub(super) fn commit_hot(&mut self, candidate: &Self, yaml: &str) -> Result<(), String> {
         crate::storage::atomic_write(&self.config, yaml.as_bytes())
-            .map_err(|_| "无法提交私有运行配置")?;
+            .map_err(|error| crate::logging::diagnostic_error("无法提交私有运行配置", error))?;
         self.source = candidate.source.clone();
         self.composed = candidate.composed.clone();
         self.client = self.client.clone().with_proxy_config(
-            &serde_yaml_ng::from_str(&self.composed).map_err(|_| "已应用配置无效")?,
+            &serde_yaml_ng::from_str(&self.composed)
+                .map_err(|error| crate::logging::diagnostic_error("已应用配置无效", error))?,
         );
         Ok(())
     }
@@ -319,13 +326,14 @@ impl Launch {
             },
         )
         .await?;
-        let mut config: Value =
-            serde_yaml_ng::from_str(&launch.yaml().await?).map_err(|_| "资源校验配置无效")?;
+        let mut config: Value = serde_yaml_ng::from_str(&launch.yaml().await?)
+            .map_err(|error| crate::logging::diagnostic_error("资源校验配置无效", error))?;
         config["rules"] = serde_yaml_ng::to_value(vec![rule, "MATCH,DIRECT".into()])
-            .map_err(|_| "资源校验规则无效")?;
-        let yaml = serde_yaml_ng::to_string(&config).map_err(|_| "资源校验配置无效")?;
+            .map_err(|error| crate::logging::diagnostic_error("资源校验规则无效", error))?;
+        let yaml = serde_yaml_ng::to_string(&config)
+            .map_err(|error| crate::logging::diagnostic_error("资源校验配置无效", error))?;
         crate::storage::atomic_write(&launch.config, yaml.as_bytes())
-            .map_err(|_| "无法写入资源校验配置")?;
+            .map_err(|error| crate::logging::diagnostic_error("无法写入资源校验配置", error))?;
         launch.work_dir = directory;
         Ok(launch)
     }
@@ -344,7 +352,8 @@ impl Launch {
         };
         // Metadata supplies order and scope; current body files are the sole
         // content source. All I/O runs on the existing lifecycle worker.
-        let repository = Repository::open(paths.clone()).map_err(|_| "无法打开配置来源存储")?;
+        let repository = Repository::open(paths.clone())
+            .map_err(|error| crate::logging::diagnostic_error("无法打开配置来源存储", error))?;
         let overrides = if let Some(overrides) = options.overrides {
             overrides
         } else if apply_overrides {
@@ -357,25 +366,27 @@ impl Launch {
                 Some(values) => values,
                 None => repository
                     .read_limited(
-                        &Namespace::parse(&format!("profile-enhance-{id}"))
-                            .map_err(|_| "订阅增强身份无效")?,
+                        &Namespace::parse(&format!("profile-enhance-{id}")).map_err(|error| {
+                            crate::logging::diagnostic_error("订阅增强身份无效", error)
+                        })?,
                         SOURCE_LIMIT,
                     )
-                    .map_err(|_| "无法读取订阅增强")?,
+                    .map_err(|error| crate::logging::diagnostic_error("无法读取订阅增强", error))?,
             };
             configuration::enhancement::apply(source.content(), &values)?
         } else {
             source.content().to_vec()
         };
         // Global DNS supplies the base; ordered user overrides can specialize it.
-        let enhanced: Value = serde_yaml_ng::from_slice(&enhanced).map_err(|_| "订阅配置无效")?;
+        let enhanced: Value = serde_yaml_ng::from_slice(&enhanced)
+            .map_err(|error| crate::logging::diagnostic_error("订阅配置无效", error))?;
         let mut base = match enhanced {
             Value::Mapping(mapping) => configuration::lowercase_root(mapping),
             _ => return Err("订阅配置需为对象".into()),
         };
         configuration::flow::apply_dns(paths, options.flow.as_ref(), &mut base)?;
         let enhanced = serde_yaml_ng::to_string(&base)
-            .map_err(|_| "无法编码 DNS 基础配置")?
+            .map_err(|error| crate::logging::diagnostic_error("无法编码 DNS 基础配置", error))?
             .into_bytes();
         struct Cancellation(std::sync::Arc<std::sync::atomic::AtomicBool>);
         impl Drop for Cancellation {
@@ -405,7 +416,7 @@ impl Launch {
             (result, reports)
         })
         .await
-        .map_err(|_| "配置合成任务异常退出")?;
+        .map_err(|error| crate::logging::diagnostic_error("配置合成任务异常退出", error))?;
         let mut log_errors = vec![];
         for report in reports {
             if let Err(error) = super::overrides::save_report(paths, &report) {
@@ -425,7 +436,8 @@ impl Launch {
             Some(preferences) => preferences,
             None => configuration::Preferences::load(paths)?,
         };
-        let mut mapped: Value = serde_yaml_ng::from_slice(&bytes).map_err(|_| "合成结果无效")?;
+        let mut mapped: Value = serde_yaml_ng::from_slice(&bytes)
+            .map_err(|error| crate::logging::diagnostic_error("合成结果无效", error))?;
         preferences.overlay(mapped.as_mapping_mut().ok_or("合成结果必须为对象")?);
         configuration::flow::apply_settings(
             paths,
@@ -445,17 +457,30 @@ impl Launch {
             mapped.as_mapping_mut().ok_or("运行配置无效")?,
             &work_dir,
         )
-        .map_err(|error| error.to_string())?;
-        let composed = serde_yaml_ng::to_string(&mapped).map_err(|_| "无法合成应用内核设置")?;
+        .map_err(crate::logging::error_message)?;
+        let composed = serde_yaml_ng::to_string(&mapped)
+            .map_err(|error| crate::logging::diagnostic_error("无法合成应用内核设置", error))?;
         let directory = tempfile::Builder::new()
             .prefix("run-")
             .tempdir_in(&work_dir)
-            .map_err(|error| format!("无法创建内核运行目录：{}", error.kind()))?;
+            .map_err(|error| {
+                log::error!(
+                    "无法创建内核运行目录；{}",
+                    crate::logging::error_chain(&error)
+                );
+                format!("无法创建内核运行目录：{}", error.kind())
+            })?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt as _;
             std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700))
-                .map_err(|error| format!("无法保护内核本地通道：{}", error.kind()))?;
+                .map_err(|error| {
+                    log::error!(
+                        "无法保护内核本地通道；{}",
+                        crate::logging::error_chain(&error)
+                    );
+                    format!("无法保护内核本地通道：{}", error.kind())
+                })?;
         }
         #[cfg(unix)]
         let (endpoint, key, address) = {
@@ -475,7 +500,8 @@ impl Launch {
         let (endpoint, key, address) = {
             let address = format!(
                 r"\\.\pipe\suki-clash-{}",
-                random_token().map_err(|_| "生成管道身份失败")?
+                random_token()
+                    .map_err(|error| crate::logging::diagnostic_error("生成管道身份失败", error))?
             );
             (
                 Endpoint::Pipe(address.clone()),
@@ -483,7 +509,8 @@ impl Launch {
                 address,
             )
         };
-        let secret = random_token().map_err(|_| "生成本地控制凭据失败")?;
+        let secret = random_token()
+            .map_err(|error| crate::logging::diagnostic_error("生成本地控制凭据失败", error))?;
         let yaml = protected_with_preferences(
             composed.as_bytes(),
             key,
@@ -493,7 +520,8 @@ impl Launch {
         )?;
         let config = directory.path().join("candidate.yaml");
         // This runs on the application's core worker, never on GPUI's UI thread.
-        crate::storage::atomic_write(&config, yaml.as_bytes()).map_err(|_| "写入候选配置失败")?;
+        crate::storage::atomic_write(&config, yaml.as_bytes())
+            .map_err(|error| crate::logging::diagnostic_error("写入候选配置失败", error))?;
         Ok(Self {
             force_service: false,
             executable,
@@ -504,7 +532,9 @@ impl Launch {
             composed,
             _directory: directory,
             #[cfg(windows)]
-            pipe_sddl: current_user_pipe_sddl().map_err(|_| "无法限制内核命名管道的访问权限")?,
+            pipe_sddl: current_user_pipe_sddl().map_err(|error| {
+                crate::logging::diagnostic_error("无法限制内核命名管道的访问权限", error)
+            })?,
         })
     }
 
@@ -566,7 +596,8 @@ fn protected_with_preferences(
     secret: &str,
     owned: Option<&serde_yaml_ng::Mapping>,
 ) -> Result<String, String> {
-    let value: Value = serde_yaml_ng::from_slice(bytes).map_err(|_| "运行配置不是有效 YAML")?;
+    let value: Value = serde_yaml_ng::from_slice(bytes)
+        .map_err(|error| crate::logging::diagnostic_error("运行配置不是有效 YAML", error))?;
     let Value::Mapping(mut config) = value else {
         return Err("运行配置顶层必须是对象".into());
     };
@@ -645,7 +676,8 @@ fn protected_with_preferences(
         .unwrap_or(false);
     config.insert(Value::String("allow-lan".into()), Value::Bool(lan));
     configuration::ensure_lan_bind_address(&mut config);
-    serde_yaml_ng::to_string(&config).map_err(|_| "无法生成候选配置".into())
+    serde_yaml_ng::to_string(&config)
+        .map_err(|error| crate::logging::diagnostic_error("无法生成候选配置".into(), error))
 }
 
 #[cfg(windows)]

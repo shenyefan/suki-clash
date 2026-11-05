@@ -664,13 +664,9 @@ impl SettingsPage {
                         })
                 });
             }
-            "UWP 应用代理" | "选择应用" => Self::uwp_dialog(window, cx),
             "添加 WebUI" => self.add_panel(window, cx),
             _ => ui::request_command(action, window, cx),
         }
-    }
-    fn uwp_dialog(window: &mut Window, cx: &mut App) {
-        uwp::open(window, cx);
     }
     fn add_panel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.edit_panel(None, window, cx);

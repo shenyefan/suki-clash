@@ -26,47 +26,43 @@ impl SettingsPage {
             .is_some_and(|v| v == "PAC");
         let busy = self.saving || self.session.read(cx).core_busy();
         let enabled = self.session.read(cx).system_proxy();
-        let header = ui::workspace_header("系统代理", "", cx).child(
-            h_flex()
-                .gap(space::LG)
-                .child(
-                    TabBar::new("system-proxy-mode")
-                        .segmented()
-                        .with_size(control::STANDARD)
-                        .children([
-                            Tab::new().label("手动").disabled(busy),
-                            Tab::new().label("PAC").disabled(busy),
-                        ])
-                        .selected_index(usize::from(pac))
-                        .on_click(cx.listener(|this, index, window, cx| {
-                            let mode =
-                                SharedString::from(if *index == 0 { "手动" } else { "PAC" });
-                            if let FieldControl::Select(state) =
-                                &this.fields["SystemProxyModeIndex"].control
-                            {
-                                state.update(cx, |state, cx| {
-                                    state.set_selected_value(&mode, window, cx)
-                                });
-                            }
-                            this.commit_core_field("SystemProxyModeIndex", window, cx);
-                            cx.notify();
-                        })),
-                )
-                .child(
-                    Switch::new("system-proxy-enabled")
-                        .with_size(control::STANDARD)
-                        .checked(enabled == Some(true))
-                        .disabled(busy || enabled.is_none())
-                        .tooltip(if enabled.is_none() {
-                            "系统代理状态未知"
-                        } else {
-                            "启用系统代理"
-                        })
-                        .accessibility_label("启用系统代理")
-                        .on_change(cx.listener(|this, value, window, cx| {
-                            this.toggle("IsSystemProxyEnabled", *value, window, cx)
-                        })),
-                ),
+        let header = ui::workspace_header_control(
+            "系统代理",
+            "",
+            Switch::new("system-proxy-enabled")
+                .with_size(control::STANDARD)
+                .checked(enabled == Some(true))
+                .disabled(busy || enabled.is_none())
+                .tooltip(if enabled.is_none() {
+                    "系统代理状态未知"
+                } else {
+                    "启用系统代理"
+                })
+                .accessibility_label("启用系统代理")
+                .on_change(cx.listener(|this, value, window, cx| {
+                    this.toggle("IsSystemProxyEnabled", *value, window, cx)
+                })),
+            cx,
+        )
+        .child(
+            TabBar::new("system-proxy-mode")
+                .segmented()
+                .with_size(control::STANDARD)
+                .children([
+                    Tab::new().label("手动").disabled(busy),
+                    Tab::new().label("PAC").disabled(busy),
+                ])
+                .selected_index(usize::from(pac))
+                .on_click(cx.listener(|this, index, window, cx| {
+                    let mode = SharedString::from(if *index == 0 { "手动" } else { "PAC" });
+                    if let FieldControl::Select(state) =
+                        &this.fields["SystemProxyModeIndex"].control
+                    {
+                        state.update(cx, |state, cx| state.set_selected_value(&mode, window, cx));
+                    }
+                    this.commit_core_field("SystemProxyModeIndex", window, cx);
+                    cx.notify();
+                })),
         );
         let mut rows = vec![
             self.field_row("SystemProxyHost", cx),
@@ -202,6 +198,10 @@ mod tests {
                 assert!(page.read(cx).error.is_some());
                 assert_eq!(window.find("system-proxy-enabled").checked(), Some(false));
                 assert_eq!(window.find("system-proxy-enabled").disabled(), Some(true));
+                assert!(
+                    window.find("system-proxy-enabled").bounds().origin.x
+                        < window.viewport_size().width / 2.
+                );
             })
             .unwrap();
         for (index, label, key) in [(0usize, "手动", "BypassList"), (1, "PAC", "PacScript")] {

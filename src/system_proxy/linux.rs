@@ -22,7 +22,7 @@ fn command(name: &str, args: &[&str]) -> Result<String, String> {
     }
     String::from_utf8(output.stdout)
         .map(|s| s.trim_end_matches(['\r', '\n']).to_owned())
-        .map_err(|_| format!("{name} 返回了无效文本"))
+        .map_err(|error| crate::logging::diagnostic_error(format!("{name} 返回了无效文本"), error))
 }
 fn kde_tool(write: bool) -> Result<&'static str, String> {
     match (
@@ -185,7 +185,8 @@ pub(super) fn read() -> Result<OsSnapshot, String> {
             if address.is_empty() {
                 (String::new(), 0)
             } else {
-                let url = url::Url::parse(&address).map_err(|_| "KDE 代理地址无效")?;
+                let url = url::Url::parse(&address)
+                    .map_err(|error| crate::logging::diagnostic_error("KDE 代理地址无效", error))?;
                 (
                     url.host_str()
                         .unwrap_or_default()
@@ -199,7 +200,9 @@ pub(super) fn read() -> Result<OsSnapshot, String> {
             let host = string(&command("gsettings", &["get", &schema, "host"])?)?;
             let port = command("gsettings", &["get", &schema, "port"])?
                 .parse::<u16>()
-                .map_err(|_| "GSettings 代理端口无效")?;
+                .map_err(|error| {
+                    crate::logging::diagnostic_error("GSettings 代理端口无效", error)
+                })?;
             (host, port)
         };
         Ok(Endpoint {
@@ -345,7 +348,9 @@ impl KdeCheckpoint {
             .map(get)
             .into_iter()
             .collect::<Result<Vec<_>, _>>()?;
-        Ok(Self(values.try_into().map_err(|_| "KDE 代理字段数量无效")?))
+        Ok(Self(values.try_into().map_err(|error| {
+            crate::logging::diagnostic_error("KDE 代理字段数量无效", error)
+        })?))
     }
     fn restore_with(
         &self,

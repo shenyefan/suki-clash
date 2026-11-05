@@ -20,7 +20,8 @@ impl Snapshot {
         struct Response {
             rules: Vec<Rule>,
         }
-        let response: Response = serde_json::from_slice(bytes).map_err(|_| "内核规则响应无效")?;
+        let response: Response = serde_json::from_slice(bytes)
+            .map_err(|error| crate::logging::diagnostic_error("内核规则响应无效", error))?;
         if response.rules.len() > 100_000 {
             return Err("内核规则数量超过上限".into());
         }

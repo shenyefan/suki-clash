@@ -49,24 +49,26 @@ pub(super) async fn prepare(
         return Err("内核配置已变更，请重新测速".into());
     }
     let proxies = target.client.proxies(&target.order).await?;
-    let repository =
-        crate::storage::Repository::open(paths.clone()).map_err(|_| "无法读取测速设置")?;
+    let repository = crate::storage::Repository::open(paths.clone())
+        .map_err(|error| crate::logging::diagnostic_error("无法读取测速设置", error))?;
     let settings =
         crate::preferences::values(&repository, crate::preferences::SettingsKind::General)
-            .map_err(|_| "无法读取测速设置")?;
+            .map_err(|error| crate::logging::diagnostic_error("无法读取测速设置", error))?;
     let default = settings
         .get("DelayTestUrl")
         .map(String::as_str)
         .unwrap_or("https://www.gstatic.com/generate_204");
     let timeout = settings["DelayTestTimeout"]
         .parse::<u64>()
-        .map_err(|_| "测速超时需在 100–60000 毫秒之间")?;
+        .map_err(|error| {
+            crate::logging::diagnostic_error("测速超时需在 100–60000 毫秒之间", error)
+        })?;
     if !(100..=60000).contains(&timeout) {
         return Err("测速超时需在 100–60000 毫秒之间".into());
     }
     let concurrency = settings["DelayTestConcurrency"]
         .parse::<usize>()
-        .map_err(|_| "测速并发数需在 1–10 之间")?;
+        .map_err(|error| crate::logging::diagnostic_error("测速并发数需在 1–10 之间", error))?;
     if !(1..=10).contains(&concurrency) {
         return Err("测速并发数需在 1–10 之间".into());
     }
@@ -192,7 +194,7 @@ async fn measure(
                             .node_delay(&node, provider.as_deref(), &url, timeout)
                             .await
                     }
-                    Err(_) => Err("测速已取消".into()),
+                    Err(error) => Err(crate::logging::diagnostic_error("测速已取消".into(), error)),
                 };
                 ((group, key), result)
             });
@@ -314,23 +316,25 @@ pub(super) async fn run(
                     for key in results.keys(){measured_at.insert(key.clone(),std::time::Instant::now());}
                     state.results.extend(results);updates.send_replace(state.clone());
                 } else {
+                    if let Some(Err(error)) = result { log::error!("测速任务异常退出：{error}"); }
                     tasks.abort_all();reserved.clear();state.testing.clear();state.batches.clear();state.error=Some((0,"测速任务异常结束".into()));updates.send_replace(state.clone());
                 }
             },
             request=async { if let Some(request) = automatic_request.take() { Ok(request) } else { requests.recv().await } },if tasks.len()<32=>{
                 let Ok(request)=request else{break;};
+                log::info!("测速批次开始；请求={}；内核代次={}；配置修订={}", request.id, scope.0, scope.1);
                 let result=if let Some(target)=&target {
                     tokio::select! {biased;_=shutdown.changed()=>break,changed=targets.changed()=>{if changed.is_err(){break;}continue;},result=prepare(&paths,target,&request.test)=>result}
                 }else{Err("内核尚未就绪".into())};
                 match result {
                     Ok(mut plan)=>{
                         plan.requests.retain(|request|!reserved.contains_key(&(request.group.clone(),request.key.clone())));
-                        if plan.requests.is_empty(){continue;}
+                        if plan.requests.is_empty(){log::info!("测速批次合并到现有任务；请求={}", request.id);continue;}
                         let keys=plan.requests.iter().map(|request|(request.group.clone(),request.key.clone())).collect::<Vec<_>>();
                         state.testing.extend(keys.iter().cloned());state.batches.extend(keys.iter().cloned());reserved.extend(keys.iter().cloned().map(|key|(key,request.id)));state.error=None;updates.send_replace(state.clone());
                         if let Some(target)=target {let limit=limit.clone();let progress=progress.clone();tasks.spawn(async move {Batch{scope,request_id:request.id,keys,results:measure(target,plan,limit,request.id,progress).await}});}
                     },
-                    Err(error)=>{state.error=Some((request.id,error));updates.send_replace(state.clone());}
+                    Err(error)=>{log::error!("测速批次拒绝；请求={}；{error}", request.id);state.error=Some((request.id,error));updates.send_replace(state.clone());}
                 }
             }
         }

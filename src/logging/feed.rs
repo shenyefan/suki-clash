@@ -1,7 +1,7 @@
 //! Bounded live snapshots shared by background producers and the foreground reader.
 use super::Source;
 use std::{
-    collections::VecDeque,
+    collections::{BTreeSet, VecDeque},
     sync::{Arc, Mutex},
 };
 
@@ -54,7 +54,7 @@ impl Record {
             level,
             source: Source::Program,
             origin: module.into(),
-            message: super::redact(message).chars().take(8192).collect(),
+            message: super::redact(message),
         }
     }
     pub(crate) fn line(&self) -> String {
@@ -66,33 +66,80 @@ impl Record {
             self.message.replace('\n', "\\n").replace('\r', "\\r")
         )
     }
+    pub(crate) fn parts(&self) -> Vec<Self> {
+        const BYTES: usize = 16 * 1024;
+        if self.message.len() <= BYTES {
+            return vec![self.clone()];
+        }
+        let mut chunks = Vec::new();
+        let mut chunk = String::new();
+        for ch in self.message.chars() {
+            if chunk.len() + ch.len_utf8() > BYTES {
+                chunks.push(std::mem::take(&mut chunk));
+            }
+            chunk.push(ch);
+        }
+        if !chunk.is_empty() {
+            chunks.push(chunk);
+        }
+        let count = chunks.len();
+        chunks
+            .into_iter()
+            .enumerate()
+            .map(|(index, text)| Self {
+                id: self.id,
+                time: self.time.clone(),
+                level: self.level,
+                source: self.source,
+                origin: self.origin.clone(),
+                message: format!("[{}/{count}] {text}", index + 1),
+            })
+            .collect()
+    }
 }
 #[derive(Default)]
 struct State {
     next: u64,
+    files: BTreeSet<String>,
     entries: VecDeque<Record>,
 }
 #[derive(Clone, Default)]
 pub(crate) struct Feed(Arc<Mutex<State>>);
 impl Feed {
-    pub(crate) fn publish(&self, mut record: Record) {
+    pub(crate) fn track(&self, sink: &super::Sink) {
+        self.0
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .files
+            .insert(sink.prefix.clone());
+    }
+    pub(crate) fn file_prefixes(&self) -> BTreeSet<String> {
+        self.0
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .files
+            .clone()
+    }
+    pub(crate) fn publish(&self, record: Record) {
         let mut state = self.0.lock().unwrap_or_else(|e| e.into_inner());
-        state.next += 1;
-        record.id = state.next;
-        state.entries.push_back(record);
-        let source = state.entries.back().map(|record| record.source);
-        if state
-            .entries
-            .iter()
-            .filter(|record| Some(record.source) == source)
-            .count()
-            > CAPACITY / 2
-            && let Some(index) = state
+        for mut record in record.parts() {
+            state.next += 1;
+            record.id = state.next;
+            state.entries.push_back(record);
+            let source = state.entries.back().map(|record| record.source);
+            if state
                 .entries
                 .iter()
-                .position(|record| Some(record.source) == source)
-        {
-            state.entries.remove(index);
+                .filter(|record| Some(record.source) == source)
+                .count()
+                > CAPACITY / 2
+                && let Some(index) = state
+                    .entries
+                    .iter()
+                    .position(|record| Some(record.source) == source)
+            {
+                state.entries.remove(index);
+            }
         }
     }
     pub(crate) fn since(&self, cursor: u64) -> Vec<Record> {

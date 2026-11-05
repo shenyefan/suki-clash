@@ -38,11 +38,11 @@ pub(crate) fn github_proxy_url(
     if !github {
         return Ok(url.to_owned());
     }
-    let repository =
-        crate::storage::Repository::open(paths.clone()).map_err(|_| "无法读取下载设置")?;
+    let repository = crate::storage::Repository::open(paths.clone())
+        .map_err(|error| crate::logging::diagnostic_error("无法读取下载设置", error))?;
     let settings =
         crate::preferences::values(&repository, crate::preferences::SettingsKind::General)
-            .map_err(|_| "无法读取下载设置")?;
+            .map_err(|error| crate::logging::diagnostic_error("无法读取下载设置", error))?;
     let proxy = settings.get("GitHubProxy").map_or("", |value| value.trim());
     Ok(if proxy.is_empty() {
         url.to_owned()
@@ -73,7 +73,10 @@ impl Http {
         https_only: bool,
         accept_invalid_certs: bool,
     ) -> Result<Client, String> {
-        let mut clients = self.clients.lock().map_err(|_| "HTTP 客户端状态不可用")?;
+        let mut clients = self
+            .clients
+            .lock()
+            .map_err(|error| crate::logging::diagnostic_error("HTTP 客户端状态不可用", error))?;
         // System proxy configuration may change outside this application. Resolve it for each task.
         if !matches!(transport, Transport::System)
             && let Some((_, _, _, client)) = clients.iter().find(|(route, secure, invalid, _)| {
@@ -107,7 +110,10 @@ impl Http {
                 url,
                 authentication,
             } => {
-                let mut proxy = Proxy::all(url).map_err(|_| "HTTP 代理地址无效")?;
+                let mut proxy = Proxy::all(url).map_err(|error| {
+                    log::error!("HTTP 代理地址无效；{}", crate::logging::error_chain(&error));
+                    "HTTP 代理地址无效"
+                })?;
                 if let Some(authentication) = authentication {
                     let (user, password) =
                         authentication.split_once(':').ok_or("代理凭据格式无效")?;
@@ -116,7 +122,13 @@ impl Http {
                 builder = builder.no_proxy().proxy(proxy);
             }
         }
-        let client = builder.build().map_err(|_| "无法创建 HTTP 客户端")?;
+        let client = builder.build().map_err(|error| {
+            log::error!(
+                "无法创建 HTTP 客户端；{}",
+                crate::logging::error_chain(&error)
+            );
+            "无法创建 HTTP 客户端"
+        })?;
         if !matches!(transport, Transport::System) {
             if clients.len() >= 8 {
                 clients.remove(0);
@@ -132,6 +144,10 @@ impl Http {
     }
 }
 pub(crate) fn error(error: reqwest::Error) -> String {
+    log::error!(
+        "HTTP 请求原始错误链：{}",
+        crate::logging::error_chain(&error)
+    );
     if error.is_timeout() {
         "HTTP 请求超时".into()
     } else if let Some(status) = error.status() {

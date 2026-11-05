@@ -1161,8 +1161,12 @@ fn source_candidates(
                 && document.kind == super::model::DocumentKind::Yaml
                 && document.scope_profile.is_none_or(|id| id == profile_id)
         }) {
-            let value: Value = serde_yaml_ng::from_str(&document.content)
-                .map_err(|_| format!("覆写“{}”格式无效，无法读取来源候选", document.name))?;
+            let value: Value = serde_yaml_ng::from_str(&document.content).map_err(|error| {
+                crate::logging::diagnostic_error(
+                    format!("覆写“{}”格式无效，无法读取来源候选", document.name),
+                    error,
+                )
+            })?;
             for key in value
                 .get("proxy-providers")
                 .and_then(Value::as_mapping)
@@ -1484,7 +1488,12 @@ impl EntryEditor {
                 ) {
                 Value::Number(
                     text.parse::<u32>()
-                        .map_err(|_| format!("{}需为非负整数", group_field_label(key)))?
+                        .map_err(|error| {
+                            crate::logging::diagnostic_error(
+                                format!("{}需为非负整数", group_field_label(key)),
+                                error,
+                            )
+                        })?
                         .into(),
                 )
             } else if *key == "port" {

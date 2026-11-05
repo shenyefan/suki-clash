@@ -94,7 +94,11 @@ pub(crate) fn apply(values: &Values, native: &mut Mapping) -> Result<(), String>
             | "auto-redirect"
             | "strict-route"
             | "auto-detect-interface" => Value::Bool(text == "true"),
-            "mtu" => Value::Number(text.parse::<u64>().map_err(|_| "MTU 无效")?.into()),
+            "mtu" => Value::Number(
+                text.parse::<u64>()
+                    .map_err(|error| crate::logging::diagnostic_error("MTU 无效", error))?
+                    .into(),
+            ),
             "dns-hijack" | "route-exclude-address" => Value::Sequence(
                 preferences::schema::split_entries(text)
                     .map(|item| Value::String(item.into()))

@@ -113,8 +113,11 @@ async fn run(
                         }
                         Ok(Some(Ok(Message::Binary(bytes)))) => bytes,
                         Ok(Some(Ok(Message::Ping(_)))) => {
-                            if socket.flush().await.is_err() {
-                                break Err("内核 WebSocket 心跳发送失败".into());
+                            if let Err(error) = socket.flush().await {
+                                break Err(crate::logging::diagnostic_error(
+                                    "内核 WebSocket 心跳发送失败".into(),
+                                    crate::logging::error_chain(&error),
+                                ));
                             }
                             continue;
                         }
@@ -123,10 +126,20 @@ async fn run(
                         Ok(Some(Ok(Message::Close(_)))) | Ok(None) => {
                             break Err("内核 WebSocket 已关闭".into());
                         }
-                        Ok(Some(Err(tokio_tungstenite::tungstenite::Error::Capacity(_)))) => {
-                            break Err("内核 WebSocket 消息超过大小上限".into());
+                        Ok(Some(Err(
+                            error @ tokio_tungstenite::tungstenite::Error::Capacity(_),
+                        ))) => {
+                            break Err(crate::logging::diagnostic_error(
+                                "内核 WebSocket 消息超过大小上限".into(),
+                                error,
+                            ));
                         }
-                        Ok(Some(Err(_))) => break Err("内核 WebSocket 传输失败".into()),
+                        Ok(Some(Err(error))) => {
+                            break Err(crate::logging::diagnostic_error(
+                                "内核 WebSocket 传输失败".into(),
+                                crate::logging::error_chain(&error),
+                            ));
+                        }
                         Err(_) => {
                             close(&mut socket).await;
                             break Err("内核 WebSocket 数据超时".into());

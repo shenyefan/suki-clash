@@ -10,9 +10,9 @@ pub(crate) mod scheme;
 
 pub(crate) async fn startup_script(paths: &crate::storage::AppPaths) -> Result<(), String> {
     let repository =
-        crate::storage::Repository::open(paths.clone()).map_err(|error| error.to_string())?;
+        crate::storage::Repository::open(paths.clone()).map_err(crate::logging::error_message)?;
     let values = crate::preferences::values(&repository, crate::preferences::SettingsKind::General)
-        .map_err(|error| error.to_string())?;
+        .map_err(crate::logging::error_message)?;
     let Some(path) = values
         .get("StartupScript")
         .filter(|value| !value.trim().is_empty())

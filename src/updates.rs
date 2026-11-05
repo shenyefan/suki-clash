@@ -79,8 +79,8 @@ fn manager(source: &Path) -> Result<UpdateManager, velopack::Error> {
     )
 }
 fn validate_feed(bytes: &[u8]) -> Result<VelopackAssetFeed, String> {
-    let mut feed: VelopackAssetFeed =
-        serde_json::from_slice(bytes).map_err(|_| "应用更新清单格式无效")?;
+    let mut feed: VelopackAssetFeed = serde_json::from_slice(bytes)
+        .map_err(|error| crate::logging::diagnostic_error("应用更新清单格式无效", error))?;
     feed.Assets.retain(|asset| asset.Type == "Full");
     for asset in &feed.Assets {
         let expected = format!("{PACKAGE_ID}-{}-{}-full.nupkg", asset.Version, channel());
@@ -126,7 +126,7 @@ pub(crate) async fn check(http: &Http, paths: &AppPaths) -> Result<Check, String
     let directory = tempfile::Builder::new()
         .prefix("app-update-")
         .tempdir_in(paths.directory(DirectoryKind::Cache))
-        .map_err(|error| error.to_string())?;
+        .map_err(crate::logging::error_message)?;
     let url = format!(
         "https://github.com/{}/releases/latest/download/releases.{}.json",
         repository()?,
@@ -141,7 +141,7 @@ pub(crate) async fn check(http: &Http, paths: &AppPaths) -> Result<Check, String
         bytes.extend(chunk);
     }
     let feed = validate_feed(&bytes)?;
-    let encoded = serde_json::to_vec(&feed).map_err(|error| error.to_string())?;
+    let encoded = serde_json::to_vec(&feed).map_err(crate::logging::error_message)?;
     tokio::fs::write(
         directory
             .path()
@@ -149,10 +149,10 @@ pub(crate) async fn check(http: &Http, paths: &AppPaths) -> Result<Check, String
         encoded,
     )
     .await
-    .map_err(|error| error.to_string())?;
+    .map_err(crate::logging::error_message)?;
     let source = directory.path().to_path_buf();
     let (update, staged) = tokio::task::spawn_blocking(move || {
-        let manager = manager(&source).map_err(|error| error.to_string())?;
+        let manager = manager(&source).map_err(crate::logging::error_message)?;
         let staged = manager
             .get_update_pending_restart()
             .map(|asset| asset.Version);
@@ -162,7 +162,7 @@ pub(crate) async fn check(http: &Http, paths: &AppPaths) -> Result<Check, String
             .map_err(|error| format!("应用更新检查失败：{error}"))
     })
     .await
-    .map_err(|_| "应用更新任务异常退出")??;
+    .map_err(|error| crate::logging::diagnostic_error("应用更新任务异常退出", error))??;
     match update {
         UpdateCheck::UpdateAvailable(info) => Ok(Check::Managed(Some(Box::new(Release {
             staged: staged.as_deref() == Some(info.TargetFullRelease.Version.as_str()),
@@ -204,7 +204,7 @@ impl Release {
         let source = self.directory.path().to_path_buf();
         let update = self.info.clone();
         tokio::task::spawn_blocking(move || {
-            let manager = manager(&source).map_err(|error| error.to_string())?;
+            let manager = manager(&source).map_err(crate::logging::error_message)?;
             manager
                 .download_updates(&update, None)
                 .map_err(|error| format!("应用更新包准备失败：{error}"))?;
@@ -219,7 +219,7 @@ impl Release {
             Ok(())
         })
         .await
-        .map_err(|_| "应用更新包准备任务异常退出")?
+        .map_err(|error| crate::logging::diagnostic_error("应用更新包准备任务异常退出", error))?
     }
 }
 async fn stage_response(
@@ -235,7 +235,7 @@ async fn stage_response(
         return Err("应用更新包长度与清单不一致".into());
     }
     let temporary =
-        tempfile::NamedTempFile::new_in(directory).map_err(|error| error.to_string())?;
+        tempfile::NamedTempFile::new_in(directory).map_err(crate::logging::error_message)?;
     let (file, path) = temporary.into_parts();
     let mut file = tokio::fs::File::from_std(file);
     let mut received = 0;
@@ -248,7 +248,7 @@ async fn stage_response(
         digest.update(&chunk);
         file.write_all(&chunk)
             .await
-            .map_err(|error| error.to_string())?;
+            .map_err(crate::logging::error_message)?;
         progress(received, asset.Size);
     }
     let digest = digest
@@ -259,10 +259,12 @@ async fn stage_response(
     if received != asset.Size || !digest.eq_ignore_ascii_case(&asset.SHA256) {
         return Err("应用更新包大小或SHA-256校验失败".into());
     }
-    file.sync_all().await.map_err(|error| error.to_string())?;
+    file.sync_all()
+        .await
+        .map_err(crate::logging::error_message)?;
     drop(file);
     path.persist(directory.join(&asset.FileName))
-        .map_err(|error| error.to_string())?;
+        .map_err(crate::logging::error_message)?;
     Ok::<_, String>(())
 }
 
@@ -278,7 +280,7 @@ impl Installer {
     }
 }
 pub(crate) fn prepare_installer(expected: &str) -> Result<Installer, String> {
-    let manager = manager(&std::env::temp_dir()).map_err(|error| error.to_string())?;
+    let manager = manager(&std::env::temp_dir()).map_err(crate::logging::error_message)?;
     let asset = manager
         .get_update_pending_restart()
         .filter(|asset| asset.Version == expected)

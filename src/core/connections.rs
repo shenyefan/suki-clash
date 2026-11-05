@@ -6,7 +6,8 @@ use std::collections::BTreeSet;
 type Connections = crate::overview::statistics::Connections;
 
 async fn connection_ids(client: &Client) -> Result<Connections, String> {
-    serde_json::from_value(client.json("/connections").await?).map_err(|_| "连接回读无效".into())
+    serde_json::from_value(client.json("/connections").await?)
+        .map_err(|error| crate::logging::diagnostic_error("连接回读无效".into(), error))
 }
 
 async fn close_ids(client: &Client, ids: BTreeSet<String>) -> Result<(), String> {
@@ -57,10 +58,10 @@ pub(super) async fn close_current_connections(client: &Client) -> Result<(), Str
 impl Actor {
     fn auto_close_connections(&self) -> Result<bool, String> {
         let repository = crate::storage::Repository::open(self.paths.clone())
-            .map_err(|error| error.to_string())?;
+            .map_err(crate::logging::error_message)?;
         let settings =
             crate::preferences::values(&repository, crate::preferences::SettingsKind::General)
-                .map_err(|error| error.to_string())?;
+                .map_err(crate::logging::error_message)?;
         Ok(settings
             .get("AutoCloseConnection")
             .is_some_and(|value| value == "true"))

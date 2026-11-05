@@ -85,9 +85,14 @@ impl CredentialStore {
                 &self.service,
                 &id.to_string(),
             ) {
-                Ok(bytes) => serde_json::from_slice(&bytes).map_err(|_| "安全凭据格式无效".into()),
+                Ok(bytes) => serde_json::from_slice(&bytes).map_err(|error| {
+                    crate::logging::diagnostic_error("安全凭据格式无效".into(), error)
+                }),
                 Err(error) if error.code() == -25300 => Ok((String::new(), String::new())),
-                Err(_) => Err("无法读取钥匙串凭据".into()),
+                Err(error) => Err(crate::logging::diagnostic_error(
+                    "无法读取钥匙串凭据".into(),
+                    error,
+                )),
             }
         }
         #[cfg(all(windows, not(test)))]
@@ -102,7 +107,7 @@ impl CredentialStore {
         {
             Ok(test_vault()
                 .lock()
-                .map_err(|_| "隔离凭据存储不可用")?
+                .map_err(|error| crate::logging::diagnostic_error("隔离凭据存储不可用", error))?
                 .entries
                 .get(&(self.service.clone(), id))
                 .cloned()
@@ -115,13 +120,14 @@ impl CredentialStore {
         }
         #[cfg(all(target_os = "macos", not(test)))]
         {
-            let bytes = serde_json::to_vec(&(token, age)).map_err(|_| "无法编码安全凭据")?;
+            let bytes = serde_json::to_vec(&(token, age))
+                .map_err(|error| crate::logging::diagnostic_error("无法编码安全凭据", error))?;
             security_framework::passwords::set_generic_password(
                 &self.service,
                 &id.to_string(),
                 &bytes,
             )
-            .map_err(|_| "无法保存钥匙串凭据".into())
+            .map_err(|error| crate::logging::diagnostic_error("无法保存钥匙串凭据".into(), error))
         }
         #[cfg(all(windows, not(test)))]
         {
@@ -135,7 +141,7 @@ impl CredentialStore {
         {
             test_vault()
                 .lock()
-                .map_err(|_| "隔离凭据存储不可用")?
+                .map_err(|error| crate::logging::diagnostic_error("隔离凭据存储不可用", error))?
                 .entries
                 .insert(
                     (self.service.clone(), id),
@@ -169,7 +175,10 @@ impl CredentialStore {
             ) {
                 Ok(()) => Ok(()),
                 Err(error) if error.code() == -25300 => Ok(()),
-                Err(_) => Err("无法删除钥匙串凭据".into()),
+                Err(error) => Err(crate::logging::diagnostic_error(
+                    "无法删除钥匙串凭据".into(),
+                    error,
+                )),
             }
         }
         #[cfg(all(windows, not(test)))]
@@ -182,7 +191,9 @@ impl CredentialStore {
         }
         #[cfg(test)]
         {
-            let mut store = test_vault().lock().map_err(|_| "隔离凭据存储不可用")?;
+            let mut store = test_vault()
+                .lock()
+                .map_err(|error| crate::logging::diagnostic_error("隔离凭据存储不可用", error))?;
             let key = (self.service.clone(), id);
             if store.failed_deletes.remove(&key) {
                 return Err("隔离凭据清理失败".into());

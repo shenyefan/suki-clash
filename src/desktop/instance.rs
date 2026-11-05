@@ -39,7 +39,7 @@ pub(crate) struct Service {
 impl Service {
     pub(crate) fn acquire(paths: &AppPaths, uri: Option<String>) -> Result<Disposition, String> {
         let directory = paths.directory(DirectoryKind::Cache);
-        std::fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
+        std::fs::create_dir_all(&directory).map_err(crate::logging::error_message)?;
         let mut options = OpenOptions::new();
         options.read(true).write(true).create(true).truncate(false);
         #[cfg(unix)]
@@ -54,7 +54,7 @@ impl Service {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
-            .map_err(|error| error.to_string())?;
+            .map_err(crate::logging::error_message)?;
         let started = Instant::now();
         let http = Http::default();
         loop {
@@ -73,14 +73,17 @@ impl Service {
                         .bearer_auth(&record.token)
                         .timeout(Duration::from_millis(500))
                         .body(
-                            serde_json::to_vec(&Activation { uri: uri.clone() })
-                                .map_err(|_| "无法编码实例请求")?,
+                            serde_json::to_vec(&Activation { uri: uri.clone() }).map_err(
+                                |error| crate::logging::diagnostic_error("无法编码实例请求", error),
+                            )?,
                         )
                         .header(hyper::header::CONTENT_TYPE, "application/json")
                         .send()
                         .await
                         .map(|response| response.status().is_success())
-                        .map_err(|_| "无法通知首实例".to_string())
+                        .map_err(|error| {
+                            crate::logging::diagnostic_error("无法通知首实例".to_string(), error)
+                        })
                 });
                 if notified == Ok(true) {
                     return Ok(Disposition::Secondary);
@@ -92,30 +95,30 @@ impl Service {
             std::thread::sleep(Duration::from_millis(50));
         }
         let listener = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
-            .map_err(|error| error.to_string())?;
+            .map_err(crate::logging::error_message)?;
         listener
             .set_nonblocking(true)
-            .map_err(|error| error.to_string())?;
+            .map_err(crate::logging::error_message)?;
         let port = listener
             .local_addr()
-            .map_err(|error| error.to_string())?
+            .map_err(crate::logging::error_message)?
             .port();
         let mut token = [0u8; 32];
-        getrandom::fill(&mut token).map_err(|error| error.to_string())?;
+        getrandom::fill(&mut token).map_err(crate::logging::error_message)?;
         let record = Record {
             port,
             token: token.iter().map(|v| format!("{v:02x}")).collect(),
         };
         atomic_write(
             &record_path,
-            &serde_json::to_vec(&record).map_err(|error| error.to_string())?,
+            &serde_json::to_vec(&record).map_err(crate::logging::error_message)?,
         )
-        .map_err(|error| error.to_string())?;
+        .map_err(crate::logging::error_message)?;
         let (sender, events) = async_channel::bounded(8);
         if uri.is_some() {
             sender
                 .try_send(Activation { uri })
-                .map_err(|_| "启动导入队列不可用")?;
+                .map_err(|error| crate::logging::diagnostic_error("启动导入队列不可用", error))?;
         }
         let (shutdown, mut cancelled) = tokio::sync::watch::channel(false);
         let commands = sender.clone();
@@ -141,7 +144,7 @@ impl Service {
                 connections.abort_all();while connections.join_next().await.is_some(){}
             });
             let _=std::fs::remove_file(record_path);
-        }).map_err(|error|error.to_string())?;
+        }).map_err(crate::logging::error_message)?;
         Ok(Disposition::Primary(Self {
             sender,
             events,
@@ -204,7 +207,8 @@ pub(crate) fn parse_uri(uri: &str) -> Result<crate::profiles::model::Subscriptio
     if uri.len() > 8192 {
         return Err("订阅导入链接过长".into());
     }
-    let parsed = url::Url::parse(uri).map_err(|_| "订阅导入链接无效")?;
+    let parsed = url::Url::parse(uri)
+        .map_err(|error| crate::logging::diagnostic_error("订阅导入链接无效", error))?;
     if !matches!(parsed.scheme(), "clash" | "suki-clash")
         || parsed.host_str() != Some("install-config")
     {

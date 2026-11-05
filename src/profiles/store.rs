@@ -38,7 +38,9 @@ pub(crate) fn hydrate(
     validate_metadata(paths, overrides, values)?;
     let ids = values.get("ids").ok_or("文档索引缺少列表")?.clone();
     for id in ids.split(',').filter(|id| !id.is_empty()) {
-        let id = id.parse::<u64>().map_err(|_| "文档 ID 无效")?;
+        let id = id
+            .parse::<u64>()
+            .map_err(|error| crate::logging::diagnostic_error("文档 ID 无效", error))?;
         if id == 0 {
             return Err("文档 ID 无效".into());
         }
@@ -100,7 +102,9 @@ pub(crate) fn read_body(path: &std::path::Path) -> Result<String, String> {
     if bytes.len() as u64 > crate::configuration::INPUT_LIMIT {
         return Err(format!("文档超过大小上限：{}", path.display()));
     }
-    String::from_utf8(bytes).map_err(|_| format!("文档不是 UTF-8：{}", path.display()))
+    String::from_utf8(bytes).map_err(|error| {
+        crate::logging::diagnostic_error(format!("文档不是 UTF-8：{}", path.display()), error)
+    })
 }
 
 pub(crate) fn metadata_values(documents: &[Document]) -> BTreeMap<String, String> {

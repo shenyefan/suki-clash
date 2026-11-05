@@ -40,7 +40,7 @@ where
 {
     let local_modified = match tokio::fs::symlink_metadata(target).await {
         Ok(metadata) if metadata.is_file() => {
-            Some(metadata.modified().map_err(|error| error.to_string())?)
+            Some(metadata.modified().map_err(crate::logging::error_message)?)
         }
         Ok(_) => return Err("本地 Geo 路径不是普通文件".into()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
@@ -65,7 +65,7 @@ where
     let temporary = tempfile::Builder::new()
         .prefix(".geo-sync-")
         .tempfile_in(target.parent().ok_or("Geo 数据目录不存在")?)
-        .map_err(|error| error.to_string())?;
+        .map_err(crate::logging::error_message)?;
     let (file, path) = temporary.into_parts();
     let mut file = tokio::fs::File::from_std(file);
     let mut offset = 0;
@@ -93,16 +93,19 @@ where
         }
         file.write_all(&bytes)
             .await
-            .map_err(|error| error.to_string())?;
+            .map_err(crate::logging::error_message)?;
         offset += bytes.len() as u64;
     }
-    file.flush().await.map_err(|error| error.to_string())?;
-    file.sync_all().await.map_err(|error| error.to_string())?;
+    file.flush().await.map_err(crate::logging::error_message)?;
+    file.sync_all()
+        .await
+        .map_err(crate::logging::error_message)?;
     let file = file.into_std().await;
     file.set_modified(modified)
-        .map_err(|error| error.to_string())?;
+        .map_err(crate::logging::error_message)?;
     drop(file);
-    path.persist(target).map_err(|error| error.to_string())?;
+    path.persist(target)
+        .map_err(crate::logging::error_message)?;
     Ok(true)
 }
 

@@ -311,10 +311,8 @@ impl Tray {
         }
     }
     fn click(&mut self, button: tray_icon::MouseButton, cx: &mut Context<Self>) {
-        // A deliberate tray interaction may retry a paused native operation once.
-        self.platform.retry();
-        self.menu_attempt = None;
-        self.sync(cx);
+        // The OS has already begun tracking the attached menu. Replacing it
+        // here destroys the popup on Windows and interrupts native tracking.
         if button != tray_icon::MouseButton::Left {
             return;
         }
@@ -322,21 +320,15 @@ impl Tray {
             .get("TrayEvent")
             .cloned()
             .unwrap_or_else(|| "显示托盘菜单".into());
-        match behavior.as_str() {
-            "显示主窗口" => {
-                let main = self.main;
-                cx.defer(move |cx| show_main(main, cx));
-            }
-            "切换系统代理" => {
-                let main = self.main;
-                cx.defer(move |cx| dispatch(&Command::SystemProxy, main, cx));
-            }
-            "切换虚拟网卡" => {
-                let main = self.main;
-                cx.defer(move |cx| dispatch(&Command::Tun, main, cx));
-            }
-            _ => {}
-        }
+        let command = match behavior.as_str() {
+            "显示主窗口" => Command::ShowWindow,
+            "切换系统代理" => Command::SystemProxy,
+            "切换虚拟网卡" => Command::Tun,
+            _ => return,
+        };
+        self.platform.retry();
+        let main = self.main;
+        cx.defer(move |cx| dispatch(&command, main, cx));
     }
 }
 
@@ -449,7 +441,7 @@ fn open_log(core: bool, window: &mut Window, cx: &mut App) {
             .background_spawn(async move {
                 let prefix = if core { "core-" } else { "program-" };
                 std::fs::read_dir(directory)
-                    .map_err(|error| error.to_string())?
+                    .map_err(crate::logging::error_message)?
                     .filter_map(Result::ok)
                     .filter(|entry| entry.file_name().to_string_lossy().starts_with(prefix))
                     .max_by_key(|entry| entry.metadata().and_then(|m| m.modified()).ok())

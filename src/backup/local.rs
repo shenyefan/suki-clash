@@ -35,7 +35,7 @@ pub(crate) fn list(paths: &AppPaths) -> Result<Vec<Entry>, String> {
     };
     let mut entries = Vec::new();
     for entry in files {
-        let entry = entry.map_err(|error| error.to_string())?;
+        let entry = entry.map_err(crate::logging::error_message)?;
         let name = entry.file_name();
         let Some(name) = name
             .to_str()
@@ -43,13 +43,13 @@ pub(crate) fn list(paths: &AppPaths) -> Result<Vec<Entry>, String> {
         else {
             continue;
         };
-        let metadata = fs::symlink_metadata(entry.path()).map_err(|error| error.to_string())?;
+        let metadata = fs::symlink_metadata(entry.path()).map_err(crate::logging::error_message)?;
         if !metadata.is_file() {
             return Err(format!("{name}：备份不是普通文件"));
         }
         entries.push(Entry {
             id: Id(name.into()),
-            modified: metadata.modified().map_err(|error| error.to_string())?,
+            modified: metadata.modified().map_err(crate::logging::error_message)?,
             size: metadata.len(),
         });
     }
@@ -58,9 +58,9 @@ pub(crate) fn list(paths: &AppPaths) -> Result<Vec<Entry>, String> {
 }
 pub(crate) fn store(paths: &AppPaths, content: &str) -> Result<Id, String> {
     let root = directory(paths);
-    fs::create_dir_all(&root).map_err(|error| error.to_string())?;
+    fs::create_dir_all(&root).map_err(crate::logging::error_message)?;
     let mut random = [0u8; 8];
-    getrandom::fill(&mut random).map_err(|error| error.to_string())?;
+    getrandom::fill(&mut random).map_err(crate::logging::error_message)?;
     let random = random
         .iter()
         .map(|byte| format!("{byte:02x}"))
@@ -70,17 +70,17 @@ pub(crate) fn store(paths: &AppPaths, content: &str) -> Result<Id, String> {
         chrono::Utc::now().format("%Y%m%dT%H%M%SZ")
     ));
     let mut temporary =
-        tempfile::NamedTempFile::new_in(&root).map_err(|error| error.to_string())?;
+        tempfile::NamedTempFile::new_in(&root).map_err(crate::logging::error_message)?;
     temporary
         .write_all(content.as_bytes())
-        .map_err(|error| error.to_string())?;
+        .map_err(crate::logging::error_message)?;
     temporary
         .as_file()
         .sync_all()
-        .map_err(|error| error.to_string())?;
+        .map_err(crate::logging::error_message)?;
     temporary
         .persist_noclobber(file(paths, &id))
-        .map_err(|error| error.to_string())?;
+        .map_err(crate::logging::error_message)?;
     Ok(id)
 }
 pub(crate) fn read_path(path: &Path) -> Result<String, String> {
@@ -91,14 +91,15 @@ pub(crate) fn read_path(path: &Path) -> Result<String, String> {
     }
     let mut bytes = Vec::new();
     fs::File::open(path)
-        .map_err(|error| error.to_string())?
+        .map_err(crate::logging::error_message)?
         .take(super::ENCODED_LIMIT as u64 + 1)
         .read_to_end(&mut bytes)
-        .map_err(|error| error.to_string())?;
+        .map_err(crate::logging::error_message)?;
     if bytes.len() > super::ENCODED_LIMIT {
         return Err("备份超过48MiB上限".into());
     }
-    String::from_utf8(bytes).map_err(|_| "备份不是UTF-8文本".into())
+    String::from_utf8(bytes)
+        .map_err(|error| crate::logging::diagnostic_error("备份不是UTF-8文本".into(), error))
 }
 pub(crate) fn read(paths: &AppPaths, id: &Id) -> Result<String, String> {
     read_path(&file(paths, id))
@@ -106,19 +107,19 @@ pub(crate) fn read(paths: &AppPaths, id: &Id) -> Result<String, String> {
 pub(crate) fn delete(paths: &AppPaths, id: &Id) -> Result<(), String> {
     let target = file(paths, id);
     if !fs::symlink_metadata(&target)
-        .map_err(|error| error.to_string())?
+        .map_err(crate::logging::error_message)?
         .is_file()
     {
         return Err("备份不是普通文件".into());
     }
-    fs::remove_file(target).map_err(|error| error.to_string())
+    fs::remove_file(target).map_err(crate::logging::error_message)
 }
 pub(crate) fn export(paths: &AppPaths, id: &Id, target: &Path) -> Result<(), String> {
     if target == file(paths, id) {
         return Err("导出目标不能是当前备份文件".into());
     }
     crate::storage::atomic_write(target, read(paths, id)?.as_bytes())
-        .map_err(|error| error.to_string())
+        .map_err(crate::logging::error_message)
 }
 
 #[cfg(test)]

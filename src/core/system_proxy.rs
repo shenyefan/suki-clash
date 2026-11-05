@@ -6,8 +6,10 @@ use crate::{
 };
 impl Actor {
     fn proxy_settings(&self) -> Result<Values, String> {
-        let repository = Repository::open(self.paths.clone()).map_err(|e| e.to_string())?;
-        preferences::values(&repository, SettingsKind::SysProxy).map_err(|e| e.to_string())
+        let repository =
+            Repository::open(self.paths.clone()).map_err(crate::logging::error_message)?;
+        preferences::values(&repository, SettingsKind::SysProxy)
+            .map_err(crate::logging::error_message)
     }
     async fn proxy_port(&self, values: &Values) -> Result<u16, String> {
         let running = self
@@ -17,7 +19,9 @@ impl Actor {
             .ok_or("内核未就绪，无法开启系统代理")?;
         running.launch.client.version().await?;
         let yaml: serde_yaml_ng::Value = serde_yaml_ng::from_str(&running.launch.composed)
-            .map_err(|_| "无法读取运行中的代理监听配置")?;
+            .map_err(|error| {
+                crate::logging::diagnostic_error("无法读取运行中的代理监听配置", error)
+            })?;
         let port = ["mixed-port", "port"]
             .into_iter()
             .find_map(|key| {
@@ -41,12 +45,13 @@ impl Actor {
             tokio::net::TcpStream::connect((host, port)),
         )
         .await
-        .map_err(|_| "系统代理端口连接超时")?
+        .map_err(|error| crate::logging::diagnostic_error("系统代理端口连接超时", error))?
         .map_err(|e| format!("系统代理端口不可用：{e}"))?;
         Ok(port)
     }
     pub(super) async fn toggle_system_proxy(&mut self) -> Result<(), String> {
-        let repository = Repository::open(self.paths.clone()).map_err(|e| e.to_string())?;
+        let repository =
+            Repository::open(self.paths.clone()).map_err(crate::logging::error_message)?;
         let previous = self.proxy_settings()?;
         // An unknown OS state must not be interpreted as an off switch.
         self.snapshot.system_proxy = self.system_proxy.observe().await?;
@@ -111,7 +116,7 @@ impl Actor {
         } else {
             0
         };
-        let namespace = Namespace::parse("sysproxy").map_err(|e| e.to_string())?;
+        let namespace = Namespace::parse("sysproxy").map_err(crate::logging::error_message)?;
         if apply {
             match self.system_proxy.apply(&desired, port).await {
                 Ok(observed) => self.snapshot.system_proxy = observed,

@@ -85,7 +85,7 @@ async fn load(http: &Http, paths: &AppPaths, source: &str) -> Result<PathBuf, St
     let directory = paths.directory(DirectoryKind::Cache).join("proxy-icons");
     tokio::fs::create_dir_all(&directory)
         .await
-        .map_err(|_| "无法创建代理组图标缓存")?;
+        .map_err(|error| crate::logging::diagnostic_error("无法创建代理组图标缓存", error))?;
     let path = directory.join(key);
     let bytes = if let Ok(bytes) = tokio::fs::read(&path).await {
         bytes
@@ -99,7 +99,7 @@ async fn load(http: &Http, paths: &AppPaths, source: &str) -> Result<PathBuf, St
         if metadata.ends_with(";base64") {
             base64::engine::general_purpose::STANDARD
                 .decode(data)
-                .map_err(|_| "图标 Base64 无效")?
+                .map_err(|error| crate::logging::diagnostic_error("图标 Base64 无效", error))?
         } else {
             percent_encoding::percent_decode_str(data).collect()
         }
@@ -110,11 +110,12 @@ async fn load(http: &Http, paths: &AppPaths, source: &str) -> Result<PathBuf, St
     let destination = path.clone();
     tokio::task::spawn_blocking(move || {
         let bytes = validate(&bytes)?;
-        crate::storage::atomic_write(&destination, &bytes)
-            .map_err(|_| "代理组图标缓存写入失败".to_owned())
+        crate::storage::atomic_write(&destination, &bytes).map_err(|error| {
+            crate::logging::diagnostic_error("代理组图标缓存写入失败".to_owned(), error)
+        })
     })
     .await
-    .map_err(|_| "图标缓存任务异常")??;
+    .map_err(|error| crate::logging::diagnostic_error("图标缓存任务异常", error))??;
     Ok(path)
 }
 fn validate(bytes: &[u8]) -> Result<Vec<u8>, String> {
@@ -126,8 +127,8 @@ fn validate(bytes: &[u8]) -> Result<Vec<u8>, String> {
         .trim_start_matches('\u{feff}')
         .trim_start();
     if text.starts_with("<svg") || text.starts_with("<?xml") {
-        let tree =
-            usvg::Tree::from_data(bytes, &usvg::Options::default()).map_err(|_| "SVG 图标无效")?;
+        let tree = usvg::Tree::from_data(bytes, &usvg::Options::default())
+            .map_err(|error| crate::logging::diagnostic_error("SVG 图标无效", error))?;
         if tree.size().width() > 4096. || tree.size().height() > 4096. {
             return Err("代理组图标尺寸超过上限".into());
         }
@@ -139,17 +140,19 @@ fn validate(bytes: &[u8]) -> Result<Vec<u8>, String> {
     }
     let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes))
         .with_guessed_format()
-        .map_err(|_| "图标格式无效")?;
+        .map_err(|error| crate::logging::diagnostic_error("图标格式无效", error))?;
     let mut limits = image::Limits::default();
     limits.max_image_width = Some(4096);
     limits.max_image_height = Some(4096);
     limits.max_alloc = Some(64 * 1024 * 1024);
     reader.limits(limits);
-    let decoded = reader.decode().map_err(|_| "代理组图标内容无效")?;
+    let decoded = reader
+        .decode()
+        .map_err(|error| crate::logging::diagnostic_error("代理组图标内容无效", error))?;
     let mut output = std::io::Cursor::new(Vec::new());
     decoded
         .write_to(&mut output, image::ImageFormat::Png)
-        .map_err(|_| "图标编码失败")?;
+        .map_err(|error| crate::logging::diagnostic_error("图标编码失败", error))?;
     let bytes = output.into_inner();
     if bytes.len() > LIMIT {
         return Err("代理组图标超过 2 MiB".into());

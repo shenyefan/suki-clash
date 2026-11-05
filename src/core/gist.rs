@@ -73,7 +73,9 @@ impl Actor {
                     settings
                         .recipient
                         .parse::<age::x25519::Recipient>()
-                        .map_err(|_| "Age接收方公钥无效")?;
+                        .map_err(|error| {
+                            crate::logging::diagnostic_error("Age接收方公钥无效", error)
+                        })?;
                 }
                 let vault = crate::profiles::CredentialStore::gist(&self.paths);
                 let previous = vault.read(0).await?;
@@ -82,7 +84,7 @@ impl Actor {
                     desired
                         .1
                         .parse::<age::x25519::Identity>()
-                        .map_err(|_| "Age私钥无效")?;
+                        .map_err(|error| crate::logging::diagnostic_error("Age私钥无效", error))?;
                 }
                 if desired != previous {
                     vault.write(0, &desired.0, &desired.1).await?;
@@ -145,10 +147,11 @@ impl Actor {
                 let content = remote.download(&id).await?;
                 // Keep the original archive; decryption and full validation belong to Restore.
                 let directory = self.paths.directory(crate::storage::DirectoryKind::Backups);
-                std::fs::create_dir_all(&directory).map_err(|_| "无法创建备份目录")?;
+                std::fs::create_dir_all(&directory)
+                    .map_err(|error| crate::logging::diagnostic_error("无法创建备份目录", error))?;
                 let path = directory.join(format!("gist-{id}.suki-backup"));
                 crate::storage::atomic_write(&path, content.as_bytes())
-                    .map_err(|error| error.to_string())?;
+                    .map_err(crate::logging::error_message)?;
                 self.snapshot.gist.downloaded = Some(path);
             }
             Command::Restore(id) => {
@@ -266,10 +269,10 @@ impl Actor {
     fn refresh_restored_settings(&mut self) -> Result<(), String> {
         self.snapshot.preferences = Some(super::Preferences::load(&self.paths)?);
         let repository = crate::storage::Repository::open(self.paths.clone())
-            .map_err(|error| error.to_string())?;
+            .map_err(crate::logging::error_message)?;
         for kind in crate::preferences::SettingsKind::ALL {
-            let values =
-                crate::preferences::values(&repository, kind).map_err(|error| error.to_string())?;
+            let values = crate::preferences::values(&repository, kind)
+                .map_err(crate::logging::error_message)?;
             self.snapshot.settings.insert(kind.id().into(), values);
         }
         self.snapshot.proxy_preferences =

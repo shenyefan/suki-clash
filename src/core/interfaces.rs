@@ -38,5 +38,5 @@ pub(super) async fn list() -> Result<Vec<Interface>, String> {
         interfaces
     })
     .await
-    .map_err(|_| "系统网卡查询任务异常退出".into())
+    .map_err(|error| crate::logging::diagnostic_error("系统网卡查询任务异常退出".into(), error))
 }

@@ -120,7 +120,7 @@ impl Builder {
                     },
                 );
                 menu.append(item.as_ref())
-                    .map_err(|error| error.to_string())?;
+                    .map_err(crate::logging::error_message)?;
             }
         }
         Ok(menu)
@@ -175,13 +175,13 @@ pub(super) fn build(
         } else {
             modes.append(item.as_ref())
         }
-        .map_err(|error| error.to_string())?;
+        .map_err(crate::logging::error_message)?;
     }
     if !inline {
-        menu.append(&modes).map_err(|error| error.to_string())?;
+        menu.append(&modes).map_err(crate::logging::error_message)?;
     }
     menu.append(&PredefinedMenuItem::separator())
-        .map_err(|error| error.to_string())?;
+        .map_err(crate::logging::error_message)?;
     let groups = Submenu::new("代理组", ready && !busy);
     let layout = settings
         .get("TrayProxyGroups")
@@ -195,13 +195,14 @@ pub(super) fn build(
             } else {
                 menu.append(&submenu)
             }
-            .map_err(|error| error.to_string())?;
+            .map_err(crate::logging::error_message)?;
         }
         if layout == "默认" {
-            menu.append(&groups).map_err(|error| error.to_string())?;
+            menu.append(&groups)
+                .map_err(crate::logging::error_message)?;
         }
         menu.append(&PredefinedMenuItem::separator())
-            .map_err(|error| error.to_string())?;
+            .map_err(crate::logging::error_message)?;
     }
     let enabled = snapshot.system_proxy().enabled();
     for (label, available, checked, command) in [
@@ -224,10 +225,10 @@ pub(super) fn build(
         ("复制终端代理命令", true, None, Command::CopyEnvironment),
     ] {
         menu.append(builder.item(label, available, checked, command).as_ref())
-            .map_err(|error| error.to_string())?;
+            .map_err(crate::logging::error_message)?;
     }
     menu.append(&PredefinedMenuItem::separator())
-        .map_err(|error| error.to_string())?;
+        .map_err(crate::logging::error_message)?;
     let profile = snapshot.profile();
     let profiles = Submenu::new(
         format!("订阅 — {}", profile.map(|p| p.name()).unwrap_or("未选择")),
@@ -248,10 +249,11 @@ pub(super) fn build(
                         )
                         .as_ref(),
                 )
-                .map_err(|error| error.to_string())?;
+                .map_err(crate::logging::error_message)?;
         }
     }
-    menu.append(&profiles).map_err(|error| error.to_string())?;
+    menu.append(&profiles)
+        .map_err(crate::logging::error_message)?;
     let directories = Submenu::new("打开目录与日志", true);
     for (label, command) in [
         ("配置目录", Command::OpenDirectory("config".into())),
@@ -262,10 +264,10 @@ pub(super) fn build(
     ] {
         directories
             .append(builder.item(label, true, None, command).as_ref())
-            .map_err(|error| error.to_string())?;
+            .map_err(crate::logging::error_message)?;
     }
     menu.append(&directories)
-        .map_err(|error| error.to_string())?;
+        .map_err(crate::logging::error_message)?;
     let more = Submenu::new("更多操作", true);
     for (label, available, command) in [
         (
@@ -280,19 +282,19 @@ pub(super) fn build(
         ("重启程序", true, Command::RestartProgram),
     ] {
         more.append(builder.item(label, available, None, command).as_ref())
-            .map_err(|error| error.to_string())?;
+            .map_err(crate::logging::error_message)?;
     }
-    menu.append(&more).map_err(|error| error.to_string())?;
+    menu.append(&more).map_err(crate::logging::error_message)?;
     menu.append(
         builder
             .item("打开主窗口", true, None, Command::ShowWindow)
             .as_ref(),
     )
-    .map_err(|error| error.to_string())?;
+    .map_err(crate::logging::error_message)?;
     menu.append(&PredefinedMenuItem::separator())
-        .map_err(|error| error.to_string())?;
+        .map_err(crate::logging::error_message)?;
     menu.append(builder.item("退出", true, None, Command::Quit).as_ref())
-        .map_err(|error| error.to_string())?;
+        .map_err(crate::logging::error_message)?;
     Ok((menu, builder.commands))
 }
 

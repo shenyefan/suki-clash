@@ -16,6 +16,16 @@ pub enum Request {
     },
     RebuildFirewall,
 }
+#[cfg(any(windows, test))]
+fn network_failure(code: Option<u32>, detail: &str) -> String {
+    if matches!(code, Some(1753 | 0x800706d9)) {
+        format!(
+            "Windows 网络接口未注册 RPC 端点，请检查 Windows Defender Firewall（MpsSvc）、Base Filtering Engine（BFE）及 RPC 相关服务是否正常运行；{detail}"
+        )
+    } else {
+        detail.to_owned()
+    }
+}
 #[cfg(windows)]
 mod native {
     use super::*;
@@ -31,6 +41,16 @@ mod native {
         UI::Shell::SHLoadIndirectString,
     };
     fn status(code: u32) -> Result<()> {
+        #[cfg(any(feature = "client", feature = "standalone"))]
+        if code != 0 {
+            log::error!(
+                "{}",
+                super::network_failure(
+                    Some(code),
+                    &std::io::Error::from_raw_os_error(code as i32).to_string()
+                )
+            );
+        }
         ensure!(code == 0, "Windows 网络操作失败（{code}）");
         Ok(())
     }
@@ -341,11 +361,37 @@ pub(crate) fn apply(
 ) -> anyhow::Result<Vec<UwpApp>> {
     #[cfg(windows)]
     {
-        native::apply(request, app_root, owner_key)
+        native::apply(request, app_root, owner_key).inspect_err(|error| {
+            let code = error
+                .downcast_ref::<windows::core::Error>()
+                .map(|error| error.code().0 as u32);
+            log::error!("{}", network_failure(code, &format!("{error:#}")));
+        })
     }
     #[cfg(not(windows))]
     {
         let _ = (request, app_root, owner_key);
         anyhow::bail!("UWP／Windows 防火墙仅支持 Windows")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn rpc_endpoint_failure_keeps_native_reason_and_names_service_dependencies() {
+        for code in [1753, 0x800706d9] {
+            let message = super::network_failure(Some(code), "原始原因 (0x800706D9)");
+            assert!(message.contains("MpsSvc"));
+            assert!(message.contains("BFE"));
+            assert!(message.contains("原始原因 (0x800706D9)"));
+        }
+        assert_eq!(
+            super::network_failure(Some(5), "Access denied"),
+            "Access denied"
+        );
+        assert_eq!(
+            super::network_failure(None, "规则回读不一致"),
+            "规则回读不一致"
+        );
     }
 }

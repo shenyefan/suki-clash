@@ -34,12 +34,14 @@ pub(super) fn save_report(
     paths: &AppPaths,
     report: &crate::configuration::script::Report,
 ) -> Result<(), String> {
-    let bytes = serde_json::to_vec(report).map_err(|_| "无法编码脚本日志")?;
+    let bytes = serde_json::to_vec(report)
+        .map_err(|error| crate::logging::diagnostic_error("无法编码脚本日志", error))?;
     let path = report_path(paths, report.id);
-    crate::storage::atomic_write(&path, &bytes).map_err(|_| "脚本日志保存失败")?;
+    crate::storage::atomic_write(&path, &bytes)
+        .map_err(|error| crate::logging::diagnostic_error("脚本日志保存失败", error))?;
     let directory = path.parent().ok_or("脚本日志目录无效")?;
     let mut files = std::fs::read_dir(directory)
-        .map_err(|_| "无法读取脚本日志目录")?
+        .map_err(|error| crate::logging::diagnostic_error("无法读取脚本日志目录", error))?
         .filter_map(Result::ok)
         .filter_map(|entry| {
             let metadata = std::fs::symlink_metadata(entry.path()).ok()?;
@@ -53,7 +55,8 @@ pub(super) fn save_report(
     files.sort();
     let excess = files.len().saturating_sub(127);
     for (_, path) in files.into_iter().take(excess) {
-        std::fs::remove_file(path).map_err(|_| "脚本日志清理失败")?;
+        std::fs::remove_file(path)
+            .map_err(|error| crate::logging::diagnostic_error("脚本日志清理失败", error))?;
     }
     Ok(())
 }
@@ -66,17 +69,22 @@ impl Actor {
                 self.snapshot.script_log = Some((id, "暂无执行记录".into()));
                 return Ok(());
             }
-            Err(_) => return Err("无法读取脚本日志".into()),
+            Err(error) => {
+                return Err(crate::logging::diagnostic_error(
+                    "无法读取脚本日志".into(),
+                    error,
+                ));
+            }
         };
         let mut bytes = Vec::new();
         file.take(512 * 1024 + 1)
             .read_to_end(&mut bytes)
-            .map_err(|_| "无法读取脚本日志")?;
+            .map_err(|error| crate::logging::diagnostic_error("无法读取脚本日志", error))?;
         if bytes.len() > 512 * 1024 {
             return Err("脚本日志超过上限".into());
         }
-        let report: crate::configuration::script::Report =
-            serde_json::from_slice(&bytes).map_err(|_| "脚本日志格式无效")?;
+        let report: crate::configuration::script::Report = serde_json::from_slice(&bytes)
+            .map_err(|error| crate::logging::diagnostic_error("脚本日志格式无效", error))?;
         let mut text = format!(
             "{}  {}\n",
             report.at,
@@ -255,7 +263,7 @@ impl Actor {
         }
         let values = store::values(desired, None);
         crate::configuration::validate_override_index(&values)
-            .map_err(|error| error.to_string())?;
+            .map_err(crate::logging::error_message)?;
         let candidate = if let Some(running) = &self.running {
             Some(
                 Launch::with_overrides(&self.paths, running.launch.source.clone(), values.clone())
@@ -303,6 +311,7 @@ impl Actor {
         if ids.is_empty() {
             return Ok(());
         }
+        log::info!("自动更新覆写开始；条目={}", ids.len());
         self.snapshot.operation_active = true;
         self.snapshot.operation_module = Some("overrides");
         let result = self
@@ -313,6 +322,10 @@ impl Actor {
             .await;
         self.snapshot.operation_active = false;
         self.snapshot.progress = None;
+        match &result {
+            Ok(()) => log::info!("自动更新覆写完成"),
+            Err(error) => log::error!("自动更新覆写失败：{error}"),
+        }
         result
     }
 }

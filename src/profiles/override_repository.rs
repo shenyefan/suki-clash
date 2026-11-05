@@ -6,15 +6,16 @@ use super::{
 use crate::storage::{AppPaths, Namespace, Repository, Values, atomic_write};
 use std::{collections::BTreeSet, path::PathBuf};
 pub(crate) fn read(paths: &AppPaths) -> Result<(Values, Vec<Document>), String> {
-    let repository = Repository::open(paths.clone()).map_err(|error| error.to_string())?;
+    let repository = Repository::open(paths.clone()).map_err(crate::logging::error_message)?;
     let mut values = repository
         .read_limited(
-            &Namespace::parse("override-index").map_err(|error| error.to_string())?,
+            &Namespace::parse("override-index").map_err(crate::logging::error_message)?,
             crate::configuration::INPUT_LIMIT,
         )
-        .map_err(|error| error.to_string())?;
+        .map_err(crate::logging::error_message)?;
     store::hydrate(paths, true, &mut values)?;
-    crate::configuration::validate_override_index(&values).map_err(|error| error.to_string())?;
+    crate::configuration::validate_override_index(&values)
+        .map_err(crate::logging::error_message)?;
     if values.is_empty() {
         return Ok((values, vec![]));
     }
@@ -48,7 +49,7 @@ pub(crate) fn validate(document: &Document) -> Result<(), String> {
         std::slice::from_ref(document),
         None,
     ))
-    .map_err(|error| error.to_string())
+    .map_err(crate::logging::error_message)
 }
 pub(crate) fn path(paths: &AppPaths, document: &Document) -> PathBuf {
     paths
@@ -77,7 +78,12 @@ impl Recovery {
             let bytes = match std::fs::read(&path) {
                 Ok(bytes) => Some(bytes),
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-                Err(_) => return Err("无法读取覆写恢复材料".into()),
+                Err(error) => {
+                    return Err(crate::logging::diagnostic_error(
+                        "无法读取覆写恢复材料".into(),
+                        error,
+                    ));
+                }
             };
             entries.push((path, bytes));
         }
@@ -119,7 +125,7 @@ pub(crate) fn commit(
     }
     let values = store::metadata_values(new);
     if serde_json::to_vec(&values)
-        .map_err(|_| "无法编码覆写索引")?
+        .map_err(|error| crate::logging::diagnostic_error("无法编码覆写索引", error))?
         .len() as u64
         > crate::configuration::INPUT_LIMIT
     {
@@ -132,16 +138,16 @@ pub(crate) fn commit(
             .is_none_or(|old| old.content != document.content)
         {
             atomic_write(&path(paths, document), document.content.as_bytes())
-                .map_err(|_| "覆写文件保存失败")?;
+                .map_err(|error| crate::logging::diagnostic_error("覆写文件保存失败", error))?;
         }
     }
     Repository::open(paths.clone())
-        .map_err(|error| error.to_string())?
+        .map_err(crate::logging::error_message)?
         .save(
-            &Namespace::parse("override-index").map_err(|error| error.to_string())?,
+            &Namespace::parse("override-index").map_err(crate::logging::error_message)?,
             &values,
         )
-        .map_err(|error| error.to_string())?;
+        .map_err(crate::logging::error_message)?;
     let retained: BTreeSet<_> = new.iter().map(|doc| path(paths, doc)).collect();
     for document in old {
         let path = path(paths, document);
@@ -149,7 +155,12 @@ pub(crate) fn commit(
             match std::fs::remove_file(path) {
                 Ok(()) => {}
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(_) => return Err("覆写文件删除失败".into()),
+                Err(error) => {
+                    return Err(crate::logging::diagnostic_error(
+                        "覆写文件删除失败".into(),
+                        error,
+                    ));
+                }
             }
         }
     }

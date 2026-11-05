@@ -124,7 +124,7 @@ pub(super) fn unpack_gzip(bytes: &[u8]) -> Result<Vec<u8>, String> {
     reader
         .take(super::download::ARCHIVE_LIMIT + 1)
         .read_to_end(&mut output)
-        .map_err(|_| "内核 Gzip 包损坏")?;
+        .map_err(|error| crate::logging::diagnostic_error("内核 Gzip 包损坏", error))?;
     if output.is_empty() || output.len() as u64 > super::download::ARCHIVE_LIMIT {
         return Err("解压内核为空或超过大小上限".into());
     }
@@ -133,7 +133,8 @@ pub(super) fn unpack_gzip(bytes: &[u8]) -> Result<Vec<u8>, String> {
 
 pub(super) fn unpack_zip(bytes: &[u8]) -> Result<Vec<u8>, String> {
     use std::io::{Cursor, Read as _};
-    let mut archive = zip::ZipArchive::new(Cursor::new(bytes)).map_err(|_| "内核 ZIP 归档无效")?;
+    let mut archive = zip::ZipArchive::new(Cursor::new(bytes))
+        .map_err(|error| crate::logging::diagnostic_error("内核 ZIP 归档无效", error))?;
     if archive.len() > 1024 {
         return Err("内核归档条目超过上限".into());
     }
@@ -141,7 +142,7 @@ pub(super) fn unpack_zip(bytes: &[u8]) -> Result<Vec<u8>, String> {
     for index in 0..archive.len() {
         let entry = archive
             .by_index(index)
-            .map_err(|_| "无法读取内核 ZIP 条目")?;
+            .map_err(|error| crate::logging::diagnostic_error("无法读取内核 ZIP 条目", error))?;
         let path = entry.enclosed_name().ok_or("内核 ZIP 路径越界")?;
         if entry.is_symlink() {
             return Err("内核 ZIP 不允许符号链接".into());
@@ -160,7 +161,7 @@ pub(super) fn unpack_zip(bytes: &[u8]) -> Result<Vec<u8>, String> {
     }
     let mut entry = archive
         .by_index(selected.ok_or("内核 ZIP 缺少 Mihomo 可执行文件")?)
-        .map_err(|_| "无法读取内核 ZIP 文件")?;
+        .map_err(|error| crate::logging::diagnostic_error("无法读取内核 ZIP 文件", error))?;
     if entry.size() > super::download::ARCHIVE_LIMIT {
         return Err("解包内核超过大小上限".into());
     }
@@ -168,7 +169,7 @@ pub(super) fn unpack_zip(bytes: &[u8]) -> Result<Vec<u8>, String> {
     (&mut entry)
         .take(super::download::ARCHIVE_LIMIT + 1)
         .read_to_end(&mut binary)
-        .map_err(|_| "内核 ZIP 解包或校验失败")?;
+        .map_err(|error| crate::logging::diagnostic_error("内核 ZIP 解包或校验失败", error))?;
     if binary.is_empty() || binary.len() as u64 > super::download::ARCHIVE_LIMIT {
         return Err("解包内核为空或超过上限".into());
     }

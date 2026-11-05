@@ -67,13 +67,14 @@ impl Source {
     }
 
     pub(crate) fn from_profile(paths: &AppPaths, id: u64) -> Result<Self, String> {
-        let repository = Repository::open(paths.clone()).map_err(|_| "无法读取订阅存储")?;
+        let repository = Repository::open(paths.clone())
+            .map_err(|error| crate::logging::diagnostic_error("无法读取订阅存储", error))?;
         let mut values = repository
             .read_limited(
-                &Namespace::parse("profile-index").map_err(|error| error.to_string())?,
+                &Namespace::parse("profile-index").map_err(crate::logging::error_message)?,
                 super::INPUT_LIMIT,
             )
-            .map_err(|error| error.to_string())?;
+            .map_err(crate::logging::error_message)?;
         crate::profiles::store::validate_metadata(paths, false, &values)?;
         let content =
             crate::profiles::store::read_body(&crate::profiles::repository::body_path(paths, id))?;
@@ -89,7 +90,7 @@ impl Source {
             .split(',')
             .map(str::parse::<u64>)
             .collect::<Result<Vec<_>, _>>()
-            .map_err(|_| "订阅索引 ID 无效")?;
+            .map_err(|error| crate::logging::diagnostic_error("订阅索引 ID 无效", error))?;
         if values.get("format").map(String::as_str) != Some("1")
             || parsed.iter().filter(|value| **value == id).count() != 1
         {
@@ -137,11 +138,18 @@ impl Source {
                 Ok(bytes) => {
                     return Ok(Self {
                         profile: None,
-                        content: String::from_utf8(bytes).map_err(|_| "测试来源必须为 UTF-8")?,
+                        content: String::from_utf8(bytes).map_err(|error| {
+                            crate::logging::diagnostic_error("测试来源必须为 UTF-8", error)
+                        })?,
                     });
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(_) => return Err("无法读取测试配置来源".into()),
+                Err(error) => {
+                    return Err(crate::logging::diagnostic_error(
+                        "无法读取测试配置来源".into(),
+                        error,
+                    ));
+                }
             }
         }
         Self::basic(paths)
@@ -154,7 +162,8 @@ impl Source {
         let mut mapping = serde_yaml_ng::Mapping::new();
         preferences.overlay(&mut mapping);
         mapping.insert("mode".into(), "rule".into());
-        let content = serde_yaml_ng::to_string(&mapping).map_err(|_| "无法生成基础配置")?;
+        let content = serde_yaml_ng::to_string(&mapping)
+            .map_err(|error| crate::logging::diagnostic_error("无法生成基础配置", error))?;
         Ok(Self {
             profile: None,
             content,

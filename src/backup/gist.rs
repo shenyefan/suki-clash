@@ -98,8 +98,8 @@ impl Gist {
                 &format!("/gists?per_page=100&page={page}"),
             ))
             .await?;
-        let responses: Vec<Response> =
-            serde_json::from_slice(&bytes).map_err(|_| "Gist列表响应无效")?;
+        let responses: Vec<Response> = serde_json::from_slice(&bytes)
+            .map_err(|error| crate::logging::diagnostic_error("Gist列表响应无效", error))?;
         let has_more = responses.len() == 100;
         Ok(Page {
             has_more,
@@ -117,11 +117,14 @@ impl Gist {
             .response(
                 self.request(reqwest::Method::POST, "/gists")
                     .header("Content-Type", "application/json")
-                    .body(serde_json::to_vec(&body).map_err(|_| "无法编码Gist备份")?),
+                    .body(serde_json::to_vec(&body).map_err(|error| {
+                        crate::logging::diagnostic_error("无法编码Gist备份", error)
+                    })?),
             )
             .await?;
-        let gist: Response = serde_json::from_slice(&bytes)
-            .map_err(|_| "Gist创建响应无效；请刷新列表确认是否已创建")?;
+        let gist: Response = serde_json::from_slice(&bytes).map_err(|error| {
+            crate::logging::diagnostic_error("Gist创建响应无效；请刷新列表确认是否已创建", error)
+        })?;
         validate_id(&gist.id)?;
         Ok(gist.remote())
     }
@@ -130,7 +133,8 @@ impl Gist {
         let bytes = self
             .response(self.request(reqwest::Method::GET, &format!("/gists/{id}")))
             .await?;
-        let gist: Response = serde_json::from_slice(&bytes).map_err(|_| "Gist备份响应无效")?;
+        let gist: Response = serde_json::from_slice(&bytes)
+            .map_err(|error| crate::logging::diagnostic_error("Gist备份响应无效", error))?;
         let file = gist.files.get(FILE).ok_or("Gist中没有Suki Clash备份文件")?;
         if file.truncated != Some(true) {
             let content = file.content.clone().ok_or("Gist备份正文缺失")?;
@@ -138,7 +142,8 @@ impl Gist {
             return Ok(content);
         }
         let url = file.raw_url.as_deref().ok_or("Gist未提供完整备份地址")?;
-        let parsed = url::Url::parse(url).map_err(|_| "Gist原始备份地址无效")?;
+        let parsed = url::Url::parse(url)
+            .map_err(|error| crate::logging::diagnostic_error("Gist原始备份地址无效", error))?;
         if parsed.scheme() != "https"
             || parsed.host_str() != Some("gist.githubusercontent.com")
             || !parsed.username().is_empty()
@@ -155,7 +160,8 @@ impl Gist {
                     .timeout(Duration::from_secs(60)),
             )
             .await?;
-        let content = String::from_utf8(bytes).map_err(|_| "Gist备份不是UTF-8文本")?;
+        let content = String::from_utf8(bytes)
+            .map_err(|error| crate::logging::diagnostic_error("Gist备份不是UTF-8文本", error))?;
         validate_content(&content)?;
         Ok(content)
     }

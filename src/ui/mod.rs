@@ -194,6 +194,7 @@ pub(crate) fn detail_rows(details: &str, cx: &App) -> Div {
 }
 /// Validation failures use the shared native notification stack.
 pub(crate) fn show_error(message: String, window: &mut Window, cx: &mut App) {
+    log::error!("界面错误：{message}");
     notifications::push(
         window,
         gpui_kit::component::notification::Notification::error(message),

@@ -4,6 +4,58 @@ mod redact;
 use crate::storage::{AppPaths, DirectoryKind};
 pub(crate) use feed::{Feed, Level, Record, core_record};
 pub(crate) use redact::redact;
+/// Record the original cause without changing the error returned to the UI.
+#[track_caller]
+pub(crate) fn diagnostic_error<T: std::fmt::Display>(
+    message: T,
+    cause: impl std::fmt::Display,
+) -> T {
+    let location = std::panic::Location::caller();
+    let module = location
+        .file()
+        .trim_start_matches("src/")
+        .trim_end_matches(".rs")
+        .replace(['/', '\\'], "::");
+    let target = format!("suki_clash::{module}");
+    log::error!(
+        target: &target,
+        "{message}；原始错误：{cause:#}；位置={}:{}",
+        location.file(),
+        location.line()
+    );
+    message
+}
+#[track_caller]
+pub(crate) fn error_message(error: impl std::fmt::Display) -> String {
+    diagnostic_error(error.to_string(), format_args!("{error:#}"))
+}
+pub(crate) fn panic_message(payload: &(dyn std::any::Any + Send)) -> &str {
+    payload
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| payload.downcast_ref::<&str>().copied())
+        .unwrap_or("非文本 panic payload")
+}
+pub(crate) fn install_panic_hook() {
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        log::error!(
+            "程序 panic：{info}\n{}",
+            std::backtrace::Backtrace::force_capture()
+        );
+        previous(info);
+    }));
+}
+pub(crate) fn error_chain(error: &(dyn std::error::Error + 'static)) -> String {
+    let mut details = error.to_string();
+    let mut source = error.source();
+    while let Some(error) = source {
+        details.push_str("；原因：");
+        details.push_str(&error.to_string());
+        source = error.source();
+    }
+    details
+}
 use std::{
     fs::{self, File, OpenOptions},
     io::{self, Write as _},
@@ -37,7 +89,7 @@ impl Sink {
     pub(crate) fn new(paths: &AppPaths, source: Source, days: u32, limit: u64) -> io::Result<Self> {
         let directory = paths.directory(DirectoryKind::Logs);
         fs::create_dir_all(&directory)?;
-        cleanup(&directory, source.prefix(), days)?;
+        cleanup(&directory, source.prefix(), days, None)?;
         let mut nonce = [0u8; 8];
         getrandom::fill(&mut nonce).map_err(io::Error::other)?;
         let nonce = nonce
@@ -72,6 +124,11 @@ impl Sink {
                 "program-"
             },
             days,
+            Some(
+                &self
+                    .directory
+                    .join(format!("{}-{}.log", self.prefix, self.part)),
+            ),
         )
     }
     pub(crate) fn configure_program(
@@ -153,7 +210,12 @@ fn create(path: &std::path::Path) -> io::Result<File> {
     }
     options.open(path)
 }
-fn cleanup(directory: &std::path::Path, prefix: &str, days: u32) -> io::Result<()> {
+fn cleanup(
+    directory: &std::path::Path,
+    prefix: &str,
+    days: u32,
+    active: Option<&std::path::Path>,
+) -> io::Result<()> {
     if days == 0 {
         return Ok(());
     }
@@ -163,7 +225,7 @@ fn cleanup(directory: &std::path::Path, prefix: &str, days: u32) -> io::Result<(
         let path = entry.path();
         let name = entry.file_name();
         let name = name.to_string_lossy();
-        if !name.starts_with(prefix) || !name.ends_with(".log") {
+        if !name.starts_with(prefix) || !name.ends_with(".log") || active == Some(path.as_path()) {
             continue;
         }
         let metadata = fs::symlink_metadata(&path)?;
@@ -185,6 +247,17 @@ fn cleanup(directory: &std::path::Path, prefix: &str, days: u32) -> io::Result<(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn error_chain_keeps_nested_native_reason_and_display_message_is_unchanged() {
+        #[derive(Debug, thiserror::Error)]
+        #[error("transport failed")]
+        struct Transport(#[source] io::Error);
+        let error = Transport(io::Error::from_raw_os_error(13));
+        let details = error_chain(&error);
+        assert!(details.starts_with("transport failed；原因："));
+        assert!(details.contains("13"));
+        assert_eq!(diagnostic_error("原有 Toast", details), "原有 Toast");
+    }
     #[test]
     fn logs_rotate_between_complete_records_and_do_not_touch_unowned_files() {
         let root = tempfile::tempdir().unwrap();
@@ -222,5 +295,30 @@ mod tests {
         let before = sink.size;
         assert!(sink.write(&vec![b'x'; 64 * 1024 + 1]).is_err());
         assert_eq!(sink.size, before);
+    }
+    #[test]
+    fn seven_day_cleanup_preserves_current_file_other_sources_and_unowned_files() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = AppPaths::isolated(root.path());
+        paths.create().unwrap();
+        let directory = paths.directory(DirectoryKind::Logs);
+        let past = SystemTime::now() - Duration::from_secs(8 * 86400);
+        for name in ["program-expired.log", "core-expired.log", "unrelated.log"] {
+            let file = File::create(directory.join(name)).unwrap();
+            file.set_times(fs::FileTimes::new().set_modified(past))
+                .unwrap();
+        }
+        let mut sink = Sink::new(&paths, Source::Program, 0, 1024).unwrap();
+        let active = directory.join(format!("{}-0.log", sink.prefix));
+        sink.file
+            .set_times(fs::FileTimes::new().set_modified(past))
+            .unwrap();
+        sink.configure(7, 1024).unwrap();
+        assert!(!directory.join("program-expired.log").exists());
+        assert!(directory.join("core-expired.log").exists());
+        assert!(directory.join("unrelated.log").exists());
+        assert!(active.exists());
+        sink.write(b"still recording\n").unwrap();
+        assert_eq!(fs::read_to_string(active).unwrap(), "still recording\n");
     }
 }

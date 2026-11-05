@@ -22,16 +22,18 @@ pub(crate) fn validate(source: &str) -> Result<(), String> {
     if source.len() as u64 > super::INPUT_LIMIT {
         return Err("脚本超过大小上限".into());
     }
-    let runtime = Runtime::new().map_err(|_| "无法创建脚本运行时")?;
+    let runtime = Runtime::new()
+        .map_err(|error| crate::logging::diagnostic_error("无法创建脚本运行时", error))?;
     runtime.set_memory_limit(MEMORY_LIMIT);
     runtime.set_max_stack_size(512 * 1024);
     let deadline = Instant::now() + TIME_LIMIT;
     runtime.set_interrupt_handler(Some(Box::new(move || Instant::now() >= deadline)));
-    let context = Context::full(&runtime).map_err(|_| "无法创建脚本上下文")?;
+    let context = Context::full(&runtime)
+        .map_err(|error| crate::logging::diagnostic_error("无法创建脚本上下文", error))?;
     context.with(|ctx| {
         ctx.eval::<Function, _>(format!("(function(config,name,__write) {{\n{source}\n}})"))
             .map(|_| ())
-            .map_err(|_| "JavaScript 语法无效".into())
+            .map_err(|error| crate::logging::diagnostic_error("JavaScript 语法无效".into(), error))
     })
 }
 #[cfg(test)]
@@ -67,11 +69,13 @@ fn run_with_budget(
         if source.len() as u64 > super::INPUT_LIMIT {
             return Err("脚本超过大小上限".into());
         }
-        let input = serde_json::to_vec(config).map_err(|_| "脚本输入不能转换为 JSON")?;
+        let input = serde_json::to_vec(config)
+            .map_err(|error| crate::logging::diagnostic_error("脚本输入不能转换为 JSON", error))?;
         if input.len() as u64 > super::INPUT_LIMIT {
             return Err("脚本输入超过大小上限".into());
         }
-        let runtime = Runtime::new().map_err(|_| "无法创建脚本运行时")?;
+        let runtime = Runtime::new()
+            .map_err(|error| crate::logging::diagnostic_error("无法创建脚本运行时", error))?;
         runtime.set_memory_limit(MEMORY_LIMIT);
         runtime.set_max_stack_size(512 * 1024);
         let cancelled = cancellation.clone();
@@ -81,13 +85,14 @@ fn run_with_budget(
                     .as_ref()
                     .is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Relaxed))
         })));
-        let context = Context::full(&runtime).map_err(|_| "无法创建脚本上下文")?;
+        let context = Context::full(&runtime)
+            .map_err(|error| crate::logging::diagnostic_error("无法创建脚本上下文", error))?;
         context.with(|ctx| -> Result<Mapping,String> {
             let output_logs=logs.clone(); let exceeded=overflow.clone(); let size=Cell::new(0usize);
             let logger=Function::new(ctx.clone(),move |level:String,text:String| {
                 if output_logs.borrow().len()>=MAX_LOGS || size.get().saturating_add(text.len())>MAX_LOG_BYTES { exceeded.set(true); return; }
                 size.set(size.get()+text.len()); output_logs.borrow_mut().push((level,text));
-            }).map_err(|_| "无法初始化脚本日志")?;
+            }).map_err(|error| crate::logging::diagnostic_error("无法初始化脚本日志", error))?;
             // Input/name are arguments, never interpolated into executable text.
             let code=format!(r#"(function(config,name,__write) {{
                 const console=Object.freeze(Object.fromEntries(['log','info','warn','error','debug','trace','table'].map(level=>[level,(...args)=>__write(level,args.map(value=>typeof value==='string'?value:JSON.stringify(value)).join(' '))])));
@@ -96,14 +101,14 @@ fn run_with_budget(
                 if (!result || typeof result!=='object' || Array.isArray(result) || typeof result.then==='function') throw new Error('invalid output');
                 return JSON.stringify(result);
             }})"#);
-            let function:Function=ctx.eval(code).map_err(|_| "JavaScript 语法无效")?;
-            let input=ctx.json_parse(input).map_err(|_| "脚本输入无效")?;
-            let output:String=function.call((input,name,logger)).map_err(|_| "JavaScript 执行异常或超过资源预算")?;
+            let function:Function=ctx.eval(code).map_err(|error| crate::logging::diagnostic_error("JavaScript 语法无效", error))?;
+            let input=ctx.json_parse(input).map_err(|error| crate::logging::diagnostic_error("脚本输入无效", error))?;
+            let output:String=function.call((input,name,logger)).map_err(|error| crate::logging::diagnostic_error("JavaScript 执行异常或超过资源预算", error))?;
             if overflow.get() { return Err("脚本日志超过上限".into()); }
             if output.len() as u64 > super::INPUT_LIMIT { return Err("脚本结果超过大小上限".into()); }
-            let value:serde_json::Value=serde_json::from_str(&output).map_err(|_| "脚本结果不是有效 JSON")?;
+            let value:serde_json::Value=serde_json::from_str(&output).map_err(|error| crate::logging::diagnostic_error("脚本结果不是有效 JSON", error))?;
             if !value.is_object() { return Err("脚本必须返回配置对象".into()); }
-            serde_json::from_value(value).map_err(|_| "脚本结果不能转换为配置".into())
+            serde_json::from_value(value).map_err(|error| crate::logging::diagnostic_error("脚本结果不能转换为配置".into(), error))
         })
     })();
     if cancellation
