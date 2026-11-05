@@ -342,7 +342,6 @@ dependencies = [
  "getrandom 0.4.3",
  "serde",
  "serde_repr",
- "tokio",
  "wayland-backend",
  "wayland-client",
  "wayland-protocols",
@@ -5571,7 +5570,6 @@ dependencies = [
  "serde_bytes",
  "sha2 0.10.9",
  "subtle",
- "tokio",
  "zbus 5.19.0",
  "zbus_macros 5.19.0",
  "zeroize",
@@ -7670,7 +7668,7 @@ checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
 
 [[package]]
 name = "suki-clash"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "age",
  "anyhow",
@@ -10277,7 +10275,6 @@ dependencies = [
  "rustix",
  "serde",
  "serde_repr",
- "tokio",
  "tracing",
  "uds_windows",
  "uuid",

@@ -14,40 +14,6 @@ use std::{
 };
 use tempfile::TempDir;
 use tokio::io::AsyncWriteExt as _;
-/// GitHub hosts whose public downloads may be routed through the configured download proxy.
-const GITHUB_HOSTS: [&str; 7] = [
-    "github.com",
-    "api.github.com",
-    "gist.github.com",
-    "codeload.github.com",
-    "raw.githubusercontent.com",
-    "gist.githubusercontent.com",
-    "objects.githubusercontent.com",
-];
-/// Prefixes the proxy before public GitHub URLs; authenticated requests never leave GitHub.
-fn github_proxy_url(paths: &AppPaths, url: &str, authorization: &str) -> Result<String, String> {
-    let github = authorization.is_empty()
-        && url::Url::parse(url).is_ok_and(|parsed| {
-            parsed.scheme() == "https"
-                && parsed
-                    .host_str()
-                    .is_some_and(|host| GITHUB_HOSTS.contains(&host))
-        });
-    if !github {
-        return Ok(url.to_owned());
-    }
-    let repository =
-        crate::storage::Repository::open(paths.clone()).map_err(|_| "无法读取下载设置")?;
-    let settings =
-        crate::preferences::values(&repository, crate::preferences::SettingsKind::General)
-            .map_err(|_| "无法读取下载设置")?;
-    let proxy = settings.get("GitHubProxy").map_or("", |value| value.trim());
-    Ok(if proxy.is_empty() {
-        url.to_owned()
-    } else {
-        format!("{}/{url}", proxy.trim_end_matches('/'))
-    })
-}
 pub(super) const ARCHIVE_LIMIT: u64 = 256 * 1024 * 1024;
 pub(super) struct Transfer {
     request: Option<RequestBuilder>,
@@ -201,7 +167,7 @@ impl Transfer {
             http.client(transport, https_only)?
         };
         let timeout = request.timeout;
-        let url = github_proxy_url(paths, request.url, request.authorization)?;
+        let url = crate::network::github_proxy_url(paths, request.url, request.authorization)?;
         let mut builder = client
             .get(url)
             .header(reqwest::header::USER_AGENT, agent)
@@ -321,27 +287,6 @@ mod tests {
             String::from_utf8(request).unwrap()
         });
         (format!("http://{address}/file"), task)
-    }
-    #[test]
-    fn github_proxy_prefixes_public_github_urls_only() {
-        let root = tempfile::tempdir().unwrap();
-        let paths = AppPaths::isolated(root.path());
-        for url in [
-            "https://github.com/MetaCubeX/mihomo/releases/download/v1/a.gz",
-            "https://raw.githubusercontent.com/a/b/main/c.yaml",
-            "https://gist.githubusercontent.com/a/b/raw/c",
-        ] {
-            assert_eq!(
-                github_proxy_url(&paths, url, "").unwrap(),
-                format!("https://get.syf.sh/{url}")
-            );
-        }
-        for (url, authorization) in [
-            ("https://example.com/a.yaml", ""),
-            ("https://api.github.com/gists", "token"),
-        ] {
-            assert_eq!(github_proxy_url(&paths, url, authorization).unwrap(), url);
-        }
     }
     #[tokio::test]
     async fn stream_limits_apply_to_chunked_bodies_and_progress_finishes_at_received_bytes() {

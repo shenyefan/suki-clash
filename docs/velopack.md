@@ -22,7 +22,13 @@ Windows便携版是**免安装程序包**，用户配置仍沿当前平台应用
 
 `packaging/velopack.py`要求传入已构建主程序目录、服务目录、目标及新的工作目录；`--prepare-only`只检查和暂存。四个可执行文件全部必需：suki-clash、suki-clash-service、suki-clash-service-install、suki-clash-service-uninstall；Windows使用.exe。macOS放入Contents/MacOS，资源在Contents/Resources；其他平台资源相对实际可执行文件为resources/。许可证和应用logo随包；macOS保留正式bundle ID、URL协议和版本元数据。
 
-默认是**轻量包，不内置Mihomo和Geo**。缺内核检测与内核页面下载保持现有行为，不在CI临时从latest下载未固定资源。需要离线包时，可在调用脚本时显式传`--runtime-dir`，目录必须包含现有格式manifest和完整五项资源，目标、普通文件、长度及SHA-256都须匹配；没有兼容或回退格式。
+所有正式包必须内置 **Mihomo、Country.mmdb、ASN.mmdb、geoip.dat、geosite.dat**，`--runtime-dir`为必填。CI先由`packaging/runtime.py --resolve runtime-lock.json`读取官方发行元数据，记录当轮六架构内核及四份Geo的URL、长度和上游SHA-256，作为共享artifact。每个runner使用同一份快照下载，校验后解压内核、生成应用现有格式的manifest，再交给打包脚本复核。资源缺失、损坏或上游latest文件在构建期间发生变化均导致失败，不生成缺资源的包。内核采用官方稳定版，Geo采用应用默认来源；快照随Actions artifacts保留14天，重现当轮资源时使用该快照，不重新解析latest。
+
+本地准备：`python packaging/runtime.py --resolve /tmp/runtime-lock.json`，然后执行`python packaging/runtime.py --lock /tmp/runtime-lock.json --target aarch64-apple-darwin --output /tmp/suki-runtime`；向打包脚本传入`--runtime-dir /tmp/suki-runtime`。首次启动复用现有bootstrap校验和安装，已有用户内核和数据库不被覆盖。源码开发运行仍允许没有随包资源。
+
+工作流的checkout、Python、.NET和artifact Actions已切换到原生Node.js 24版本；MSVC使用Visual Studio自带Developer PowerShell，移除仍依赖Node.js 20的工具链Action。Linux密钥库oo7禁用默认Tokio后端，显式使用与GPUI门户相同的async-io后端，避免ashpd互斥feature冲突。
+
+GitHub下载代理由共享HTTP规则处理，覆盖内核版本／归档、Geo手动下载、公开订阅／覆写／图标，以及应用更新清单和完整包；携带Authorization的请求不转交第三方代理。内核自身按geox-url发起的后台更新由Mihomo负责，不经过应用HTTP规则。CI从官方GitHub获取资源，不读取用户下载代理设置。
 
 Linux使用成熟linuxdeploy打包动态依赖，固定`1-alpha-20251107-1`及各架构SHA-256，再由vpk生成AppImage；不自己扫描／复制依赖协议。AppImage的可用性仍受目标glibc、Vulkan／图形驱动、桌面环境、服务授权工具和发行版限制，不能仅靠生成文件宣称所有Linux可运行。
 
@@ -56,3 +62,5 @@ macOS只有NSBundle具有bundleIdentifier时才执行订阅协议注册，cargo 
 本轮自动检查：根项目346项通过、16项条件忽略；严格Clippy与格式／差异检查通过。包含包身份／路径／大小／摘要、损坏下载不覆盖已暂存文件、开发运行手动更新、安装确认取消、索引错误不改正文等回归。实际GitHub六平台构建、正式签名／公证、真实应用更新及helper升级尚未执行；macOS隔离占位打包成功不等于正式应用安装更新验收通过。
 
 补充实际打包：使用本轮真实debug主程序及三个真实服务工具，已生成未签名／未公证macOS ARM64 pkg、Portable.zip及full.nupkg（/tmp/suki-velopack-real-macos-retry-20261103/Releases）。四程序存在、正式bundle ID、feed大小／SHA-256及signed:false已核验。未运行或安装这些产物；这仍不是release优化构建、签名或端到端更新验收。
+
+2026-11-05修复验证：Linux两架构依赖图均只启用ashpd/async-io；本机Rust全量352项通过、16项忽略，随后新增共享代理设置回归通过，严格Clippy／fmt通过；Python打包回归4项通过。真实下载Mihomo v1.19.33和四份Geo并验证上游摘要，macOS ARM64已暂存四个应用／服务程序和五份完整离线资源，复核包内manifest、大小及摘要；未生成本轮正式安装器。默认get.syf.sh按应用User-Agent请求版本和实际tags API成功，Raw、GeoIP与内核归档完整内容摘要与官方直连一致。Linux交叉编译因本机缺aarch64-linux-gnu-gcc未完成；真实六平台CI、Windows Developer PowerShell和Linux AppImage运行仍待runner验证。

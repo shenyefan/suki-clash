@@ -25,7 +25,10 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
       - id: version
         name: Validate version and tag
         shell: python
@@ -37,6 +40,15 @@ jobs:
               assert os.environ["GITHUB_REF_NAME"] == "v" + version, "tag must match Cargo.toml version"
           with open(os.environ["GITHUB_OUTPUT"], "a") as output:
               output.write("version=" + version + "\n")
+      - name: Snapshot runtime assets for every architecture
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python packaging/runtime.py --resolve runtime-lock.json
+      - uses: actions/upload-artifact@v6
+        with:
+          name: runtime-lock
+          path: runtime-lock.json
+          retention-days: 14
 
   build:
     needs: version
@@ -70,21 +82,29 @@ jobs:
       - name: Enable Windows checkout long paths
         if: runner.os == 'Windows'
         run: git config --global core.longpaths true
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/setup-dotnet@v5
         with:
           dotnet-version: "8.0.x"
       - name: Select matching MSVC toolchain
         if: runner.os == 'Windows'
-        uses: ilammy/msvc-dev-cmd@v1
-        with:
-          arch: ${{ matrix.msvc_arch }}
+        shell: pwsh
+        run: |
+          $before = @{}
+          Get-ChildItem Env: | ForEach-Object { $before[$_.Name] = $_.Value }
+          $vswhere = "${env:ProgramFiles(x86)}/Microsoft Visual Studio/Installer/vswhere.exe"
+          $installation = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.${{ matrix.msvc_arch == 'arm64' && 'ARM64' || 'x86.x64' }} -property installationPath
+          if (-not $installation) { throw "Visual Studio C++ toolchain not found" }
+          & "$installation/Common7/Tools/Launch-VsDevShell.ps1" -SkipAutomaticLocation -Arch ${{ matrix.msvc_arch == 'x64' && 'amd64' || 'arm64' }} -HostArch amd64
+          Get-ChildItem Env: | Where-Object { $before[$_.Name] -ne $_.Value } | ForEach-Object {
+            "$($_.Name)=$($_.Value)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          }
       - name: Link the Windows runtime statically for portable builds
         if: runner.os == 'Windows'
         shell: pwsh
@@ -102,6 +122,15 @@ jobs:
       - name: Install pinned Velopack CLI
         shell: bash
         run: dotnet tool install vpk --version "$VELOPACK_VERSION" --tool-path .tools
+      - uses: actions/download-artifact@v7
+        with:
+          name: runtime-lock
+          path: ${{ runner.temp }}/runtime-input
+      - name: Prepare verified offline runtime
+        shell: bash
+        run: python packaging/runtime.py --lock "$RUNNER_TEMP/runtime-input/runtime-lock.json" --target "${{ matrix.target }}" --output "$RUNNER_TEMP/runtime"
+      - name: Check packaging regressions
+        run: python -m unittest discover -s packaging -p 'test_*.py'
       - name: Build application
         run: cargo build --locked --release --target ${{ matrix.target }} --bin suki-clash
       - name: Build service and management tools
@@ -123,9 +152,9 @@ jobs:
         env:
           BUILD_TARGET: ${{ matrix.target }}
         run: |
-          python packaging/velopack.py --target "$BUILD_TARGET" --app-dir "target/$BUILD_TARGET/release" --service-dir "platform-service/target/$BUILD_TARGET/release" --work "$RUNNER_TEMP/package" --vpk "$GITHUB_WORKSPACE/.tools/vpk"
+          python packaging/velopack.py --target "$BUILD_TARGET" --app-dir "target/$BUILD_TARGET/release" --service-dir "platform-service/target/$BUILD_TARGET/release" --work "$RUNNER_TEMP/package" --runtime-dir "$RUNNER_TEMP/runtime" --vpk "$GITHUB_WORKSPACE/.tools/vpk"
       - name: Upload packages and isolated release feed
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: packages-${{ matrix.channel }}
           path: ${{ runner.temp }}/package/Releases/*
@@ -142,7 +171,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           pattern: packages-*
           path: packages

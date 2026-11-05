@@ -66,7 +66,7 @@ impl Actor {
                 let updates = &self.updates;
                 let observer = &self.observer;
                 release
-                    .download(&self.http, shutdown, |received, total| {
+                    .download(&self.http, &self.paths, shutdown, |received, total| {
                         if let Some(progress) = &mut snapshot.progress {
                             progress.received = received;
                             progress.total = Some(total);

@@ -1,0 +1,10 @@
+Bundled runtime sources
+
+Mihomo (GPL-3.0): https://github.com/MetaCubeX/mihomo
+Source for the bundled version: https://github.com/MetaCubeX/mihomo/releases
+Geo databases: https://github.com/MetaCubeX/meta-rules-dat
+Database source and license notices: https://github.com/MetaCubeX/meta-rules-dat/blob/meta/README.md
+GeoLite2 ASN data created by MaxMind: https://www.maxmind.com
+
+The workflow's runtime-lock artifact records the exact upstream version,
+asset URLs, byte lengths and SHA-256 hashes used for all six packages.

@@ -36,9 +36,7 @@ def run(args, **kwargs):
 
 
 def copy_runtime(source, target, runtime_target):
-    """An optional offline bundle follows the app's existing exact manifest contract."""
-    if source is None:
-        return
+    """The required offline bundle follows the app's existing exact manifest contract."""
     manifest = json.loads((source / "manifest.json").read_text())
     names = {"mihomo.exe" if runtime_target.startswith("windows-") else "mihomo",
              "Country.mmdb", "ASN.mmdb", "geoip.dat", "geosite.dat"}
@@ -49,7 +47,7 @@ def copy_runtime(source, target, runtime_target):
     target.mkdir(parents=True)
     for asset in manifest["assets"]:
         path = source / asset["name"]
-        if path.is_symlink() or not path.is_file() or path.stat().st_size != asset["size"]:
+        if path.is_symlink() or not path.is_file() or not 0 < asset["size"] <= 256 * 1024 * 1024 or path.stat().st_size != asset["size"]:
             raise ValueError("runtime asset type or size mismatch")
         if hashlib.sha256(path.read_bytes()).hexdigest() != asset["sha256"]:
             raise ValueError("runtime asset digest mismatch")
@@ -103,6 +101,7 @@ def prepare(args, version, os_name, arch):
             raise ValueError(f"required binary missing or invalid: {source}")
         shutil.copy2(source, binaries / source.name)
     shutil.copytree(ROOT / "licenses", resources / "licenses")
+    shutil.copy2(ROOT / "packaging/runtime-sources.txt", resources / "licenses/runtime-sources.txt")
     shutil.copy2(ROOT / "platform-service/LICENSE", resources / "licenses/service-GPL-3.0.txt")
     shutil.copy2(ROOT / "assets/logo.png", resources / "logo.png")
     runtime_os = {"win": "windows", "osx": "macos", "linux": "linux"}[os_name]
@@ -133,7 +132,7 @@ def main():
     parser.add_argument("--app-dir", type=Path, required=True)
     parser.add_argument("--service-dir", type=Path, required=True)
     parser.add_argument("--work", type=Path, required=True)
-    parser.add_argument("--runtime-dir", type=Path)
+    parser.add_argument("--runtime-dir", type=Path, required=True)
     parser.add_argument("--vpk", default="vpk")
     parser.add_argument("--prepare-only", action="store_true")
     args = parser.parse_args()
@@ -193,7 +192,7 @@ def main():
     (output / "RELEASES").unlink(missing_ok=True)
     (output / f"build.{channel}.json").write_text(json.dumps({
         "version": version, "target": args.target, "channel": channel, "velopack": VPK_VERSION,
-        "signed": signed, "offline_runtime": args.runtime_dir is not None,
+        "signed": signed, "offline_runtime": True,
     }, indent=2) + "\n")
 
 

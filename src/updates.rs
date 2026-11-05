@@ -105,9 +105,9 @@ fn validate_feed(bytes: &[u8]) -> Result<VelopackAssetFeed, String> {
     }
     Ok(feed)
 }
-async fn request(http: &Http, url: &str) -> Result<reqwest::Response, String> {
+async fn request(http: &Http, paths: &AppPaths, url: &str) -> Result<reqwest::Response, String> {
     http.client(&Transport::System, true)?
-        .get(url)
+        .get(crate::network::github_proxy_url(paths, url, "")?)
         .header("User-Agent", crate::network::DEFAULT_USER_AGENT)
         .timeout(Duration::from_secs(600))
         .send()
@@ -132,7 +132,7 @@ pub(crate) async fn check(http: &Http, paths: &AppPaths) -> Result<Check, String
         repository()?,
         channel()
     );
-    let mut response = request(http, &url).await?;
+    let mut response = request(http, paths, &url).await?;
     let mut bytes = Vec::new();
     while let Some(chunk) = response.chunk().await.map_err(crate::network::error)? {
         if bytes.len().saturating_add(chunk.len()) > 2 * 1024 * 1024 {
@@ -181,6 +181,7 @@ impl Release {
     pub(crate) async fn download(
         &self,
         http: &Http,
+        paths: &AppPaths,
         mut cancel: tokio::sync::watch::Receiver<bool>,
         mut progress: impl FnMut(u64, u64),
     ) -> Result<(), String> {
@@ -192,7 +193,7 @@ impl Release {
             asset.FileName
         );
         let transfer = async {
-            let response = request(http, &url).await?;
+            let response = request(http, paths, &url).await?;
             stage_response(response, asset, self.directory.path(), &mut progress).await
         };
         tokio::select! {

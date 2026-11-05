@@ -1,4 +1,5 @@
 //! Reusable HTTP clients owned by the application worker, separated by transport policy.
+use crate::storage::AppPaths;
 use reqwest::{Client, Proxy, redirect::Policy};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -11,6 +12,45 @@ pub(crate) enum Transport {
     },
     System,
 }
+/// GitHub hosts whose public downloads may be routed through the configured download proxy.
+const GITHUB_HOSTS: [&str; 7] = [
+    "github.com",
+    "api.github.com",
+    "gist.github.com",
+    "codeload.github.com",
+    "raw.githubusercontent.com",
+    "gist.githubusercontent.com",
+    "objects.githubusercontent.com",
+];
+/// Prefixes the proxy before public GitHub URLs; authenticated requests never leave GitHub.
+pub(crate) fn github_proxy_url(
+    paths: &AppPaths,
+    url: &str,
+    authorization: &str,
+) -> Result<String, String> {
+    let github = authorization.is_empty()
+        && url::Url::parse(url).is_ok_and(|parsed| {
+            parsed.scheme() == "https"
+                && parsed
+                    .host_str()
+                    .is_some_and(|host| GITHUB_HOSTS.contains(&host))
+        });
+    if !github {
+        return Ok(url.to_owned());
+    }
+    let repository =
+        crate::storage::Repository::open(paths.clone()).map_err(|_| "无法读取下载设置")?;
+    let settings =
+        crate::preferences::values(&repository, crate::preferences::SettingsKind::General)
+            .map_err(|_| "无法读取下载设置")?;
+    let proxy = settings.get("GitHubProxy").map_or("", |value| value.trim());
+    Ok(if proxy.is_empty() {
+        url.to_owned()
+    } else {
+        format!("{}/{url}", proxy.trim_end_matches('/'))
+    })
+}
+
 /// Subscription servers recognize Clash Verge first; retain this application's identity as well.
 pub(crate) const DEFAULT_USER_AGENT: &str = concat!(
     "clash-verge/v",
@@ -110,6 +150,50 @@ pub(crate) fn error(error: reqwest::Error) -> String {
 #[cfg(test)]
 mod client_policy_tests {
     use super::*;
+    #[test]
+    fn github_proxy_prefixes_public_github_urls_only() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = AppPaths::isolated(root.path());
+        for url in [
+            "https://github.com/MetaCubeX/mihomo/releases/download/v1/a.gz",
+            "https://raw.githubusercontent.com/a/b/main/c.yaml",
+            "https://gist.githubusercontent.com/a/b/raw/c",
+            "https://api.github.com/repos/MetaCubeX/mihomo/tags?per_page=100",
+            "https://github.com/shenyefan/suki-clash/releases/latest/download/releases.linux-x64.json",
+        ] {
+            assert_eq!(
+                github_proxy_url(&paths, url, "").unwrap(),
+                format!("https://get.syf.sh/{url}")
+            );
+        }
+        for (url, authorization) in [
+            ("https://example.com/a.yaml", ""),
+            ("https://github.com.evil.test/a", ""),
+            ("https://api.github.com/gists", "token"),
+        ] {
+            assert_eq!(github_proxy_url(&paths, url, authorization).unwrap(), url);
+        }
+    }
+    #[test]
+    fn github_proxy_uses_current_settings_including_disabled_and_custom_prefix() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = AppPaths::isolated(root.path());
+        let repository = crate::storage::Repository::open(paths.clone()).unwrap();
+        let namespace = crate::storage::Namespace::parse("settings").unwrap();
+        let url = "https://github.com/a/b/releases/download/v1/core.gz";
+        for prefix in ["https://mirror.test/base/", ""] {
+            let mut settings =
+                crate::preferences::defaults(crate::preferences::SettingsKind::General);
+            settings.insert("GitHubProxy".into(), prefix.into());
+            repository.save(&namespace, &settings).unwrap();
+            let expected = if prefix.is_empty() {
+                url.to_owned()
+            } else {
+                format!("{}{url}", prefix)
+            };
+            assert_eq!(github_proxy_url(&paths, url, "").unwrap(), expected);
+        }
+    }
     #[test]
     fn explicit_insecure_subscription_client_never_changes_default_tls_policy() {
         let http = Http::default();
