@@ -14,7 +14,6 @@ impl Actor {
         self.snapshot.operation_module = Some("updater");
         match command {
             Command::Check => {
-                self.progress("检查应用更新");
                 let release = tokio::select! { biased;
                     _=shutdown.changed()=>return Err("应用退出，更新检查已取消".into()),
                     result=crate::updates::check(&self.http,&self.paths)=>result?,
@@ -42,14 +41,9 @@ impl Actor {
                     release.as_ref().map(|release| release.version().into());
                 self.snapshot.app_update.checked = true;
                 self.app_release = release.map(|release| *release);
-                self.completed(
-                    if self.snapshot.app_update.available.is_some() {
-                        "发现应用更新"
-                    } else {
-                        "当前已是最新版本"
-                    }
-                    .into(),
-                );
+                if self.snapshot.app_update.available.is_none() {
+                    self.completed("当前已是最新版本".into());
+                }
             }
             Command::Download { expected } => {
                 let release = self
@@ -77,7 +71,6 @@ impl Actor {
                     .await?;
                 self.snapshot.app_update.downloaded = Some(expected);
                 self.snapshot.operation_committed = true;
-                self.completed("应用更新已下载，可安装并重启".into());
             }
         }
         Ok(())

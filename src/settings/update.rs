@@ -22,7 +22,9 @@ pub(super) fn open(window: &mut Window, cx: &mut App) {
                 let state = core::controller(cx).read(cx).snapshot().app_update.clone();
                 if let Some(url) = &state.manual_url {
                     cx.open_url(url);
-                } else {
+                } else if state.downloaded.is_some() {
+                    prompt_install(state, window, cx);
+                } else if state.available.is_some() {
                     show(state, window, cx);
                 }
             }
@@ -51,6 +53,28 @@ fn show(state: State, window: &mut Window, cx: &mut App) -> Entity<UpdateStatus>
     status
 }
 
+fn prompt_install(state: State, window: &mut Window, cx: &mut App) {
+    let Some(expected) = state.downloaded else {
+        return;
+    };
+    window.open_alert_dialog(cx, move |dialog, window, cx| {
+        let expected = expected.clone();
+        ui::modal_alert(dialog, window, cx)
+            .title(format!("安装 {expected} 并重启？"))
+            .description("更新已下载。安装前会关闭内核并清理系统代理，随后重新启动应用。")
+            .footer(ui::dialog_footer("安装并重启"))
+            .on_ok(move |_, window, cx| {
+                let state = &core::controller(cx).read(cx).snapshot().app_update;
+                if state.downloaded.as_deref() == Some(expected.as_str()) {
+                    core::apply_app_update(expected.clone(), cx);
+                } else {
+                    ui::show_error("应用更新信息已变化，请重新检查".into(), window, cx);
+                }
+                true
+            })
+    });
+}
+
 struct UpdateStatus {
     state: State,
     busy: bool,
@@ -72,20 +96,21 @@ impl UpdateStatus {
         let Some(expected) = self.state.available.clone() else {
             return;
         };
-        let owner = cx.weak_entity();
         match core::execute(
             core::Command::AppUpdate(Command::Download { expected }),
             window,
             cx,
-            move |_, _, cx| {
-                let _ = owner.update(cx, |this, cx| {
-                    this.busy = false;
-                    this.state = core::controller(cx).read(cx).snapshot().app_update.clone();
-                    cx.notify();
-                });
+            move |result, window, cx| {
+                if result.is_ok() {
+                    let state = core::controller(cx).read(cx).snapshot().app_update.clone();
+                    prompt_install(state, window, cx);
+                }
             },
         ) {
-            Ok(_) => self.busy = true,
+            Ok(_) => {
+                self.busy = true;
+                window.close_dialog(cx);
+            }
             Err(error) => ui::show_error(error, window, cx),
         }
         cx.notify();
@@ -95,31 +120,11 @@ impl UpdateStatus {
         if self.busy {
             return;
         }
-        let Some(expected) = self.installable_version().map(str::to_owned) else {
+        let Some(_) = self.installable_version() else {
             return;
         };
-        let owner = cx.weak_entity();
-        window.open_alert_dialog(cx, move |dialog, window, cx| {
-            let owner = owner.clone();
-            let expected = expected.clone();
-            ui::modal_alert(dialog, window, cx)
-                .title(format!("安装 {expected} 并重启？"))
-                .description("安装前会关闭内核并清理系统代理，随后重新启动应用。")
-                .footer(ui::dialog_footer("安装并重启"))
-                .on_ok(move |_, window, cx| {
-                    let current = owner
-                        .read_with(cx, |this, _| {
-                            !this.busy && this.installable_version() == Some(expected.as_str())
-                        })
-                        .unwrap_or(false);
-                    if current {
-                        core::apply_app_update(expected.clone(), cx);
-                    } else {
-                        ui::show_error("应用更新信息已变化，请重新检查".into(), window, cx);
-                    }
-                    true
-                })
-        });
+        window.close_dialog(cx);
+        prompt_install(self.state.clone(), window, cx);
     }
 }
 
@@ -127,9 +132,12 @@ impl Render for UpdateStatus {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         ui::form()
             .gap(space::MD)
-            .child(ui::field_label("当前版本", env!("CARGO_PKG_VERSION")))
+            .child(ui::muted(
+                format!("当前版本 {}", env!("CARGO_PKG_VERSION")),
+                cx,
+            ))
             .when_some(self.state.available.clone(), |view, version| {
-                view.child(ui::field_label("可用版本", version))
+                view.child(format!("新版本 {version}"))
             })
             .child(ui::muted(
                 if self.busy {
@@ -245,7 +253,8 @@ mod tests {
             window.render_frame(cx);
             window.click("app-update-primary", cx);
             window.render_frame(cx);
-            assert!(window.within("dialog-1").find("dialog-commit").visible());
+            assert!(window.find("dialog-commit").visible());
+            assert!(window.find_all("app-update-primary").is_empty());
             window.click("dialog-cancel", cx);
             assert_eq!(status.read(cx).installable_version(), Some("0.2.0"));
             assert!(!status.read(cx).busy);
