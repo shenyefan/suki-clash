@@ -42,6 +42,34 @@ fn write_manifest(bundle: &Path, manifest: &Manifest) {
 }
 
 #[test]
+fn packaged_runtime_is_read_directly_from_the_resource_directory() {
+    let (root, paths, bundle) = fixture();
+    let package = root.path().join("package");
+    let executable_dir = if cfg!(target_os = "macos") {
+        package.join("Suki Clash.app/Contents/MacOS")
+    } else {
+        package.clone()
+    };
+    fs::create_dir_all(&executable_dir).unwrap();
+    let resources = if cfg!(target_os = "macos") {
+        package.join("Suki Clash.app/Contents/Resources")
+    } else {
+        package.join("resources")
+    };
+    fs::rename(bundle, &resources).unwrap();
+    let discovered = bundle_beside(&executable_dir.join("suki-clash")).unwrap();
+    assert_eq!(discovered, resources);
+    prepare(&paths, &discovered, || false).unwrap();
+    let installed = paths.directory(DirectoryKind::Core);
+    for name in [core_name(), GEO[0], GEO[1], GEO[2], GEO[3]] {
+        assert_eq!(
+            fs::read(installed.join(name)).unwrap(),
+            fs::read(resources.join(name)).unwrap()
+        );
+    }
+}
+
+#[test]
 fn first_open_installs_all_files_and_second_open_keeps_user_versions() {
     let (_root, paths, bundle) = fixture();
     prepare(&paths, &bundle, || false).unwrap();

@@ -44,12 +44,9 @@ fn bundle_beside(executable: &Path) -> Result<PathBuf, String> {
     let parent = executable.parent().ok_or("应用路径没有父目录")?;
     // The same relative contract is used by CI and the macOS app packager.
     if cfg!(target_os = "macos") && parent.file_name().is_some_and(|name| name == "MacOS") {
-        Ok(parent
-            .parent()
-            .ok_or("应用包目录无效")?
-            .join("Resources/runtime"))
+        Ok(parent.parent().ok_or("应用包目录无效")?.join("Resources"))
     } else {
-        Ok(parent.join("resources/runtime"))
+        Ok(parent.join("resources"))
     }
 }
 

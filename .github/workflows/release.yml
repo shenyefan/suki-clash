@@ -214,19 +214,20 @@ jobs:
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
           gh api "repos/$GH_REPO/releases/generate-notes" -f tag_name="$RELEASE_TAG" --jq .body > generated-notes.md
-          # The full-changelog link stays on its own line after a blank line.
+          # Separate generated notes from usage instructions and give the comparison its own section.
           python3 - <<'PYTHON'
           import pathlib
           lines = pathlib.Path("generated-notes.md").read_text().splitlines()
           out = []
           for line in lines:
               if line.startswith("**Full Changelog**:"):
-                  line = "**完整变更**：" + line.split(":", 1)[1].strip()
                   if out and out[-1]:
                       out.append("")
+                  out.extend(["## 完整变更", ""])
+                  line = line.split(":", 1)[1].strip()
               out.append(line)
           with open("release-notes.md", "a", encoding="utf-8") as notes:
-              notes.write("\n".join(out) + "\n")
+              notes.write("\n" + "\n".join(out) + "\n")
           PYTHON
           if gh release view "$RELEASE_TAG" --json isDraft,assets > release.json; then
             python3 -c 'import json; assert json.load(open("release.json"))["isDraft"], "refusing to change a published release"'

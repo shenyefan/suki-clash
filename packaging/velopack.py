@@ -41,7 +41,7 @@ def copy_runtime(source, target, runtime_target):
         raise ValueError("runtime bundle version/target does not match the application")
     if {asset["name"] for asset in manifest["assets"]} != names or len(manifest["assets"]) != len(names):
         raise ValueError("runtime bundle must contain the exact five approved assets")
-    target.mkdir(parents=True)
+    target.mkdir(parents=True, exist_ok=True)
     for asset in manifest["assets"]:
         path = source / asset["name"]
         if path.is_symlink() or not path.is_file() or not 0 < asset["size"] <= 256 * 1024 * 1024 or path.stat().st_size != asset["size"]:
@@ -97,13 +97,9 @@ def prepare(args, version, os_name, arch):
         if source.is_symlink() or not source.is_file():
             raise ValueError(f"required binary missing or invalid: {source}")
         shutil.copy2(source, binaries / source.name)
-    shutil.copytree(ROOT / "licenses", resources / "licenses")
-    shutil.copy2(ROOT / "packaging/runtime-sources.txt", resources / "licenses/runtime-sources.txt")
-    shutil.copy2(ROOT / "platform-service/LICENSE", resources / "licenses/service-GPL-3.0.txt")
-    shutil.copy2(ROOT / "assets/logo.png", resources / "logo.png")
     runtime_os = {"win": "windows", "osx": "macos", "linux": "linux"}[os_name]
     runtime_arch = {"x64": "x86_64", "arm64": "aarch64"}[arch]
-    copy_runtime(args.runtime_dir, resources / "runtime", f"{runtime_os}-{runtime_arch}")
+    copy_runtime(args.runtime_dir, resources, f"{runtime_os}-{runtime_arch}")
     if os_name == "linux":
         machine, digest = LINUXDEPLOY[arch]
         tool = args.work / "linuxdeploy.AppImage"
@@ -155,7 +151,7 @@ def main():
     if platform.system() != expected_host:
         command.append(f"[{os_name}]")
     command.extend(["--skip-updates", "--yes", "pack", "--packId", PACK_ID,
-               "--packTitle", "Suki Clash", "--packAuthors", "Suki", "--packVersion", version,
+               "--packTitle", "Suki Clash", "--packAuthors", "Moenya", "--packVersion", version,
                "--packDir", package, "--mainExe", "suki-clash.exe" if os_name == "win" else "suki-clash",
                "--runtime", f"{os_name}-{arch}", "--channel", channel,
                "--delta", "None", "--outputDir", output])
