@@ -1,0 +1,28 @@
+// Shared native file properties; each binary supplies its own Cargo version.
+1 VERSIONINFO
+FILEVERSION SUKI_VERSION_MAJOR,SUKI_VERSION_MINOR,SUKI_VERSION_PATCH,0
+PRODUCTVERSION SUKI_VERSION_MAJOR,SUKI_VERSION_MINOR,SUKI_VERSION_PATCH,0
+FILEFLAGSMASK 0x3fL
+FILEFLAGS 0x0L
+FILEOS 0x40004L
+FILETYPE 0x1L
+FILESUBTYPE 0x0L
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904B0"
+        BEGIN
+            VALUE "CompanyName", "Moenya\0"
+            VALUE "FileDescription", SUKI_FILE_DESCRIPTION "\0"
+            VALUE "FileVersion", SUKI_VERSION "\0"
+            VALUE "LegalCopyright", L"Copyright \x00a9 Moenya\0"
+            VALUE "OriginalFilename", SUKI_ORIGINAL_FILENAME "\0"
+            VALUE "ProductName", "Suki Clash\0"
+            VALUE "ProductVersion", SUKI_VERSION "\0"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x0409, 1200
+    END
+END

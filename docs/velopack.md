@@ -20,7 +20,11 @@ Windows便携版是**免安装程序包**，用户配置仍沿当前平台应用
 
 ## 文件结构与资源
 
-`packaging/velopack.py`要求传入已构建主程序目录、服务目录、目标及新的工作目录；`--prepare-only`只检查和暂存。仅两个可执行文件必需：`suki-clash`、`suki-clash-service`；Windows 使用 `.exe`。安装／卸载由服务程序自身承接，构建目录内其他工具不会随包。macOS放入Contents/MacOS，资源在Contents/Resources；其他平台资源相对实际可执行文件为resources/。许可证和应用logo随包；macOS保留正式bundle ID、URL协议和版本元数据。
+`packaging/velopack.py`要求传入已构建主程序目录、服务目录、目标及新的工作目录；`--prepare-only`只检查和暂存。仅两个可执行文件必需：`suki-clash`、`suki-clash-service`；Windows 使用 `.exe`。安装／卸载由服务程序自身承接，构建目录内其他工具不会随包。macOS放入Contents/MacOS，资源在Contents/Resources；其他平台资源相对实际可执行文件为resources/。打包作者／公司为 Moenya，Windows 两个可执行文件的公司与版权属性、macOS 应用版权同步使用 Moenya；各可执行文件版本来自所属 Cargo 包。
+
+resources 仅保留离线运行资源与必要的平台图标，不再复制 licenses 目录、协议／来源说明或 logo.png。界面及托盘使用编译进主程序的图片；macOS 保留供 Finder／Dock 使用的 suki-clash.icns，Linux 保留 AppDir 根目录下供桌面入口使用的 suki-clash.png，Windows 图标嵌入可执行文件及安装器。仓库中的原始协议文件保留。
+
+Mihomo、四份 GeoData 和 manifest.json 直接放在资源目录中，不再嵌套 runtime/。Windows 安装版与便携版使用程序旁的 resources/，Linux AppImage 内部使用 usr/bin/resources/，macOS 安装版与应用压缩包使用 Contents/Resources/。运行资源没有嵌入主程序。manifest.json 保存目标平台、文件长度和 SHA-256，首次启动按清单校验并将缺失文件复制到用户数据目录 core/；已有内核和数据库不被覆盖。因此随包资源用于离线初始化，用户目录中的副本用于实际运行及独立更新，二者承担不同职责。
 
 所有正式包必须内置 **Mihomo、Country.mmdb、ASN.mmdb、geoip.dat、geosite.dat**，`--runtime-dir`为必填。CI先由`packaging/runtime.py --resolve runtime-lock.json`读取官方发行元数据，记录当轮四架构内核及四份Geo的URL、长度和上游SHA-256，作为共享artifact。每个runner使用同一份快照下载，校验后解压内核、生成应用现有格式的manifest，再交给打包脚本复核。资源缺失、损坏或上游latest文件在构建期间发生变化均导致失败，不生成缺资源的包。内核采用官方稳定版，Geo采用应用默认来源；快照随Actions artifacts保留14天，重现当轮资源时使用该快照，不重新解析latest。
 

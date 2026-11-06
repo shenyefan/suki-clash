@@ -1,1 +1,4 @@
 1 ICON SUKI_APP_ICON
+#define SUKI_FILE_DESCRIPTION "Suki Clash Service"
+#define SUKI_ORIGINAL_FILENAME "suki-clash-service.exe"
+#include "version.rc"
