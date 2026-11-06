@@ -226,17 +226,6 @@ impl Actor {
         self.selection_recovery = Some(recovery);
         Ok(())
     }
-    fn invalidate_selection_monitor(&mut self, group: Option<&str>) {
-        let mut recovery = self.selection_recovery.take();
-        self.invalidate_monitor();
-        if let Some(recovery) = &mut recovery {
-            if let Some(group) = group {
-                recovery.pending.remove(group);
-            }
-            recovery.epoch = self.snapshot.monitor_epoch;
-        }
-        self.selection_recovery = recovery.filter(|recovery| !recovery.pending.is_empty());
-    }
     pub(super) async fn proxy_action(&mut self, action: Action) -> Result<(), String> {
         self.snapshot.operation_module = Some("proxies");
         let running = self
@@ -268,7 +257,9 @@ impl Actor {
                 if !before.selectable(&group, &node) {
                     return Err("代理组不支持此节点选择".into());
                 }
-                self.invalidate_selection_monitor(Some(&group));
+                if let Some(recovery) = &mut self.selection_recovery {
+                    recovery.pending.remove(&group);
+                }
                 client.select_proxy(&group, Some(&node)).await?;
                 let actual = client.proxies(&[]).await?;
                 if !actual.confirms_selection(&group, &node) {
@@ -310,7 +301,9 @@ impl Actor {
                 if !matches!(proxy.kind.as_str(), "URLTest" | "Fallback") {
                     return Err("此代理组不支持自动选择".into());
                 }
-                self.invalidate_selection_monitor(Some(&group));
+                if let Some(recovery) = &mut self.selection_recovery {
+                    recovery.pending.remove(&group);
+                }
                 client.select_proxy(&group, None).await?;
                 let actual = client.proxies(&[]).await?;
                 if actual
@@ -334,7 +327,6 @@ impl Actor {
                 self.snapshot.information = Some("已恢复自动选择".into());
             }
         }
-        self.invalidate_selection_monitor(None);
         self.publish(Phase::Ready, None);
         Ok(())
     }
@@ -355,7 +347,6 @@ impl Actor {
             .and_then(serde_json::Value::as_str)
             .ok_or("内核模式回读无效")?
             .to_owned();
-        self.invalidate_monitor();
         let result = async {
             client.patch_mode(mode).await?;
             let actual = client.json("/configs").await?;

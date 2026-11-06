@@ -107,7 +107,7 @@ impl SettingsPage {
         let settings_window = window.window_handle();
         let mut subscriptions = vec![
             cx.observe(&session, move |this, session, cx| {
-                let observed_core = session.read(cx).core().clone();
+                let observed_core = session.read(cx).core();
                 let observed_busy = session.read(cx).core_busy();
                 if this.kind == SettingsKind::SysProxy
                     && !observed_busy
@@ -504,8 +504,8 @@ impl SettingsPage {
         cx.notify();
     }
     pub(crate) fn reopen(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.kind == SettingsKind::General && !self.session.read(cx).core_busy() {
-            crate::core::request(crate::core::Command::AutostartStatus, window, cx);
+        if self.kind == SettingsKind::General {
+            crate::core::refresh_autostart(cx);
         }
         if self.kind == SettingsKind::Resources {
             self.refresh_resources(window, cx);

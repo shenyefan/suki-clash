@@ -5,6 +5,9 @@ use gpui_kit::{
     AnyWindowHandle, App, AppContext as _, Entity, Global, Subscription, Task, WeakEntity, Window,
 };
 
+pub(crate) struct TunServiceRequired;
+impl gpui_kit::EventEmitter<TunServiceRequired> for Controller {}
+
 type Completion = Box<dyn FnOnce(Result<(), String>, &mut Window, &mut App)>;
 pub(crate) struct Controller {
     snapshot: Snapshot,
@@ -274,6 +277,7 @@ fn install(service: Option<Service>, snapshot: Snapshot, cx: &mut App) {
                                     crate::integration::announce(level, message.into(), cx);
                                 }
                             }
+                            let recovery = snapshot.recovery;
                             let report = snapshot
                                 .error()
                                 .filter(|error| {
@@ -314,6 +318,9 @@ fn install(service: Option<Service>, snapshot: Snapshot, cx: &mut App) {
                                 });
                             if !snapshot.is_busy() {
                                 this.pending = None;
+                            }
+                            if report.is_some() && recovery == Some(super::Recovery::TunService) {
+                                cx.emit(TunServiceRequired);
                             }
                             let module = snapshot.operation_module.unwrap_or("core");
                             this.snapshot = snapshot;
@@ -406,6 +413,26 @@ pub(crate) fn request(command: Command, window: &mut Window, cx: &mut App) {
 pub(crate) fn submit(command: Command, window: &mut Window, cx: &mut App) -> Result<u64, String> {
     let operation = command.operation();
     let owner = controller(cx);
+    let snapshot = owner.read(cx).snapshot();
+    let enabling_tun = match &command {
+        Command::ToggleTun => snapshot.tun() != Some(true),
+        Command::Settings {
+            kind: crate::preferences::SettingsKind::Tun,
+            patch,
+        } => patch
+            .get("IsTunEnabled")
+            .is_some_and(|value| value == "true"),
+        _ => false,
+    };
+    if enabling_tun
+        && matches!(
+            snapshot.service_state(),
+            super::ServiceState::Unavailable(_)
+        )
+    {
+        owner.update(cx, |_, cx| cx.emit(TunServiceRequired));
+        return Err("请在虚拟网卡页安装或修复服务".into());
+    }
     let result = owner.update(cx, |this, cx| {
         if this.quitting.is_some() {
             return Err(super::ServiceError::Busy);
@@ -430,6 +457,12 @@ pub(crate) fn submit(command: Command, window: &mut Window, cx: &mut App) -> Res
         log::error!("{operation}的提交被拒绝（{message}）");
         message
     })
+}
+
+pub(crate) fn refresh_autostart(cx: &App) {
+    if let Some(service) = controller(cx).read(cx).service.as_ref() {
+        service.refresh_autostart();
+    }
 }
 
 pub(crate) fn refresh_ip(window: &mut Window, cx: &mut App) {
@@ -742,6 +775,76 @@ mod startup_notice_tests {
             div()
         }
     }
+    #[gpui_kit::test]
+    fn missing_tun_service_routes_titlebar_tray_and_settings_to_the_service_page(
+        cx: &mut TestAppContext,
+    ) {
+        use gpui_kit::{px, size, test::TestWindowExt};
+        let root = tempfile::tempdir().unwrap();
+        let service = crate::integration::Service::start(
+            crate::storage::Repository::open(crate::storage::AppPaths::isolated(root.path()))
+                .unwrap(),
+        )
+        .unwrap();
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            crate::integration::init(service, None, cx);
+            cx.set_reduce_motion(true);
+            super::controller(cx).update(cx, |owner, _| {
+                owner.snapshot.service_state =
+                    super::super::ServiceState::Unavailable("not installed".into());
+            });
+        });
+        let window = cx.open_window(size(px(1220.), px(820.)), |window, cx| {
+            let view = cx.new(|cx| crate::app::SukiApp::new(window, cx));
+            gpui_kit::base::Root::new(view, window, cx)
+        });
+        cx.run_until_parked();
+        for (index, origin) in ["titlebar", "tray", "settings"].into_iter().enumerate() {
+            cx.update_window(window.into(), |_, window, cx| {
+                window.click("nav-overview", cx);
+            })
+            .unwrap();
+            cx.run_until_parked();
+            if origin == "tray" {
+                cx.update(|cx| {
+                    crate::tray::dispatch(&crate::tray::Command::Tun, window.into(), cx)
+                });
+            }
+            cx.update_window(window.into(), |_, window, cx| match origin {
+                "titlebar" => window.click("tun", cx),
+                "tray" => {}
+                _ => window.click("nav-tun", cx),
+            })
+            .unwrap();
+            cx.run_until_parked();
+            if origin == "settings" {
+                cx.update_window(window.into(), |_, window, cx| {
+                    window.click("setting-IsTunEnabled", cx);
+                })
+                .unwrap();
+                cx.run_until_parked();
+            }
+            cx.update_window(window.into(), |_, window, cx| {
+                window.render_frame(cx);
+                assert!(
+                    !window.find_all("setting-IsTunEnabled").is_empty(),
+                    "{origin}, service: {:?}",
+                    super::controller(cx).read(cx).snapshot().service_state()
+                );
+                assert!(!super::controller(cx).read(cx).is_busy());
+                assert_eq!(super::controller(cx).read(cx).snapshot().request_id(), None);
+                assert!(super::controller(cx).read(cx).snapshot().tun() != Some(true));
+                assert_eq!(
+                    crate::ui::notifications::current(window, cx).len(),
+                    index + 1
+                );
+            })
+            .unwrap();
+        }
+        crate::integration::finish_test_services(cx);
+    }
+
     #[gpui_kit::test]
     fn first_window_reports_missing_core_and_geodata_once_each(cx: &mut TestAppContext) {
         let root = tempfile::tempdir().unwrap();

@@ -141,6 +141,7 @@ fn send(
 #[derive(Clone, Default)]
 pub(super) struct ProbeControl {
     pub(super) revision: u64,
+    pub(super) proxies: u64,
 }
 pub(super) async fn run(
     paths: AppPaths,
@@ -186,6 +187,9 @@ pub(super) async fn run(
     let mut probe_revision = refresh
         .as_ref()
         .map_or(0, |control| control.borrow().revision);
+    let mut control_revision = refresh
+        .as_ref()
+        .map_or(0, |control| control.borrow().proxies);
     let mut probe: Option<tokio::task::JoinHandle<Probe>> = None;
     let mut scope = None;
     let mut flush = tokio::time::interval(Duration::from_millis(200));
@@ -236,6 +240,7 @@ pub(super) async fn run(
                             else {
                                 let request = receiver.borrow_and_update().clone();
                                 if probe_revision != request.revision { probe_requested=true; probe_revision=request.revision; }
+                                if control_revision != request.proxies { last_control=None; control_failures=0; control_revision=request.proxies; }
                                 send(&runtime,&updates,&observer);
                             }
                         }

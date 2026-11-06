@@ -14,7 +14,7 @@ use crate::{
 use gpui_kit::{
     assets::IconName,
     component::{
-        ActiveTheme, Icon, Selectable, Sizable, TitleBar,
+        ActiveTheme, Disableable, Icon, Selectable, Sizable, TitleBar,
         button::{Button, ButtonVariants},
         h_flex,
         scroll::ScrollableElement,
@@ -55,6 +55,7 @@ pub(crate) struct SukiApp {
     settings: Vec<(SettingsKind, Entity<SettingsPage>)>,
     _session_subscription: Subscription,
     _settings_subscription: Subscription,
+    _tun_service_subscription: Subscription,
 }
 
 impl SukiApp {
@@ -97,6 +98,15 @@ impl SukiApp {
                 self::window::set_background(event.backdrop(), window);
                 ui::configure_theme(cx);
                 cx.notify();
+            },
+        );
+        let tun_service_subscription = cx.subscribe_in(
+            &crate::core::controller(cx),
+            window,
+            |this, _, _: &crate::core::TunServiceRequired, window, cx| {
+                this.navigate(Page::Tun, cx);
+                let main = window.window_handle();
+                cx.defer(move |cx| crate::desktop::show_main(main, cx));
             },
         );
         let saved = crate::integration::read("settings", cx);
@@ -151,6 +161,7 @@ impl SukiApp {
             settings,
             _session_subscription: subscription,
             _settings_subscription: settings_subscription,
+            _tun_service_subscription: tun_service_subscription,
         }
     }
 
@@ -468,12 +479,14 @@ impl Render for SukiApp {
                                     system_proxy,
                                     cx,
                                 )
+                                .disabled(self.session.read(cx).core_busy())
                                 .on_click(move |_, window, cx| {
                                     ui::request_command("切换系统代理", window, cx)
                                 }),
                             ))
                             .child(window::titlebar_control(
                                 ui::status_toggle("tun", IconName::Network, "虚拟网卡", tun, cx)
+                                    .disabled(self.session.read(cx).core_busy())
                                     .on_click(move |_, window, cx| {
                                         ui::request_command("切换虚拟网卡", window, cx)
                                     }),

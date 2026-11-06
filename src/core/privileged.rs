@@ -21,9 +21,9 @@ fn response<T>(response: suki_service::Response<T>) -> Result<T, String> {
     response.data.ok_or_else(|| "后台服务未返回结果".into())
 }
 pub(super) async fn require_ready() -> Result<(), String> {
-    let version = suki_service::get_version().await.map_err(|error| {
-        crate::logging::diagnostic_error("后台服务未就绪，请在虚拟网卡页安装或修复服务", error)
-    })?;
+    let version = suki_service::get_version()
+        .await
+        .map_err(|error| format!("后台服务未就绪，请在虚拟网卡页安装或修复服务（{error}）"))?;
     let version = response(version)?;
     if version.protocol != ProtocolVersion::current() {
         return Err("后台服务协议不一致，请修复服务".into());

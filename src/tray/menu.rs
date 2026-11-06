@@ -47,6 +47,7 @@ pub(super) fn context_revision(snapshot: &core::Snapshot, busy: bool, profiles: 
     (snapshot.phase() == core::Phase::Ready).hash(&mut hash);
     snapshot.system_proxy().enabled().hash(&mut hash);
     snapshot.tun().hash(&mut hash);
+    matches!(snapshot.service_state(), core::ServiceState::Unavailable(_)).hash(&mut hash);
     snapshot
         .profile()
         .map(|profile| (profile.id(), profile.name()))
@@ -218,7 +219,9 @@ pub(super) fn build(
         ),
         (
             "虚拟网卡",
-            ready && !busy,
+            !busy
+                && (ready
+                    || matches!(snapshot.service_state(), core::ServiceState::Unavailable(_))),
             Some(snapshot.tun() == Some(true)),
             Command::Tun,
         ),

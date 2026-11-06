@@ -153,6 +153,9 @@ async fn late_provider_selection_settles_without_overwriting_new_choices_and_exp
         "missing cold groups must remain pending"
     );
     loaded.store(true, Ordering::SeqCst);
+    let epoch = actor.snapshot.monitor_epoch;
+    let mut monitor = actor.monitor.subscribe();
+    monitor.borrow_and_update();
     actor
         .proxy_action(Action::Select {
             group: "g".into(),
@@ -162,6 +165,12 @@ async fn late_provider_selection_settles_without_overwriting_new_choices_and_exp
         })
         .await
         .unwrap();
+    assert_eq!(actor.snapshot.monitor_epoch, epoch);
+    assert!(
+        !monitor.has_changed().unwrap(),
+        "node selection must retain active streams"
+    );
+    assert!(monitor.borrow().is_some());
     actor.settle_proxy_selections().await.unwrap();
     assert_eq!(
         selected.lock().unwrap().get("g").map(String::as_str),
@@ -740,6 +749,47 @@ async fn malformed_json_does_not_close_executor_and_corrected_files_are_reread()
         // The completion snapshot can arrive before its reservation is released.
         tokio::task::yield_now().await;
     }
+    let worker = service.shutdown().unwrap();
+    tokio::task::spawn_blocking(move || worker.join().unwrap().unwrap())
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn autostart_status_queries_do_not_reserve_the_mutation_lane() {
+    let (_root, paths) = fixture(None);
+    let mut service = Service::start(paths).unwrap();
+    let events = service.events();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while events.recv().await.unwrap().phase == Phase::Preparing {}
+    })
+    .await
+    .unwrap();
+    for _ in 0..3 {
+        service.refresh_autostart();
+    }
+    assert!(!service.busy.load(std::sync::atomic::Ordering::Acquire));
+    let id = service
+        .submit(Command::Settings {
+            kind: crate::preferences::SettingsKind::General,
+            patch: crate::storage::Values::from([("SilentStart".into(), "true".into())]),
+        })
+        .unwrap();
+    let snapshot = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let snapshot = events.recv().await.unwrap();
+            if snapshot.request_id == Some(id) && !snapshot.operation_active {
+                break snapshot;
+            }
+        }
+    })
+    .await
+    .unwrap();
+    assert!(snapshot.error().is_none(), "{:?}", snapshot.error());
+    assert_eq!(
+        snapshot.settings("settings").unwrap()["SilentStart"],
+        "true"
+    );
     let worker = service.shutdown().unwrap();
     tokio::task::spawn_blocking(move || worker.join().unwrap().unwrap())
         .await
