@@ -57,8 +57,8 @@ fn query(connection: Option<&str>) -> Result<(OsSnapshot, ConnectionSettings), S
         ));
     }
     let flags = unsafe { options[0].Value.dwValue };
-    let mut strings = Vec::new();
-    for option in &options[1..] {
+    let mut strings: [String; 3] = std::array::from_fn(|_| String::new());
+    for (value, option) in strings.iter_mut().zip(&options[1..]) {
         let pointer = unsafe { option.Value.pszValue };
         let text = if pointer.is_null() {
             String::new()
@@ -76,7 +76,7 @@ fn query(connection: Option<&str>) -> Result<(OsSnapshot, ConnectionSettings), S
             }
             text
         };
-        strings.push(text);
+        *value = text;
     }
     let endpoint = |protocol: &str| -> Result<Endpoint, String> {
         let server = &strings[0];
@@ -130,15 +130,7 @@ fn query(connection: Option<&str>) -> Result<(OsSnapshot, ConnectionSettings), S
     {
         snapshot.http.switched_on = true;
     }
-    Ok((
-        snapshot,
-        ConnectionSettings {
-            flags,
-            strings: strings
-                .try_into()
-                .map_err(|error| crate::logging::diagnostic_error("WinINET 字段数量无效", error))?,
-        },
-    ))
+    Ok((snapshot, ConnectionSettings { flags, strings }))
 }
 
 fn restore_connection(

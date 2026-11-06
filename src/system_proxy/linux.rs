@@ -344,13 +344,11 @@ const KDE_KEYS: [&str; 6] = [
 struct KdeCheckpoint([String; 6]);
 impl KdeCheckpoint {
     fn capture() -> Result<Self, String> {
-        let values = KDE_KEYS
-            .map(get)
-            .into_iter()
-            .collect::<Result<Vec<_>, _>>()?;
-        Ok(Self(values.try_into().map_err(|error| {
-            crate::logging::diagnostic_error("KDE 代理字段数量无效", error)
-        })?))
+        let mut values = std::array::from_fn(|_| String::new());
+        for (value, key) in values.iter_mut().zip(KDE_KEYS) {
+            *value = get(key)?;
+        }
+        Ok(Self(values))
     }
     fn restore_with(
         &self,

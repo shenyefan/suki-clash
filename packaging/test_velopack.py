@@ -10,6 +10,35 @@ import velopack
 
 
 class ServiceBundleTests(unittest.TestCase):
+    def test_windows_packages_on_macos_use_velopacks_explicit_cross_platform_directive(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            work = Path(temporary)
+            stage = work / "stage"
+            stage.mkdir()
+            commands = []
+
+            def pack(command):
+                commands.append(list(map(str, command)))
+                (work / "Releases").mkdir()
+
+            arguments = ["velopack.py", "--target", "x86_64-pc-windows-msvc",
+                         "--app-dir", temporary, "--service-dir", temporary,
+                         "--runtime-dir", temporary, "--work", temporary, "--vpk", "vpk"]
+            with patch("sys.argv", arguments), patch("velopack.platform.system", return_value="Darwin"), \
+                 patch("velopack.prepare", return_value=stage), patch("velopack.run", side_effect=pack), \
+                 patch("velopack.subprocess.check_output", return_value=f"Velopack CLI {velopack.VPK_VERSION}"):
+                velopack.main()
+            self.assertEqual(commands[0][:5], ["vpk", "[win]", "--skip-updates", "--yes", "pack"])
+            self.assertIn("--icon", commands[0])
+            self.assertTrue((work / "Releases/build.win-x64.json").is_file())
+
+    def test_linux_staging_requires_linux_native_tools(self):
+        arguments = ["velopack.py", "--target", "x86_64-unknown-linux-gnu",
+                     "--app-dir", ".", "--service-dir", ".", "--runtime-dir", ".", "--work", "."]
+        with patch("sys.argv", arguments), patch("velopack.platform.system", return_value="Darwin"), \
+             self.assertRaisesRegex(ValueError, "packaging/local.py"):
+            velopack.main()
+
     def test_stage_needs_only_app_and_integrated_service_on_each_platform(self):
         for os_name, arch, runtime_target in [
             ("win", "x64", "windows-x86_64"),

@@ -280,5 +280,5 @@ pub(crate) fn test_delay(
     }
 }
 
-#[cfg(windows)]
+#[cfg(all(windows, not(test)))]
 pub(crate) use service_identity::current_owner_identity as service_identity_for_autostart;
