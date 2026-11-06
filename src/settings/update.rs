@@ -7,6 +7,7 @@ use gpui_kit::{
     component::{
         Disableable, Sizable, WindowExt,
         button::{Button, ButtonVariants},
+        spinner::Spinner,
     },
     prelude::FluentBuilder as _,
     *,
@@ -18,6 +19,7 @@ pub(super) fn open(window: &mut Window, cx: &mut App) {
         window,
         cx,
         |result, window, cx| {
+            window.close_dialog(cx);
             if result.is_ok() {
                 let state = core::controller(cx).read(cx).snapshot().app_update.clone();
                 if let Some(url) = &state.manual_url {
@@ -31,7 +33,28 @@ pub(super) fn open(window: &mut Window, cx: &mut App) {
         },
     ) {
         ui::show_error(error, window, cx);
+    } else {
+        show_checking(window, cx);
     }
+}
+
+fn show_checking(window: &mut Window, cx: &mut App) {
+    window.open_dialog(cx, |dialog, window, cx| {
+        ui::modal(dialog, "检查更新", layout::DIALOG_WIDTH, window, cx)
+            .close_button(false)
+            .keyboard(false)
+            .content(ui::modal_content(
+                "app-update-checking",
+                layout::FORM_MAX_HEIGHT,
+                |_, cx| {
+                    gpui_kit::component::h_flex()
+                        .gap(space::MD)
+                        .child(Spinner::new())
+                        .child(ui::muted("检查中", cx))
+                        .into_any_element()
+                },
+            ))
+    });
 }
 
 fn show(state: State, window: &mut Window, cx: &mut App) -> Entity<UpdateStatus> {
@@ -214,7 +237,7 @@ impl Render for UpdateFooter {
 
 #[cfg(test)]
 mod tests {
-    use super::show;
+    use super::{show, show_checking};
     use crate::updates::State;
     use gpui_kit::test::TestWindowExt;
     use gpui_kit::{
@@ -226,6 +249,29 @@ mod tests {
         fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
             div()
         }
+    }
+
+    #[gpui_kit::test]
+    fn checking_dialog_remains_until_the_request_finishes(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            cx.set_reduce_motion(true);
+        });
+        let (handle, _) = cx.update(|cx| {
+            gpui_kit::open_window(WindowOptions::default(), cx, |_, cx| cx.new(|_| Host)).unwrap()
+        });
+        cx.update_window(handle, |_, window, cx| {
+            show_checking(window, cx);
+            window.render_frame(cx);
+            assert!(window.find_all("app-update-primary").is_empty());
+            window.press("escape", cx);
+            window.render_frame(cx);
+            assert_eq!(window.find_all("dialog").len(), 1);
+            gpui_kit::component::WindowExt::close_dialog(window, cx);
+            window.render_frame(cx);
+            assert!(window.find_all("dialog").is_empty());
+        })
+        .unwrap();
     }
 
     #[gpui_kit::test]

@@ -293,9 +293,8 @@ impl Render for ProxiesPage {
                         let min = proxy_card::MIN_WIDTH.to_pixels(window.rem_size());
                         let inset = (crate::ui::theme::list::INSET_X + proxy_card::GROUP_INSET_X)
                             .to_pixels(window.rem_size());
-                        let columns = (((bounds.size.width - inset * 2. + gap) / (min + gap))
-                            .floor() as usize)
-                            .clamp(proxy_card::MIN_COLUMNS, proxy_card::MAX_COLUMNS);
+                        let columns =
+                            ui::adaptive_columns(bounds.size.width - inset * 2., min, gap);
                         if columns != current_columns {
                             let owner = owner.clone();
                             window.defer(cx, move |window, cx| {

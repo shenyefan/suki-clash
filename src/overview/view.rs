@@ -80,12 +80,12 @@ impl Overview {
             )
     }
 
-    fn context(label: &str, value: String, cx: &App) -> Div {
+    fn context(label: &str, value: String, label_size: Rems, cx: &App) -> Div {
         v_flex()
             .flex_1()
             .min_w(space::NONE)
             .gap(space::SM)
-            .child(ui::muted(label.to_owned(), cx).text_size(text::CAPTION))
+            .child(ui::muted(label.to_owned(), cx).text_size(label_size))
             .child(div().truncate().font_weight(text::EMPHASIS).child(value))
     }
 
@@ -219,7 +219,7 @@ impl Overview {
             .child(
                 h_flex()
                     .gap(space::SECTION)
-                    .child(Self::context("节点", node_latency, cx))
+                    .child(Self::context("节点", node_latency, text::CAPTION, cx))
                     .children(self.connection_contexts(cx)),
             )
     }
@@ -237,8 +237,8 @@ impl Overview {
             .map(|memory| bytes(memory.inuse))
             .unwrap_or_else(|| "—".into());
         [
-            Self::context("活动连接", count, cx),
-            Self::context("内核内存", memory, cx),
+            Self::context("活动连接", count, text::CAPTION, cx),
+            Self::context("内核内存", memory, text::CAPTION, cx),
         ]
     }
     fn totals(&self, cx: &App) -> Div {
@@ -541,7 +541,7 @@ impl Render for Overview {
             .child(
                 h_flex()
                     .gap(space::XS)
-                    .child(ui::muted("外部 IP", cx).text_size(text::CAPTION)),
+                    .child(ui::muted("外部 IP", cx).text_size(text::BODY)),
             )
             .child(
                 div()
@@ -553,14 +553,14 @@ impl Render for Overview {
             .w_full()
             .items_start()
             .gap(space::LG)
-            .child(Self::context("配置", profile, cx))
-            .child(Self::context("节点", node, cx))
+            .child(Self::context("配置", profile, text::BODY, cx))
+            .child(Self::context("节点", node, text::BODY, cx))
             .child(
                 v_flex()
                     .flex_1()
                     .min_w(space::NONE)
                     .gap(space::SM)
-                    .child(ui::muted("出站模式", cx).text_size(text::CAPTION))
+                    .child(ui::muted("出站模式", cx).text_size(text::BODY))
                     .child(h_flex().child(ui::mode_tabs(&self.session, "overview-mode", cx))),
             )
             .child(ip_header);

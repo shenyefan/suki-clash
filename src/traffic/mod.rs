@@ -36,6 +36,7 @@ pub(crate) struct TrafficPage {
     sort_index: usize,
     reverse: bool,
     detail_cache: Option<model::Record>,
+    detail_columns: usize,
     _subscriptions: Vec<Subscription>,
 }
 impl TrafficPage {
@@ -188,6 +189,7 @@ impl TrafficPage {
             sort_index: 0,
             reverse: false,
             detail_cache: None,
+            detail_columns: 2,
             _subscriptions: subscriptions,
         };
         if page.kind == TrafficKind::Connections

@@ -42,7 +42,7 @@ pub(crate) mod layout {
     pub(crate) const ICON_FEATURE: Rems = rems(1.5);
     pub(crate) const PROGRESS_HEIGHT: Rems = rems(0.25);
     pub(crate) const FOOTER_HEIGHT: Rems = rems(1.5);
-    pub(crate) const CONNECTION_DETAILS_COLUMNS: u16 = 2;
+    pub(crate) const DETAIL_MIN_WIDTH: Rems = rems(18.);
     pub(crate) const CONNECTION_DETAILS_HEIGHT: Rems = rems(15.);
     pub(crate) const CONTROL_HEIGHT: Rems = rems(2.);
     pub(crate) const NAV_ITEM_HEIGHT: Rems = rems(2.5);
@@ -98,7 +98,7 @@ pub(crate) mod profile {
     pub(crate) const META_SIZE: Rems = text::CAPTION;
 }
 
-/// Expanded node cards: same width rhythm as subscription cards, capped at three.
+/// Node cards share the subscription width rhythm and adapt to available space.
 pub(crate) mod proxy_card {
     use super::*;
     pub(crate) const MIN_WIDTH: Rems = profile::MIN_WIDTH;
@@ -107,8 +107,6 @@ pub(crate) mod proxy_card {
     pub(crate) const GROUP_INSET_X: Rems = space::SM;
     pub(crate) const COMPACT_HEIGHT: Rems = rems(3.25);
     pub(crate) const PADDING: Rems = space::MD;
-    pub(crate) const MAX_COLUMNS: usize = 3;
-    pub(crate) const MIN_COLUMNS: usize = 2;
 }
 
 /// List spacing policy, separate from the shared spacing scale.
@@ -287,17 +285,28 @@ fn palette(dark: bool) -> Palette {
     if dark { DARK } else { LIGHT }
 }
 
+pub(crate) fn translucent(cx: &App) -> bool {
+    cfg!(any(target_os = "macos", target_os = "windows"))
+        && crate::integration::read("settings", cx)
+            .get("BackdropIndex")
+            .is_none_or(|value| value != "纯色")
+}
+
 pub(crate) fn window_tint(cx: &App) -> Hsla {
     let color = cx.theme().sidebar;
-    if cfg!(any(target_os = "macos", target_os = "windows")) {
+    if translucent(cx) {
         color.opacity(opacity::chrome(cx.theme().is_dark()))
     } else {
         color
     }
 }
 pub(crate) fn workspace_tint(cx: &App) -> Hsla {
-    let p = palette(cx.theme().is_dark());
-    Hsla::from(rgb(p.workspace)).opacity(opacity::workspace(cx.theme().is_dark()))
+    if translucent(cx) {
+        let p = palette(cx.theme().is_dark());
+        Hsla::from(rgb(p.workspace)).opacity(opacity::workspace(cx.theme().is_dark()))
+    } else {
+        cx.theme().background
+    }
 }
 
 /// One selection surface; never apply another opacity to this resolved color.
@@ -324,8 +333,9 @@ pub(crate) fn configure_theme(cx: &mut App) {
         WindowAppearance::Light
     }));
     let preferences = crate::integration::read("settings", cx);
+    let translucent = translucent(cx);
     Theme::update(cx, |theme| {
-        apply(theme);
+        apply(theme, translucent);
         theme.notification.placement = match preferences.get("NoticePosition").map(String::as_str) {
             Some("右上角") => Anchor::TopRight,
             Some("左上角") => Anchor::TopLeft,
@@ -338,8 +348,12 @@ pub(crate) fn configure_theme(cx: &mut App) {
 
 /// Resolve each theme completely so switching appearance cannot retain colors
 /// or interactive states from the previous palette.
-fn apply(theme: &mut Theme) {
-    let p = palette(theme.is_dark());
+fn apply(theme: &mut Theme, translucent: bool) {
+    let mut p = palette(theme.is_dark());
+    if !translucent && !theme.is_dark() {
+        p.chrome = 0xf0f2f6;
+        p.muted = 0xf5f6f9;
+    }
     theme.font_family = if cfg!(target_os = "macos") {
         text::MAC_FONT
     } else {
@@ -350,7 +364,9 @@ fn apply(theme: &mut Theme) {
     theme.notification.placement = Anchor::TopCenter;
     theme.radius = radius::CONTROL;
     theme.radius_lg = radius::SURFACE;
-    theme.colors.background = if theme.is_dark() {
+    theme.colors.background = if !translucent {
+        rgb(p.background).into()
+    } else if theme.is_dark() {
         Hsla::from(rgb(p.foreground)).opacity(opacity::SELECTED)
     } else {
         Hsla::from(rgb(p.background)).opacity(opacity::CONTROL_LIGHT)
@@ -415,7 +431,12 @@ fn apply(theme: &mut Theme) {
 
 pub(crate) fn preferences_tint(cx: &App) -> Hsla {
     let dark = cx.theme().is_dark();
-    Hsla::from(rgb(palette(dark).preferences)).opacity(if dark {
+    let color: Hsla = if translucent(cx) {
+        rgb(palette(dark).preferences).into()
+    } else {
+        cx.theme().muted
+    };
+    color.opacity(if dark {
         opacity::PREFERENCES_DARK
     } else {
         opacity::PREFERENCES_LIGHT
@@ -449,6 +470,53 @@ mod tests {
     fn contrast(a: [f32; 3], b: [f32; 3]) -> f32 {
         let (a, b) = (luminance(a), luminance(b));
         (a.max(b) + 0.05) / (a.min(b) + 0.05)
+    }
+    #[gpui_kit::test]
+    fn solid_surfaces_are_opaque_distinct_and_restore_after_backdrop_switches(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        use gpui_kit::component::{ActiveTheme, Theme, ThemeMode};
+        cx.update(gpui_kit::init);
+        for dark in [true, false] {
+            for translucent in [false, true, false] {
+                cx.update(|cx| {
+                    Theme::change(
+                        if dark {
+                            ThemeMode::Dark
+                        } else {
+                            ThemeMode::Light
+                        },
+                        None,
+                        cx,
+                    );
+                    Theme::update(cx, |theme| super::apply(theme, translucent));
+                    let theme = cx.theme();
+                    if translucent {
+                        assert!(theme.background.a < 1.);
+                    } else {
+                        assert_eq!(theme.background.a, 1.);
+                        assert_eq!(theme.sidebar.a, 1.);
+                        assert_ne!(
+                            theme.sidebar, theme.background,
+                            "sidebar merged into workspace"
+                        );
+                        assert_eq!(
+                            theme.background,
+                            gpui_kit::Hsla::from(gpui_kit::rgb(palette(dark).background))
+                        );
+                        for surface in [theme.sidebar, theme.background, theme.muted] {
+                            let color = surface.to_rgb();
+                            assert!(
+                                contrast(
+                                    channels(palette(dark).foreground),
+                                    [color.r, color.g, color.b]
+                                ) >= 4.5
+                            );
+                        }
+                    }
+                });
+            }
+        }
     }
     #[test]
     fn text_remains_readable_over_light_and_dark_backdrops_in_both_themes() {
