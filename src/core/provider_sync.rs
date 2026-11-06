@@ -49,7 +49,7 @@ where
 {
     let root = paths.directory(crate::storage::DirectoryKind::Core);
     let config: serde_yaml_ng::Mapping = serde_yaml_ng::from_str(&launch.composed)
-        .map_err(|error| crate::logging::diagnostic_error("运行配置无效", error))?;
+        .map_err(|error| crate::logging::rejected("运行配置无效", error))?;
     let declarations = super::runtime_bundle::remote_providers_of(&config, &root)
         .map_err(crate::logging::error_message)?;
     if declarations.is_empty() {

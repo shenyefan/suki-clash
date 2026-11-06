@@ -4,7 +4,7 @@ use super::{
     output::{LogSettings, Output},
 };
 use crate::{
-    logging::{Feed, Level, Record},
+    logging::{Feed, Level},
     storage::AppPaths,
 };
 use futures_util::{SinkExt as _, StreamExt as _};
@@ -79,11 +79,11 @@ impl ServiceCursor {
             self.after = 0;
         }
         if self.after != 0 && batch.oldest > self.after.saturating_add(1) {
-            feed.publish(Record::program(
+            feed.emit(
                 Level::Warning,
                 "logging",
-                "服务日志窗口已覆盖部分未采集记录",
-            ));
+                "后台服务日志窗口已覆盖尚未读取的记录，部分内核日志缺失",
+            );
         }
         for entry in batch.entries {
             if entry.sequence > self.after {
@@ -152,24 +152,24 @@ pub(super) async fn run(
                                 },
                                 None => break Err("后台服务未返回日志窗口".into()),
                             },
-                            Ok(response) => break Err(format!("后台服务日志读取被拒绝（{}）：{}", response.code, response.message)),
-                            Err(error) => break Err(format!("后台服务日志连接中断：{error}")),
+                            Ok(response) => break Err(format!("后台服务拒绝日志读取请求，状态码 {}（{}）", response.code, response.message)),
+                            Err(error) => break Err(format!("后台服务日志连接中断（{error}）")),
                         }
                     },
                 }
             };
             if let Err(error) = result {
                 if failure.as_ref() != Some(&error) {
-                    feed.publish(Record::program(Level::Warning, "logging", &error));
+                    feed.emit(Level::Warning, "logging", &error);
                     failure = Some(error);
                 }
                 failures += 1;
                 if failures >= 3 {
-                    feed.publish(Record::program(
+                    feed.emit(
                         Level::Warning,
                         "logging",
-                        "服务日志连续读取失败，已停止自动重连",
-                    ));
+                        "后台服务日志连续读取失败，已停止自动重连",
+                    );
                     tokio::select! { _ = shutdown.changed() => break, changed = targets.changed() => { if changed.is_err() { break; } } }
                     continue;
                 }
@@ -226,16 +226,16 @@ pub(super) async fn run(
         if let Err(error) = result
             && failure.as_ref() != Some(&error)
         {
-            feed.publish(Record::program(Level::Warning, "logging", &error));
+            feed.emit(Level::Warning, "logging", &error);
             failure = Some(error);
         }
         failures += 1;
         if failures >= 3 {
-            feed.publish(Record::program(
+            feed.emit(
                 Level::Warning,
                 "logging",
-                "内核日志连续连接失败，已停止自动重连",
-            ));
+                "内核日志连接连续失败，已停止自动重连",
+            );
             tokio::select! {biased;_=shutdown.changed()=>break,changed=targets.changed()=>if changed.is_err(){break;}}
             failures = 0;
             backoff = Duration::from_millis(250);

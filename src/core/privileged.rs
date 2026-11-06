@@ -85,7 +85,7 @@ impl Session {
             Ok(reply) => reply,
             // The service deduplicates this exact session token. Retry once if the acknowledgement was lost.
             Err(error) => {
-                log::warn!("服务启动应答未确认，重试同一会话：{error:#}");
+                log::warn!("后台服务未确认启动应答，将在同一会话中重试（{error:#}）");
                 suki_service::start_clash(&credentials, &request)
                     .await
                     .map_err(|error| {

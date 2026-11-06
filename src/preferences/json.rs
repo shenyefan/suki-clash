@@ -38,9 +38,9 @@ fn list_field(key: &str, kind: FieldKind) -> bool {
 }
 fn yaml_object(text: &str) -> Result<Value, String> {
     let value: serde_yaml_ng::Value = serde_yaml_ng::from_str(text)
-        .map_err(|error| crate::logging::diagnostic_error("设置对象格式无效", error))?;
+        .map_err(|error| crate::logging::rejected("设置对象格式无效", error))?;
     serde_json::to_value(value)
-        .map_err(|error| crate::logging::diagnostic_error("设置对象含不受支持的键".into(), error))
+        .map_err(|error| crate::logging::rejected("设置对象含不受支持的键".into(), error))
 }
 pub(crate) fn encode(values: &Values) -> Result<Vec<u8>, String> {
     let definitions = fields();
@@ -52,7 +52,7 @@ pub(crate) fn encode(values: &Values) -> Result<Vec<u8>, String> {
             root.insert(
                 name.into(),
                 serde_json::from_str(text)
-                    .map_err(|error| crate::logging::diagnostic_error("扩展设置格式无效", error))?,
+                    .map_err(|error| crate::logging::rejected("扩展设置格式无效", error))?,
             );
             continue;
         }
@@ -62,7 +62,7 @@ pub(crate) fn encode(values: &Values) -> Result<Vec<u8>, String> {
         {
             let id = id
                 .parse::<u64>()
-                .map_err(|error| crate::logging::diagnostic_error("WebUI ID 无效", error))?;
+                .map_err(|error| crate::logging::rejected("WebUI ID 无效", error))?;
             if !matches!(field, "name" | "url") {
                 return Err("WebUI 字段无效".into());
             }
@@ -85,9 +85,9 @@ pub(crate) fn encode(values: &Values) -> Result<Vec<u8>, String> {
                 _ => return Err(format!("{key} 必须为布尔值")),
             }
         } else if kind == Some(FieldKind::Number) {
-            text.parse::<u64>().map(Value::from).map_err(|error| {
-                crate::logging::diagnostic_error(format!("{key} 必须为非负整数"), error)
-            })?
+            text.parse::<u64>()
+                .map(Value::from)
+                .map_err(|error| crate::logging::rejected(format!("{key} 必须为非负整数"), error))?
         } else if kind.is_some_and(|kind| list_field(key, kind)) {
             let entries = if matches!(key.as_str(), "HttpPorts" | "TlsPorts" | "QuicPorts") {
                 text.split(',').collect::<Vec<_>>()
@@ -148,7 +148,7 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Values, String> {
                 url: String,
             }
             let web_ui: WebUi = serde_json::from_value(value)
-                .map_err(|error| crate::logging::diagnostic_error("WebUI 设置格式无效", error))?;
+                .map_err(|error| crate::logging::rejected("WebUI 设置格式无效", error))?;
             values.insert("WebUiConfigured".into(), "true".into());
             let mut ids = std::collections::BTreeSet::new();
             for panel in web_ui.panels {
@@ -176,7 +176,7 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Values, String> {
                 values.insert(
                     format!("{UNKNOWN}{name}"),
                     serde_json::to_string(&value)
-                        .map_err(|error| crate::logging::diagnostic_error("扩展设置无效", error))?,
+                        .map_err(|error| crate::logging::rejected("扩展设置无效", error))?,
                 );
             }
             continue;

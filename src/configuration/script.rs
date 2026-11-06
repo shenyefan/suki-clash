@@ -33,7 +33,7 @@ pub(crate) fn validate(source: &str) -> Result<(), String> {
     context.with(|ctx| {
         ctx.eval::<Function, _>(format!("(function(config,name,__write) {{\n{source}\n}})"))
             .map(|_| ())
-            .map_err(|error| crate::logging::diagnostic_error("JavaScript 语法无效".into(), error))
+            .map_err(|error| crate::logging::rejected("JavaScript 语法无效".into(), error))
     })
 }
 #[cfg(test)]
@@ -70,7 +70,7 @@ fn run_with_budget(
             return Err("脚本超过大小上限".into());
         }
         let input = serde_json::to_vec(config)
-            .map_err(|error| crate::logging::diagnostic_error("脚本输入不能转换为 JSON", error))?;
+            .map_err(|error| crate::logging::rejected("脚本输入不能转换为 JSON", error))?;
         if input.len() as u64 > super::INPUT_LIMIT {
             return Err("脚本输入超过大小上限".into());
         }
@@ -101,14 +101,14 @@ fn run_with_budget(
                 if (!result || typeof result!=='object' || Array.isArray(result) || typeof result.then==='function') throw new Error('invalid output');
                 return JSON.stringify(result);
             }})"#);
-            let function:Function=ctx.eval(code).map_err(|error| crate::logging::diagnostic_error("JavaScript 语法无效", error))?;
-            let input=ctx.json_parse(input).map_err(|error| crate::logging::diagnostic_error("脚本输入无效", error))?;
-            let output:String=function.call((input,name,logger)).map_err(|error| crate::logging::diagnostic_error("JavaScript 执行异常或超过资源预算", error))?;
+            let function:Function=ctx.eval(code).map_err(|error| crate::logging::rejected("JavaScript 语法无效", error))?;
+            let input=ctx.json_parse(input).map_err(|error| crate::logging::rejected("脚本输入无效", error))?;
+            let output:String=function.call((input,name,logger)).map_err(|error| crate::logging::rejected("JavaScript 执行异常或超过资源预算", error))?;
             if overflow.get() { return Err("脚本日志超过上限".into()); }
             if output.len() as u64 > super::INPUT_LIMIT { return Err("脚本结果超过大小上限".into()); }
             let value:serde_json::Value=serde_json::from_str(&output).map_err(|error| crate::logging::diagnostic_error("脚本结果不是有效 JSON", error))?;
             if !value.is_object() { return Err("脚本必须返回配置对象".into()); }
-            serde_json::from_value(value).map_err(|error| crate::logging::diagnostic_error("脚本结果不能转换为配置".into(), error))
+            serde_json::from_value(value).map_err(|error| crate::logging::rejected("脚本结果不能转换为配置".into(), error))
         })
     })();
     if cancellation

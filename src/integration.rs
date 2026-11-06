@@ -40,17 +40,11 @@ pub(crate) fn announce_module(
     message: String,
     cx: &mut App,
 ) {
-    if let Err(error) = cx.global_mut::<Bridge>().service.submit(Command::Log {
-        level,
-        module: module.into(),
-        message,
-    }) {
-        logs(cx).publish(crate::logging::Record::program(
-            crate::logging::Level::Error,
-            "logging",
-            &format!("程序日志写入请求失败：{error}"),
-        ));
-    }
+    logs(cx).emit(
+        crate::logging::Level::parse(level),
+        &module.into(),
+        &message,
+    );
 }
 pub(crate) fn init(service: Service, startup_error: Option<String>, cx: &mut App) {
     ui::notifications::init(cx);
@@ -129,11 +123,14 @@ pub(crate) fn execute(
             "settings" => "settings".to_owned(),
             _ => "storage".to_owned(),
         },
-        Command::Log { module, .. } => module.clone(),
         _ => "storage".to_owned(),
     };
-    let success_level = "INFO";
-    announce_module("INFO", module.clone(), format!("操作开始：{label}"), cx);
+    let success_level = if matches!(&command, Command::Diagnostics) {
+        "INFO"
+    } else {
+        "DEBUG"
+    };
+    announce_module("DEBUG", module.clone(), format!("开始{label}"), cx);
     let pending = match cx.global_mut::<Bridge>().service.submit(command) {
         Ok(pending) => pending,
         Err(error) => {

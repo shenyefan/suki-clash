@@ -11,16 +11,6 @@ use std::{
 use crate::storage::atomic_write;
 
 type Snapshot = Arc<RwLock<BTreeMap<Namespace, Values>>>;
-thread_local! {
-    static WRITING_LOG: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-}
-struct LogWriteGuard;
-impl Drop for LogWriteGuard {
-    fn drop(&mut self) {
-        WRITING_LOG.set(false);
-    }
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct RequestId(u64);
 
@@ -33,11 +23,6 @@ pub(crate) struct DocumentWrite {
 pub(crate) enum Command {
     /// Queue barrier: prior durable operations have returned before this replies.
     Flush,
-    Log {
-        level: &'static str,
-        module: String,
-        message: String,
-    },
     #[cfg(test)]
     Save {
         namespace: Namespace,
@@ -52,7 +37,6 @@ impl Command {
     pub(crate) fn label(&self) -> &'static str {
         match self {
             Self::Flush => "等待存储任务",
-            Self::Log { .. } => "写入程序日志",
             #[cfg(test)]
             Self::Save { .. } => "保存配置",
             Self::OpenDirectory(_) => "打开应用目录",
@@ -109,18 +93,7 @@ pub(crate) struct Service {
 }
 impl Service {
     pub(crate) fn enable_logging(&self) {
-        if let Err(error) = log::set_boxed_logger(Box::new(ProgramLogger {
-            sender: self.sender.clone(),
-            memory: self.logs.clone(),
-        })) {
-            self.logs.publish(crate::logging::Record::program(
-                crate::logging::Level::Error,
-                "logging",
-                &error.to_string(),
-            ));
-            return;
-        }
-        log::set_max_level(log::LevelFilter::Trace);
+        crate::logging::install(self.logs.clone());
     }
     pub(crate) fn start(repository: Repository) -> Result<Self, StorageError> {
         let startup_error = crate::preferences::initialize(&repository)
@@ -150,61 +123,24 @@ impl Service {
         let (sender, receiver) = async_channel::bounded::<Request>(64);
         let logs = crate::logging::Feed::default();
         let writer_logs = logs.clone();
-        // Diagnostic logging remains available when its settings cannot be read.
-        // This policy does not replace or persist the invalid user configuration.
-        let mut log = ProgramLog::new(&repository, &logs)?;
+        // Diagnostic logging stays available when its settings cannot be read.
+        // The memory policy does not replace or persist the invalid user configuration.
+        let log_worker = crate::logging::start(repository.clone(), logs.clone())?;
         if let Some(error) = &startup_error {
-            let record =
-                crate::logging::Record::program(crate::logging::Level::Error, "storage", error);
-            logs.publish(record.clone());
-            if log.sink.is_some() {
-                let _ = log.write(&logs, &record);
-            }
+            logs.emit(crate::logging::Level::Error, "storage", error);
         }
         let worker = thread::Builder::new()
             .name("suki-storage".into())
             .spawn(move || {
                 while let Ok(request) = receiver.recv_blocking() {
-                    if let Command::Log {
-                        level,
-                        module,
-                        message,
-                    } = &request.command
-                    {
-                        // Broken log settings may emit diagnostics themselves.
-                        // Retain them in memory without recursively queueing writes.
-                        WRITING_LOG.set(true);
-                        let _writing = LogWriteGuard;
-                        let result = (|| -> Result<(), StorageError> {
-                            let configured = log.configure(&repository, &writer_logs);
-                            let minimum = if configured.is_ok() { log.policy.0 } else { crate::logging::Level::Trace };
-                            let level = crate::logging::Level::parse(level);
-                            if level < minimum || minimum == crate::logging::Level::Silent { return Ok(()); }
-                            let record = crate::logging::Record::program(level, module, message);
-                            writer_logs.publish(record.clone());
-                            configured?;
-                            log.write(&writer_logs, &record)
-                        })();
-                        let _ = request
-                            .reply
-                            .try_send(result.map(|()| Outcome::Saved).map_err(ServiceError::from));
-                        continue;
-                    }
-                    #[cfg(not(test))]
-                    let log_settings_changed=false;
-                    #[cfg(test)]
-                    let log_settings_changed = matches!(&request.command, Command::Save { namespace, .. } if namespace.name() == "settings");
-                    let mut result = execute(&repository, &writer_snapshot, request.command, &writer_logs)
-                        .map_err(ServiceError::from);
-                    if result.is_ok() && log_settings_changed {
-                        let applied = log.configure(&repository, &writer_logs);
-                        if let Err(error) = applied {
-                            result = Err(StorageError::from(std::io::Error::other(format!("设置已保存，程序日志设置应用失败：{error}"))).into());
-                        }
-                    }
+                    let result =
+                        execute(&repository, &writer_snapshot, request.command, &writer_logs)
+                            .map_err(ServiceError::from);
                     // The window may have gone away. Its pending write still completes.
                     let _ = request.reply.try_send(result);
                 }
+                writer_logs.close();
+                let _ = log_worker.join();
             })?;
         Ok(Self {
             sender,
@@ -292,182 +228,10 @@ impl Service {
     }
 }
 
-/// Domain and transport diagnostics share the existing storage writer. A full
-/// queue keeps the original record in the bounded in-memory run log.
-struct ProgramLogger {
-    sender: async_channel::Sender<Request>,
-    memory: crate::logging::Feed,
-}
-impl log::Log for ProgramLogger {
-    fn enabled(&self, metadata: &log::Metadata<'_>) -> bool {
-        ["suki_clash", "suki_clash_service"].iter().any(|root| {
-            metadata.target() == *root || metadata.target().starts_with(&format!("{root}::"))
-        })
-    }
-    fn log(&self, record: &log::Record<'_>) {
-        if !self.enabled(record.metadata()) {
-            return;
-        }
-        let level = record.level().as_str();
-        let module = record
-            .target()
-            .strip_prefix("suki_clash::")
-            .or_else(|| record.target().strip_prefix("suki_clash_service::"))
-            .unwrap_or("application")
-            .to_owned();
-        let message = record.args().to_string();
-        let fallback =
-            crate::logging::Record::program(crate::logging::Level::parse(level), &module, &message);
-        if WRITING_LOG.get() {
-            self.memory.publish(fallback);
-            return;
-        }
-        let (reply, _) = async_channel::bounded(1);
-        if self
-            .sender
-            .try_send(Request {
-                command: Command::Log {
-                    level,
-                    module,
-                    message,
-                },
-                reply,
-            })
-            .is_err()
-        {
-            self.memory.publish(fallback);
-        }
-    }
-    fn flush(&self) {}
-}
 impl Drop for Service {
     fn drop(&mut self) {
         self.sender.close();
     }
-}
-
-/// The storage worker remains alive when only its optional file writer is broken.
-struct ProgramLog {
-    sink: Option<crate::logging::Sink>,
-    policy: (crate::logging::Level, u32, u64, usize),
-    failure: Option<String>,
-}
-impl ProgramLog {
-    fn new(repository: &Repository, feed: &crate::logging::Feed) -> Result<Self, StorageError> {
-        let mut writer = Self {
-            sink: None,
-            policy: policy_values(&crate::preferences::defaults(
-                crate::preferences::SettingsKind::General,
-            ))?,
-            failure: None,
-        };
-        let _ = writer.configure(repository, feed);
-        Ok(writer)
-    }
-    fn configure(
-        &mut self,
-        repository: &Repository,
-        feed: &crate::logging::Feed,
-    ) -> Result<(), StorageError> {
-        let result = (|| {
-            let policy = program_policy(repository)?;
-            let created = self.sink.is_none();
-            if created {
-                let sink = crate::logging::Sink::new(
-                    repository.paths(),
-                    crate::logging::Source::Program,
-                    policy.1,
-                    policy.2,
-                )?;
-                feed.track(&sink);
-                self.sink = Some(sink);
-            }
-            if let Some(sink) = &mut self.sink
-                && (created || self.policy != policy || self.failure.is_some())
-            {
-                sink.configure_program(policy.1, policy.2, policy.3)?;
-            }
-            self.policy = policy;
-            Ok(())
-        })();
-        if let Err(error) = &result {
-            self.fail(feed, error);
-        }
-        result
-    }
-    fn write(
-        &mut self,
-        feed: &crate::logging::Feed,
-        record: &crate::logging::Record,
-    ) -> Result<(), StorageError> {
-        let result = self
-            .sink
-            .as_mut()
-            .ok_or_else(|| StorageError::from(std::io::Error::other("程序日志文件不可用")))
-            .and_then(|sink| {
-                record
-                    .parts()
-                    .into_iter()
-                    .try_for_each(|part| sink.write(part.line().as_bytes()))
-                    .map_err(StorageError::from)
-            });
-        if let Err(error) = &result {
-            self.fail(feed, error);
-        } else {
-            self.failure = None;
-        }
-        result
-    }
-    fn fail(&mut self, feed: &crate::logging::Feed, error: &StorageError) {
-        self.sink = None;
-        let error = format!("程序日志文件不可用；保留内存诊断：{error}");
-        if self.failure.as_ref() != Some(&error) {
-            feed.publish(crate::logging::Record::program(
-                crate::logging::Level::Error,
-                "logging",
-                &error,
-            ));
-            self.failure = Some(error);
-        }
-    }
-}
-
-fn program_policy(
-    repository: &Repository,
-) -> Result<(crate::logging::Level, u32, u64, usize), StorageError> {
-    let values = crate::preferences::values(repository, crate::preferences::SettingsKind::General)?;
-    crate::preferences::validate(crate::preferences::SettingsKind::General, &values)
-        .map_err(std::io::Error::other)?;
-    policy_values(&values)
-}
-
-fn policy_values(
-    values: &Values,
-) -> Result<(crate::logging::Level, u32, u64, usize), StorageError> {
-    let number = |key: &str| -> Result<u64, StorageError> {
-        values
-            .get(key)
-            .and_then(|value| value.parse().ok())
-            .ok_or_else(|| std::io::Error::other(format!("日志设置 {key} 无效")).into())
-    };
-    let days = match values.get("AutoLogClean").map(String::as_str) {
-        Some("1d") => 1,
-        Some("7d") => 7,
-        Some("30d") => 30,
-        Some("90d") => 90,
-        _ => 0,
-    };
-    Ok((
-        crate::logging::Level::parse(
-            values
-                .get("AppLogLevel")
-                .map(String::as_str)
-                .unwrap_or("info"),
-        ),
-        days,
-        number("AppLogMaxSize")?.saturating_mul(1024),
-        number("AppLogMaxCount")? as usize,
-    ))
 }
 
 fn execute(
@@ -478,7 +242,6 @@ fn execute(
 ) -> Result<Outcome, StorageError> {
     match command {
         Command::Flush => Ok(Outcome::Saved),
-        Command::Log { .. } => Ok(Outcome::Saved),
         #[cfg(test)]
         Command::Save {
             namespace,
@@ -577,94 +340,6 @@ fn execute(
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn diagnostics_logger_preserves_long_utf8_errors_and_service_sources_without_changing_messages()
-    {
-        use log::Log as _;
-        let root = tempfile::tempdir().unwrap();
-        let paths = AppPaths::isolated(root.path());
-        let mut service = Service::start(Repository::open(paths.clone()).unwrap()).unwrap();
-        let feed = service.logs();
-        let logger = ProgramLogger {
-            sender: service.sender.clone(),
-            memory: feed.clone(),
-        };
-        let long = format!(
-            "{}；最终原因：native error 1753；token=private-secret",
-            "完整错误链 ".repeat(4000)
-        );
-        logger.log(
-            &log::Record::builder()
-                .level(log::Level::Error)
-                .target("suki_clash_service::windows_network")
-                .args(format_args!("{long}"))
-                .build(),
-        );
-        logger.log(
-            &log::Record::builder()
-                .level(log::Level::Info)
-                .target("third_party")
-                .args(format_args!("excluded"))
-                .build(),
-        );
-        service
-            .flush()
-            .unwrap()
-            .unwrap()
-            .reply
-            .recv_blocking()
-            .unwrap()
-            .unwrap();
-        let records = feed.since(0);
-        assert!(records.len() > 1);
-        assert!(
-            records
-                .iter()
-                .all(|record| record.origin == "windows_network")
-        );
-        let memory = records
-            .iter()
-            .map(|record| record.message.as_str())
-            .collect::<String>();
-        assert!(memory.contains("最终原因：native error 1753"));
-        assert!(!memory.contains("private-secret"));
-        let disk = std::fs::read_dir(paths.directory(DirectoryKind::Logs))
-            .unwrap()
-            .map(|entry| std::fs::read_to_string(entry.unwrap().path()).unwrap())
-            .collect::<String>();
-        assert!(disk.contains("最终原因：native error 1753"));
-        assert!(!disk.contains("private-secret"));
-        WRITING_LOG.set(true);
-        {
-            let _guard = LogWriteGuard;
-            logger.log(
-                &log::Record::builder()
-                    .level(log::Level::Error)
-                    .target("suki_clash::logging")
-                    .args(format_args!("writer diagnostic"))
-                    .build(),
-            );
-        }
-        assert!(!WRITING_LOG.get());
-        assert!(
-            feed.since(0)
-                .iter()
-                .any(|record| record.message == "writer diagnostic")
-        );
-        service.shutdown().unwrap().join().unwrap();
-        logger.log(
-            &log::Record::builder()
-                .level(log::Level::Error)
-                .target("suki_clash::logging")
-                .args(format_args!("closed writer diagnostic"))
-                .build(),
-        );
-        assert!(
-            feed.since(0)
-                .iter()
-                .any(|record| record.message == "closed writer diagnostic")
-        );
-    }
     fn namespace() -> Namespace {
         Namespace::parse("settings").unwrap()
     }
@@ -705,130 +380,6 @@ mod tests {
         service.shutdown().unwrap().join().unwrap();
     }
     #[test]
-    fn damaged_settings_keep_logging_and_unrelated_writes_available_and_recover_after_repair() {
-        let root = tempfile::tempdir().unwrap();
-        let paths = AppPaths::isolated(root.path());
-        let repository = Repository::open(paths.clone()).unwrap();
-        crate::preferences::initialize(&repository).unwrap();
-        let broken = paths.settings().join("settings.json");
-        let original = std::fs::read(&broken).unwrap();
-        std::fs::write(&broken, br#"{"schema_version":1,"general":false}"#).unwrap();
-        let mut service = Service::start(repository).unwrap();
-        assert!(service.startup_error().unwrap().contains("settings.json"));
-        let log = service
-            .submit(Command::Log {
-                level: "ERROR",
-                module: "core".into(),
-                message: "retry-error".into(),
-            })
-            .unwrap();
-        assert!(log.reply.recv_blocking().unwrap().is_err());
-        let save = service
-            .submit(Command::Save {
-                namespace: Namespace::parse("dns").unwrap(),
-                values: crate::preferences::defaults(crate::preferences::SettingsKind::Dns),
-                documents: vec![],
-            })
-            .unwrap();
-        assert!(save.reply.recv_blocking().unwrap().is_ok());
-        let rejected = service
-            .submit(Command::Save {
-                namespace: namespace(),
-                values: values("new"),
-                documents: vec![],
-            })
-            .unwrap();
-        assert!(rejected.reply.recv_blocking().unwrap().is_err());
-        assert_eq!(
-            serde_json::from_slice::<serde_json::Value>(&std::fs::read(&broken).unwrap()).unwrap()
-                ["general"],
-            false
-        );
-        std::fs::write(&broken, original).unwrap();
-        let saved = service
-            .submit(Command::Save {
-                namespace: namespace(),
-                values: crate::preferences::defaults(crate::preferences::SettingsKind::General),
-                documents: vec![],
-            })
-            .unwrap();
-        assert!(saved.reply.recv_blocking().unwrap().is_ok());
-        let recovered = service
-            .submit(Command::Log {
-                level: "ERROR",
-                module: "core".into(),
-                message: "recovered".into(),
-            })
-            .unwrap();
-        assert!(recovered.reply.recv_blocking().unwrap().is_ok());
-        service.shutdown().unwrap().join().unwrap();
-        let records = service.logs().since(0);
-        assert!(
-            records
-                .iter()
-                .any(|record| record.message.contains("settings.json"))
-        );
-        assert!(records.iter().any(|record| record.message == "retry-error"));
-        let text = std::fs::read_dir(paths.directory(DirectoryKind::Logs))
-            .unwrap()
-            .map(|entry| std::fs::read_to_string(entry.unwrap().path()).unwrap())
-            .collect::<String>();
-        assert!(text.contains("recovered"));
-        assert!(!text.contains("retry-error"));
-    }
-    #[test]
-    fn file_log_failure_keeps_commands_live_and_recovers_on_the_next_request() {
-        let root = tempfile::tempdir().unwrap();
-        let paths = AppPaths::isolated(root.path());
-        let repository = Repository::open(paths.clone()).unwrap();
-        let log_dir = paths.directory(DirectoryKind::Logs);
-        std::fs::remove_dir(&log_dir).unwrap();
-        std::fs::write(&log_dir, b"blocked").unwrap();
-        let mut service = Service::start(repository).unwrap();
-        let feed = service.logs();
-        for message in ["first", "second"] {
-            let request = service
-                .submit(Command::Log {
-                    level: "ERROR",
-                    module: "core".into(),
-                    message: message.into(),
-                })
-                .unwrap();
-            assert!(request.reply.recv_blocking().unwrap().is_err());
-        }
-        assert_eq!(
-            feed.since(0)
-                .iter()
-                .filter(|record| record.origin == "logging")
-                .count(),
-            1
-        );
-        for command in [
-            Command::OpenDirectory(DirectoryKind::Config),
-            Command::Diagnostics,
-        ] {
-            let request = service.submit(command).unwrap();
-            assert!(request.reply.recv_blocking().unwrap().is_ok());
-        }
-        std::fs::remove_file(&log_dir).unwrap();
-        std::fs::create_dir_all(&log_dir).unwrap();
-        let request = service
-            .submit(Command::Log {
-                level: "ERROR",
-                module: "core".into(),
-                message: "recovered".into(),
-            })
-            .unwrap();
-        assert!(request.reply.recv_blocking().unwrap().is_ok());
-        service.shutdown().unwrap().join().unwrap();
-        let saved = std::fs::read_dir(log_dir)
-            .unwrap()
-            .map(|entry| std::fs::read_to_string(entry.unwrap().path()).unwrap())
-            .collect::<String>();
-        assert!(saved.contains("recovered"));
-        assert!(feed.since(0).iter().any(|record| record.message == "first"));
-    }
-    #[test]
     fn unavailable_storage_retains_healthy_settings_and_rejects_writes() {
         let root = tempfile::tempdir().unwrap();
         let paths = AppPaths::isolated(root.path());
@@ -858,89 +409,6 @@ mod tests {
                 .submit(Command::OpenDirectory(DirectoryKind::Config))
                 .is_err()
         );
-    }
-    #[test]
-    fn program_level_and_retention_hot_update_without_changing_core_logs() {
-        let mut defaults = crate::preferences::defaults(crate::preferences::SettingsKind::General);
-        assert_eq!(policy_values(&defaults).unwrap().1, 7);
-        defaults.insert("AutoLogClean".into(), "never".into());
-        assert_eq!(policy_values(&defaults).unwrap().1, 0);
-        let root = tempfile::tempdir().unwrap();
-        let paths = AppPaths::isolated(root.path());
-        let mut service = Service::start(Repository::open(paths.clone()).unwrap()).unwrap();
-        let feed = service.logs();
-        service
-            .submit(Command::Log {
-                level: "DEBUG",
-                module: "storage".into(),
-                message: "hidden-debug".into(),
-            })
-            .unwrap();
-        service
-            .submit(Command::Log {
-                level: "ERROR",
-                module: "profiles".into(),
-                message: "visible-error".into(),
-            })
-            .unwrap();
-        let mut values = crate::preferences::defaults(crate::preferences::SettingsKind::General);
-        values.insert("AppLogLevel".into(), "trace".into());
-        values.insert("AppLogMaxSize".into(), "1".into());
-        values.insert("AppLogMaxCount".into(), "2".into());
-        service
-            .submit(Command::Save {
-                namespace: namespace(),
-                values,
-                documents: vec![],
-            })
-            .unwrap();
-        let core_path = paths.directory(DirectoryKind::Logs).join("core-retain.log");
-        std::fs::write(&core_path, b"core").unwrap();
-        for _ in 0..5 {
-            service
-                .submit(Command::Log {
-                    level: "DEBUG",
-                    module: "settings".into(),
-                    message: "x".repeat(900),
-                })
-                .unwrap();
-        }
-        service.shutdown().unwrap().join().unwrap();
-        let records = feed.since(0);
-        assert_eq!(records.len(), 6);
-        assert_eq!(records[0].origin, "profiles");
-        assert!(
-            records
-                .iter()
-                .all(|record| record.source == crate::logging::Source::Program)
-        );
-        assert!(
-            !records
-                .iter()
-                .any(|record| record.message == "hidden-debug")
-        );
-        let files = std::fs::read_dir(paths.directory(DirectoryKind::Logs))
-            .unwrap()
-            .map(|entry| entry.unwrap().path())
-            .filter(|path| {
-                path.file_name()
-                    .unwrap()
-                    .to_string_lossy()
-                    .starts_with("program-")
-            })
-            .collect::<Vec<_>>();
-        assert_eq!(files.len(), 2);
-        assert!(
-            files
-                .iter()
-                .all(|path| std::fs::metadata(path).unwrap().len() <= 1024)
-        );
-        let text = files
-            .iter()
-            .map(|path| std::fs::read_to_string(path).unwrap())
-            .collect::<String>();
-        assert!(text.contains("[settings]"));
-        assert_eq!(std::fs::read(core_path).unwrap(), b"core");
     }
     #[test]
     fn worker_drains_accepted_writes_and_publishes_only_committed_values() {

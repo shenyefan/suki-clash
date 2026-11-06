@@ -110,7 +110,7 @@ impl Preferences {
             |key: &str, default: &str| values.get(key).cloned().unwrap_or_else(|| default.into());
         for (field, key, default) in PORTS {
             let port = get(field, default).parse::<u16>().map_err(|error| {
-                crate::logging::diagnostic_error(format!("{field} 必须为 0–65535 的整数"), error)
+                crate::logging::rejected(format!("{field} 必须为 0–65535 的整数"), error)
             })?;
             if key == "redir-port" && cfg!(windows) && port != 0 {
                 return Err("Windows 不支持重定向端口".into());
@@ -200,7 +200,7 @@ impl Preferences {
             let address = tunnel
                 .address
                 .parse::<std::net::SocketAddr>()
-                .map_err(|error| crate::logging::diagnostic_error("隧道监听无效", error))?;
+                .map_err(|error| crate::logging::rejected("隧道监听无效", error))?;
             if PORTS.iter().any(|(_, key, _)| {
                 native.get(*key).and_then(Value::as_u64) == Some(u64::from(address.port()))
             }) {
@@ -219,10 +219,7 @@ impl Preferences {
             let address = controller
                 .parse::<std::net::SocketAddr>()
                 .map_err(|error| {
-                    crate::logging::diagnostic_error(
-                        "外部控制地址必须为 IP:端口（IPv6 使用方括号）",
-                        error,
-                    )
+                    crate::logging::rejected("外部控制地址必须为 IP:端口（IPv6 使用方括号）", error)
                 })?;
             if address.port() == 0 || secret.trim().is_empty() {
                 return Err("启用外部控制时必须设置非零端口及访问密钥".into());
@@ -270,9 +267,9 @@ impl Preferences {
         };
         app.insert("CoreReleaseIndex".into(), channel.into());
         for (key, default) in [("MaxLogDays", "7"), ("MaxLogFileSizeMb", "10")] {
-            let value = get(key, default).parse::<u32>().map_err(|error| {
-                crate::logging::diagnostic_error("日志保留值必须为正整数", error)
-            })?;
+            let value = get(key, default)
+                .parse::<u32>()
+                .map_err(|error| crate::logging::rejected("日志保留值必须为正整数", error))?;
             if value == 0 || value > 3650 {
                 return Err("日志保留值需在 1–3650 之间".into());
             }

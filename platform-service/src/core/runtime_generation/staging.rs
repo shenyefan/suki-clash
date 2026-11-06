@@ -261,7 +261,7 @@ pub(crate) async fn stage_runtime(
         if let Err(discard) = remove_staged_file(&generation.join(MANIFEST_FILE_NAME)).await {
             tracing::warn!(
                 error = %discard,
-                "Left a manifest behind that describes an uncommitted configuration"
+                "遗留了描述未提交配置的清单"
             );
         }
         return Ok(StageRuntimeOutcome::RestartRequired {
@@ -278,14 +278,14 @@ pub(crate) async fn stage_runtime(
                     tracing::warn!(
                         destination = %destination,
                         error = %error,
-                        "Left an undeclared file behind in the staged runtime generation"
+                        "暂存运行代中遗留了未声明的文件"
                     );
                 }
             }
             Err(error) => tracing::warn!(
                 destination = %destination,
                 error = %error,
-                "Refused to sweep a recorded destination that no longer validates"
+                "已记录的目标路径校验未通过，未清理"
             ),
         }
     }
@@ -294,7 +294,7 @@ pub(crate) async fn stage_runtime(
         copied = plan.copies.len(),
         skipped = plan.skipped.len(),
         discarded = plan.required_deletes.len(),
-        "Staged a runtime generation in place"
+        "已暂存运行代"
     );
     Ok(StageRuntimeOutcome::Staged {
         config_path: config_path.to_string_lossy().into_owned(),

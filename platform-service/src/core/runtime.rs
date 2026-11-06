@@ -70,7 +70,7 @@ pub(super) async fn remove_core_runtime_record() {
     let paths = match service_paths() {
         Ok(paths) => paths,
         Err(error) => {
-            tracing::warn!("Could not locate core runtime record for cleanup: {error}");
+            tracing::warn!("无法定位内核运行记录（{error}）");
             return;
         }
     };

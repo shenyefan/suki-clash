@@ -130,7 +130,7 @@ impl Worker {
                 if let Some(Ok(owner)) = &mut owner
                     && let Err(error) = owner.clear()
                 {
-                    log::error!("系统代理退出清理失败：{error}");
+                    log::error!("退出时清理系统代理失败（{error}）");
                 }
             })
             .map_err(|error| format!("无法启动系统代理执行端：{error}"))?;
@@ -357,6 +357,10 @@ impl Controller {
                 return Err(error);
             }
         };
+        log::info!(
+            "系统代理已写入并回读确认，端口 {port}，模式 {}",
+            if auto { "PAC" } else { "手动" }
+        );
         self.rollback = Some((self.target.clone(), previous_guard, previous_script));
         self.target = Some(target);
         if values.get("EnableProxyGuard").is_some_and(|v| v == "true")
@@ -370,6 +374,7 @@ impl Controller {
     }
     pub(crate) async fn rollback(&mut self) -> Result<Observation, String> {
         let observed = self.request(Request::Rollback).await?;
+        log::info!("系统代理已回滚到操作前的状态");
         if let Some((target, guard, script)) = self.rollback.take() {
             self.target = target;
             self.guard_at = guard;
@@ -386,6 +391,7 @@ impl Controller {
         if self.guard_at.is_some_and(|at| Instant::now() >= at) {
             self.guard_at = Some(Instant::now() + guard_duration(values));
             if let Some(target) = self.target.clone() {
+                log::debug!("系统代理守卫到期，重新写入系统代理");
                 return self.request(Request::Apply(target, false)).await;
             }
         }
@@ -402,7 +408,9 @@ impl Controller {
         if self.worker.is_none() && !remote {
             return Ok(Observation::default());
         }
-        self.request(Request::Clear).await
+        let observed = self.request(Request::Clear).await?;
+        log::info!("系统代理已清除");
+        Ok(observed)
     }
 }
 fn guard_duration(values: &Values) -> Duration {

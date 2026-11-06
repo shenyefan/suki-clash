@@ -8,7 +8,6 @@ use gpui_kit::{
     component::{
         Disableable, Icon, Sizable,
         button::{Button, ButtonVariants, DropdownButton},
-        h_flex,
         input::Input,
         menu::DropdownMenu,
         scroll::{Scrollbar, ScrollbarMode},
@@ -175,12 +174,6 @@ impl Render for TrafficPage {
         let title = match kind {
             TrafficKind::Connections => "连接",
             TrafficKind::Rules => "规则",
-            TrafficKind::Logs => "日志",
-        };
-        let labels = match kind {
-            TrafficKind::Connections => vec![format!("活跃 {count0}"), format!("已关闭 {count1}")],
-            TrafficKind::Logs => vec!["程序".into(), "内核".into()],
-            TrafficKind::Rules => vec![],
         };
         let speed = if kind == TrafficKind::Connections
             && !self.session.read(cx).runtime().connections_live
@@ -231,26 +224,13 @@ impl Render for TrafficPage {
                             crate::core::request(crate::core::Command::Rules, w, cx)
                         }),
                 )
-            })
-            .when(kind == TrafficKind::Logs, |row| {
-                row.child(
-                    Button::new("clear-records")
-                        .outline()
-                        .with_size(control::STANDARD)
-                        .icon(IconName::Trash)
-                        .label("清空日志")
-                        .disabled(count == 0)
-                        .on_click(cx.listener(|this, _, w, cx| this.clear_or_close(w, cx))),
-                )
             });
         let presence = ui::motion::presence("traffic-details", detail.is_some(), window, cx);
         let detail = detail
             .or_else(|| self.detail_cache.clone())
             .filter(|_| presence.should_render());
         ui::workspace()
-            .when(kind != TrafficKind::Logs, |page| {
-                page.key_context("Connections")
-            })
+            .key_context("Connections")
             .on_action(
                 cx.listener(|this, _: &DismissConnectionDetails, window, cx| {
                     this.table.update(cx, |table, cx| {
@@ -262,20 +242,6 @@ impl Render for TrafficPage {
                 }),
             )
             .child(header)
-            .when(kind == TrafficKind::Logs, |col| {
-                col.child(
-                    h_flex().justify_between().gap(space::MD).child(
-                        TabBar::new("traffic-tabs")
-                            .segmented()
-                            .with_size(control::STANDARD)
-                            .children(labels.into_iter().map(|label| Tab::new().label(label)))
-                            .selected_index(tab)
-                            .on_click(
-                                cx.listener(|this, index, _, cx| this.switch_tab(*index, cx)),
-                            ),
-                    ),
-                )
-            })
             .child(
                 ui::workspace_toolbar()
                     .child(
@@ -299,11 +265,7 @@ impl Render for TrafficPage {
                                 Select::new(&self.filter)
                                     .with_size(control::STANDARD)
                                     .w_full()
-                                    .accessibility_label(if kind == TrafficKind::Logs {
-                                        "日志级别"
-                                    } else {
-                                        "规则类型"
-                                    }),
+                                    .accessibility_label("规则类型"),
                             ),
                         )
                     })
@@ -362,9 +324,9 @@ impl Render for TrafficPage {
                                             || tab == 1
                                             || !self.session.read(cx).runtime().connections_live,
                                     )
-                                    .on_click(
-                                        cx.listener(|this, _, w, cx| this.clear_or_close(w, cx)),
-                                    ),
+                                    .on_click(cx.listener(|this, _, w, cx| {
+                                        this.close_all_connections(w, cx)
+                                    })),
                             )
                     })
                     .when(kind == TrafficKind::Rules, |row| {
@@ -404,36 +366,31 @@ impl Render for TrafficPage {
                                     .bordered(false),
                             ),
                         )
-                        .when(kind != TrafficKind::Logs, |body| {
-                            body.child(
-                                div().h(Scrollbar::width()).w_full().flex_shrink_0().child(
-                                    Scrollbar::horizontal(&horizontal_scroll)
-                                        .id("connections-horizontal-scroll")
-                                        .mode(ScrollbarMode::Always)
-                                        .viewport_from_layout(),
-                                ),
-                            )
-                        }),
+                        .child(
+                            div().h(Scrollbar::width()).w_full().flex_shrink_0().child(
+                                Scrollbar::horizontal(&horizontal_scroll)
+                                    .id("connections-horizontal-scroll")
+                                    .mode(ScrollbarMode::Always)
+                                    .viewport_from_layout(),
+                            ),
+                        ),
                 ),
             )
-            .when_some(
-                detail.filter(|_| kind != TrafficKind::Logs),
-                |page, record| {
-                    if kind == TrafficKind::Rules {
-                        page.child(ui::motion::drawer(
-                            presence,
-                            self.rule_details(record, cx),
-                            window,
-                        ))
-                    } else {
-                        page.child(ui::motion::drawer(
-                            presence,
-                            self.connection_details(record, cx),
-                            window,
-                        ))
-                    }
-                },
-            )
+            .when_some(detail, |page, record| {
+                if kind == TrafficKind::Rules {
+                    page.child(ui::motion::drawer(
+                        presence,
+                        self.rule_details(record, cx),
+                        window,
+                    ))
+                } else {
+                    page.child(ui::motion::drawer(
+                        presence,
+                        self.connection_details(record, cx),
+                        window,
+                    ))
+                }
+            })
             .child(
                 ui::workspace_footer()
                     .child(

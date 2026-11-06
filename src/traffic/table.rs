@@ -3,11 +3,11 @@ use super::{
     model::{self, Record},
 };
 use crate::ui;
-use crate::ui::theme::{column, layout, space, text};
+use crate::ui::theme::{column, text};
 use gpui_kit::{
     assets::IconName,
     component::{
-        ActiveTheme, Disableable, Sizable, h_flex,
+        ActiveTheme,
         menu::PopupMenu,
         table::{Column, ColumnSort, TableDelegate, TableState},
     },
@@ -82,7 +82,6 @@ impl RecordsTable {
                 .filter(|(_, r)| {
                     let matches_tab = match self.kind {
                         TrafficKind::Connections => r.active == (self.tab == 0),
-                        TrafficKind::Logs => r.source == self.tab,
                         TrafficKind::Rules => true,
                     };
                     let matches_filter = self.filter.is_empty()
@@ -110,7 +109,6 @@ impl RecordsTable {
             .iter()
             .filter(|r| match self.kind {
                 TrafficKind::Connections => r.active == (tab == 0),
-                TrafficKind::Logs => r.source == tab,
                 TrafficKind::Rules => true,
             })
             .count()
@@ -141,39 +139,6 @@ impl RecordsTable {
         self.rebuild();
     }
 
-    fn actions(&self, row: Record, _cx: &mut Context<TableState<Self>>) -> AnyElement {
-        let id = row.id;
-        let target = row.connection.clone();
-        let title = match self.kind {
-            TrafficKind::Connections => "连接详情",
-            TrafficKind::Rules => "规则详情",
-            TrafficKind::Logs => "日志详情",
-        };
-        let details = row.details.clone();
-        let kind = self.kind;
-        h_flex()
-            .gap(space::XS)
-            .child(
-                ui::icon_button(("record-details", id), IconName::Info, "查看详情")
-                    .small()
-                    .on_click(move |_, window, cx| {
-                        ui::detail_dialog(title, details.clone(), window, cx)
-                    }),
-            )
-            .child(match kind {
-                TrafficKind::Connections if row.active => {
-                    ui::icon_button(("close-connection", id), IconName::X, "关闭此连接")
-                        .small()
-                        .disabled(!self.live)
-                        .on_click(move |_, window, cx| {
-                            super::close_connection(target.clone(), window, cx)
-                        })
-                        .into_any_element()
-                }
-                _ => div().into_any_element(),
-            })
-            .into_any_element()
-    }
     fn headers(&self) -> Vec<(&'static str, f32)> {
         match self.kind {
             TrafficKind::Connections => self
@@ -186,12 +151,6 @@ impl RecordsTable {
                 ("匹配内容", column::CONTENT),
                 ("类型", column::RULE_TYPE),
                 ("策略", column::STRATEGY),
-            ],
-            TrafficKind::Logs => vec![
-                ("时间", column::TIME),
-                ("级别", column::RATE),
-                ("来源", column::PROCESS),
-                ("消息", column::MESSAGE),
             ],
         }
     }
@@ -228,63 +187,23 @@ impl TableDelegate for RecordsTable {
     fn render_header(
         &mut self,
         _: &mut Window,
-        cx: &mut Context<TableState<Self>>,
+        _: &mut Context<TableState<Self>>,
     ) -> Stateful<Div> {
-        let header = div().id("records-header");
-        if self.kind != TrafficKind::Logs {
-            header
-        } else {
-            header.relative().pr(layout::TABLE_ACTIONS_WIDTH).child(
-                h_flex()
-                    .absolute()
-                    .right(space::NONE)
-                    .top(space::NONE)
-                    .h_full()
-                    .w(layout::TABLE_ACTIONS_WIDTH)
-                    .justify_center()
-                    .text_size(text::CAPTION)
-                    .text_color(cx.theme().muted_foreground)
-                    .child(if self.kind == TrafficKind::Rules {
-                        "详情 / 复制"
-                    } else {
-                        "操作"
-                    }),
-            )
-        }
+        div().id("records-header")
     }
 
     fn render_tr(
         &mut self,
         index: usize,
         _: &mut Window,
-        cx: &mut Context<TableState<Self>>,
+        _: &mut Context<TableState<Self>>,
     ) -> Stateful<Div> {
         let id = self
             .visible
             .get(index)
             .map(|index| self.records[*index].id)
             .unwrap_or(index as u64);
-        let mut row = div().id(("record", id));
-        if self.kind == TrafficKind::Logs {
-            row = row.relative().pr(layout::TABLE_ACTIONS_WIDTH);
-            if let Some(record) = self
-                .visible
-                .get(index)
-                .map(|index| self.records[*index].clone())
-            {
-                row = row.child(
-                    h_flex()
-                        .absolute()
-                        .right(space::NONE)
-                        .top(space::NONE)
-                        .h_full()
-                        .w(layout::TABLE_ACTIONS_WIDTH)
-                        .justify_center()
-                        .child(self.actions(record, cx)),
-                );
-            }
-        }
-        row
+        div().id(("record", id))
     }
     fn context_menu(
         &mut self,
@@ -379,12 +298,6 @@ impl TableDelegate for RecordsTable {
         let column = self.data_column(column);
         let color = if !row.enabled {
             cx.theme().muted_foreground
-        } else if self.kind == TrafficKind::Logs && column == 1 {
-            match row.cells[column].as_str() {
-                "ERROR" => cx.theme().danger,
-                "WARN" => cx.theme().warning,
-                _ => cx.theme().muted_foreground,
-            }
         } else if column == 0 {
             cx.theme().foreground
         } else {
@@ -445,15 +358,6 @@ impl TableDelegate for RecordsTable {
                     "无匹配规则"
                 },
                 "尝试调整筛选条件。",
-            ),
-            TrafficKind::Logs => (
-                IconName::ScrollText,
-                if self.query.is_empty() {
-                    "暂无日志"
-                } else {
-                    "无匹配日志"
-                },
-                "尝试调整搜索条件。",
             ),
         };
         ui::empty(icon, title, desc, cx)

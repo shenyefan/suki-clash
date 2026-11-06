@@ -32,7 +32,7 @@ pub(super) async fn read(service: &str, id: u64) -> Result<(String, String), Str
         .await
         .map_err(|error| crate::logging::diagnostic_error("无法读取订阅密钥", error))?;
     serde_json::from_slice(secret.as_bytes())
-        .map_err(|error| crate::logging::diagnostic_error("订阅凭据格式无效".into(), error))
+        .map_err(|error| crate::logging::rejected("订阅凭据格式无效".into(), error))
 }
 pub(super) async fn write(service: &str, id: u64, token: &str, age: &str) -> Result<(), String> {
     let bytes = serde_json::to_vec(&(token, age))

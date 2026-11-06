@@ -85,9 +85,8 @@ impl CredentialStore {
                 &self.service,
                 &id.to_string(),
             ) {
-                Ok(bytes) => serde_json::from_slice(&bytes).map_err(|error| {
-                    crate::logging::diagnostic_error("安全凭据格式无效".into(), error)
-                }),
+                Ok(bytes) => serde_json::from_slice(&bytes)
+                    .map_err(|error| crate::logging::rejected("安全凭据格式无效".into(), error)),
                 Err(error) if error.code() == -25300 => Ok((String::new(), String::new())),
                 Err(error) => Err(crate::logging::diagnostic_error(
                     "无法读取钥匙串凭据".into(),

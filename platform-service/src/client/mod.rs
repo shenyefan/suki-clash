@@ -115,7 +115,7 @@ pub async fn set_config(config: Option<IpcConfig>) {
 }
 
 pub async fn connect() -> Result<IpcHttpClient> {
-    debug!("Connecting to IPC at {}", IPC_PATH);
+    debug!("正在连接本地通道 {}", IPC_PATH);
 
     #[cfg(unix)]
     {
@@ -125,7 +125,7 @@ pub async fn connect() -> Result<IpcHttpClient> {
     }
 
     let c = { CLIENT_CONFIG.read().await.clone() }.unwrap_or_default();
-    debug!("Using config: {:?}", c);
+    debug!("使用内核配置");
     let client = kode_bridge::IpcHttpClient::with_config(
         IPC_PATH,
         ClientConfig {
@@ -150,8 +150,8 @@ pub async fn connect() -> Result<IpcHttpClient> {
         .send()
         .await
     {
-        warn!("Failed to connect to IPC server: {}", e);
-        return Err(anyhow::anyhow!("Failed to connect to IPC server: {}", e));
+        warn!("连接本地通道服务失败（{}）", e);
+        return Err(anyhow::anyhow!("连接本地通道服务失败（{}）", e));
     }
 
     Ok(client)

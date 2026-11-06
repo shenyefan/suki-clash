@@ -17,7 +17,7 @@ fn component(text: &str) -> Result<String, String> {
     percent_encoding::percent_decode_str(text)
         .decode_utf8()
         .map(|text| text.into_owned())
-        .map_err(|error| crate::logging::diagnostic_error("链接文字编码无效".into(), error))
+        .map_err(|error| crate::logging::rejected("链接文字编码无效".into(), error))
 }
 pub(super) fn parse_batch(text: &str) -> Result<Vec<serde_yaml_ng::Value>, String> {
     if text.len() > 2 * 1024 * 1024 {
@@ -90,7 +90,7 @@ fn parse(text: &str) -> Result<Value, String> {
     };
     // Parse every protocol with the same maintained URL parser; no hand-written authority parser.
     let url = url::Url::parse(text)
-        .map_err(|error| crate::logging::diagnostic_error("代理链接格式无效", error))?;
+        .map_err(|error| crate::logging::rejected("代理链接格式无效", error))?;
     let server = url
         .host_str()
         .filter(|host| !host.is_empty())
@@ -241,7 +241,7 @@ fn parse(text: &str) -> Result<Value, String> {
                     value
                         .parse::<u32>()
                         .map_err(|error| {
-                            crate::logging::diagnostic_error(format!("{key}需为非负整数"), error)
+                            crate::logging::rejected(format!("{key}需为非负整数"), error)
                         })?
                         .into(),
                 );
@@ -258,7 +258,7 @@ fn parse(text: &str) -> Result<Value, String> {
                     .map(|entry| entry.trim().parse::<u8>().map(Value::from))
                     .collect::<Result<Vec<_>, _>>()
                     .map_err(|error| {
-                        crate::logging::diagnostic_error("WireGuard reserved需为3个字节", error)
+                        crate::logging::rejected("WireGuard reserved需为3个字节", error)
                     })?;
                 if entries.len() != 3 {
                     return Err("WireGuard reserved需为3个字节".into());
@@ -323,7 +323,7 @@ fn parse(text: &str) -> Result<Value, String> {
                 .next()
                 .unwrap_or("")
                 .parse::<std::net::IpAddr>()
-                .map_err(|error| crate::logging::diagnostic_error("WireGuard 地址无效", error))?;
+                .map_err(|error| crate::logging::rejected("WireGuard 地址无效", error))?;
             map.insert(
                 if ip.is_ipv4() { "ip" } else { "ipv6" }.into(),
                 ip.to_string().into(),
@@ -474,7 +474,7 @@ fn transport(
 fn vmess(raw: &str) -> Result<Value, String> {
     let text = decoded(raw)?;
     let object: Value = serde_json::from_str(&text)
-        .map_err(|error| crate::logging::diagnostic_error("VMess 分享内容需为JSON对象", error))?;
+        .map_err(|error| crate::logging::rejected("VMess 分享内容需为JSON对象", error))?;
     let text = |key| {
         object
             .get(key)

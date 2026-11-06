@@ -9,7 +9,6 @@ pub(super) struct Record {
     pub(super) numbers: Vec<f64>,
     pub(super) active: bool,
     pub(super) enabled: bool,
-    pub(super) source: usize,
     pub(super) details: String,
 }
 #[cfg(test)]
@@ -22,7 +21,6 @@ impl Record {
             numbers: vec![],
             active: true,
             enabled: true,
-            source: 0,
             details: String::new(),
         }
     }
@@ -43,11 +41,6 @@ pub(super) fn samples(kind: TrafficKind) -> Vec<Record> {
             [("DOMAIN-SUFFIX","github.com","节点选择","128 次","刚刚"),("RULE-SET","广告拦截","REJECT","1,246 次","2 秒前"),("DOMAIN-SUFFIX","google.com","节点选择","86 次","5 秒前"),("DOMAIN-KEYWORD","youtube","流媒体","64 次","12 秒前"),("GEOIP","CN","DIRECT","542 次","刚刚"),("IP-CIDR","192.168.0.0/16","DIRECT","216 次","1 分钟前"),("DOMAIN-SUFFIX","telegram.org","节点选择","38 次","2 分钟前"),("MATCH","所有其他流量","节点选择","172 次","刚刚")].into_iter().enumerate().map(|(i,(kind,payload,proxy,hits,last))|{
                 let mut row=Record::new(i as u64+100,&[payload,kind,proxy,hits,last]);row.numbers=vec![0.,0.,0.,[128.,1246.,86.,64.,542.,216.,38.,172.][i],0.];
                 row.details=format!("规则类型\t{kind}\n匹配内容\t{payload}\n出站策略\t{proxy}\n命中次数\t{hits}\n最近命中\t{last}");row
-            }).collect()
-        },
-        TrafficKind::Logs=>{
-            [("18:42:06","INFO","应用","工作区已准备就绪",0),("18:42:06","INFO","配置","已加载订阅 Suki Cloud",0),("18:42:07","DEBUG","代理","代理组：节点选择、自动选择、流媒体",0),("18:42:08","WARN","内核","等待内核事件",0),("18:42:10","INFO","配置","覆写：基础分流",0),("18:42:06","INFO","Mihomo","Mixed proxy listening at: 127.0.0.1:7890",1),("18:42:07","INFO","TCP","github.com:443 → 节点选择",1),("18:42:08","DEBUG","DNS","resolve github.com from nameserver",1),("18:42:09","WARN","UDP","connection timeout",1),("18:42:10","ERROR","DNS","upstream resolver unavailable",1)].into_iter().enumerate().map(|(i,(time,level,source,message,tab))|{
-                let mut row=Record::new(i as u64+200,&[time,level,source,message]);row.source=tab;row.details=format!("时间\t{time}\n级别\t{level}\n来源\t{source}\n\n{message}");row
             }).collect()
         },
     }

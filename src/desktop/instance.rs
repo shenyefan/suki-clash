@@ -38,7 +38,7 @@ pub(crate) struct Service {
 }
 impl Service {
     pub(crate) fn acquire(paths: &AppPaths, uri: Option<String>) -> Result<Disposition, String> {
-        let directory = paths.directory(DirectoryKind::Cache);
+        let directory = paths.directory(DirectoryKind::Runtime);
         std::fs::create_dir_all(&directory).map_err(crate::logging::error_message)?;
         let mut options = OpenOptions::new();
         options.read(true).write(true).create(true).truncate(false);
@@ -208,7 +208,7 @@ pub(crate) fn parse_uri(uri: &str) -> Result<crate::profiles::model::Subscriptio
         return Err("订阅导入链接过长".into());
     }
     let parsed = url::Url::parse(uri)
-        .map_err(|error| crate::logging::diagnostic_error("订阅导入链接无效", error))?;
+        .map_err(|error| crate::logging::rejected("订阅导入链接无效", error))?;
     if !matches!(parsed.scheme(), "clash" | "suki-clash")
         || parsed.host_str() != Some("install-config")
     {
@@ -274,7 +274,12 @@ mod integration_tests {
             panic!("primary")
         };
         let record: Record = serde_json::from_slice(
-            &std::fs::read(paths.directory(DirectoryKind::Cache).join("instance.json")).unwrap(),
+            &std::fs::read(
+                paths
+                    .directory(DirectoryKind::Runtime)
+                    .join("instance.json"),
+            )
+            .unwrap(),
         )
         .unwrap();
         let runtime = tokio::runtime::Builder::new_current_thread()

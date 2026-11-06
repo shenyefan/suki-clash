@@ -118,7 +118,7 @@ pub(super) fn initial_entries() -> Vec<LogEntry> {
 mod tests {
     use super::*;
     #[test]
-    fn undo_clear_preserves_new_records_pause_and_bounded_history() {
+    fn undo_clear_preserves_new_records_and_bounded_history() {
         let mut buffer = LogBuffer::default();
         buffer.append(initial_entries());
         let removed = buffer

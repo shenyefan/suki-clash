@@ -395,7 +395,7 @@ pub async fn run_ipc_supervisor_until_shutdown(
 
 async fn run_supervisor(shutdown: impl Future<Output = ()>) -> AnyResult<()> {
     set_service_lifecycle_state(ServiceLifecycleState::Starting);
-    info!("Starting IPC server...");
+    info!("正在启动本地通道服务");
 
     let mut server_handle = match run_ipc_server().await {
         Ok(handle) => handle,
@@ -405,7 +405,7 @@ async fn run_supervisor(shutdown: impl Future<Output = ()>) -> AnyResult<()> {
         }
     };
     set_service_lifecycle_state(ServiceLifecycleState::Running);
-    info!("IPC server started successfully. Waiting for shutdown signal...");
+    info!("本地通道服务已启动，等待停止信号");
 
     let mut restart_timestamps: Vec<Instant> = Vec::new();
     let mut consecutive_attempt = 0u32;
@@ -414,7 +414,7 @@ async fn run_supervisor(shutdown: impl Future<Output = ()>) -> AnyResult<()> {
     loop {
         tokio::select! {
             _ = &mut shutdown => {
-                info!("Shutdown signal received. Stopping IPC server...");
+                info!("收到停止信号，正在停止本地通道服务");
                 break;
             }
             join_result = &mut server_handle => {
@@ -423,7 +423,7 @@ async fn run_supervisor(shutdown: impl Future<Output = ()>) -> AnyResult<()> {
                     Ok(Err(error)) => format!("IPC server returned error: {error}"),
                     Err(error) => format!("IPC server task failed: {error}"),
                 };
-                warn!("{reason}; rebuilding IPC listener in-process");
+                warn!("{reason}，正在重建本地通道监听");
                 set_service_lifecycle_state(ServiceLifecycleState::RecoveringIpc);
 
                 let now = Instant::now();
@@ -456,7 +456,7 @@ async fn run_supervisor(shutdown: impl Future<Output = ()>) -> AnyResult<()> {
                     }
                 };
                 set_service_lifecycle_state(ServiceLifecycleState::Running);
-                info!("IPC listener rebuilt successfully");
+                info!("本地通道监听已重建");
             }
         }
     }
@@ -523,12 +523,12 @@ async fn cleanup_stale_ipc_socket() -> Result<()> {
         {
             Ok(Ok(_stream)) => {
                 warn!(
-                    "IPC socket {:?} is reachable; leaving it in place",
+                    "本地通道套接字 {:?} 可连接，保留不清理",
                     socket_path
                 );
             }
             _ => {
-                info!("Cleaning up stale IPC socket: {:?}", socket_path);
+                info!("清理失效的本地通道套接字 {:?}", socket_path);
                 tokio::fs::remove_file(socket_path).await?;
             }
         }
@@ -666,7 +666,7 @@ async fn enter_owner_lifecycle(
 fn create_ipc_router() -> Result<Router> {
     let router = Router::new()
         .get(IpcCommand::Magic.as_ref(), |ctx| async move {
-            trace!("Received Magic command");
+            trace!("收到握手命令");
             ipc_request_context_to_auth_context(&ctx)?;
             Ok(HttpResponse::builder().text("Tunglies!").build())
         })
@@ -697,7 +697,7 @@ fn create_ipc_router() -> Result<Router> {
             }
         })
         .get(IpcCommand::Status.as_ref(), |ctx| async move {
-            trace!("Received Status command");
+            trace!("收到状态查询命令");
             let (_request, owner) = match authenticate_request::<AuthenticatedRequest<()>>(&ctx) {
                 ControlFlow::Continue(authenticated) => authenticated,
                 ControlFlow::Break(response) => return response,
@@ -716,7 +716,7 @@ fn create_ipc_router() -> Result<Router> {
         })
         .post(IpcCommand::StartClash.as_ref(), |ctx| async move {
             let handler_deadline = Instant::now() + IPC_HANDLER_TIMEOUT;
-            trace!("Received StartClash command");
+            trace!("收到启动内核命令");
             let (request, owner) =
                 match authenticate_request::<AuthenticatedRequest<StartClashRequest>>(&ctx) {
                     ControlFlow::Continue(authenticated) => authenticated,
@@ -773,7 +773,7 @@ fn create_ipc_router() -> Result<Router> {
                 Ok(result) => result,
                 Err(error) => return service_error(error),
             };
-            info!("Core started successfully");
+            info!("内核已启动");
             ok_json(StartClashResult {
                 session: OwnerSessionHandle {
                     generation: active.generation,
@@ -782,7 +782,7 @@ fn create_ipc_router() -> Result<Router> {
             })
         })
         .get(IpcCommand::GetClashLogs.as_ref(), |ctx| async move {
-            trace!("Received GetClashLogs command");
+            trace!("收到读取内核日志命令");
             let (request, owner) = match authenticate_request::<
                 AuthenticatedSessionRequest<crate::CoreLogRequest>,
             >(&ctx)
@@ -806,7 +806,7 @@ fn create_ipc_router() -> Result<Router> {
             ))
         })
         .get(IpcCommand::GetClashLogSnapshot.as_ref(), |ctx| async move {
-            trace!("Received GetClashLogSnapshot command");
+            trace!("收到读取内核日志快照命令");
             let (_request, owner) = match authenticate_request::<AuthenticatedRequest<()>>(&ctx) {
                 ControlFlow::Continue(authenticated) => authenticated,
                 ControlFlow::Break(response) => return response,
@@ -835,7 +835,7 @@ fn create_ipc_router() -> Result<Router> {
         })
         .delete(IpcCommand::StopClash.as_ref(), |ctx| async move {
             let handler_deadline = Instant::now() + IPC_HANDLER_TIMEOUT;
-            trace!("Received StopClash command");
+            trace!("收到停止内核命令");
             let (request, owner) =
                 match authenticate_request::<AuthenticatedSessionRequest<()>>(&ctx) {
                     ControlFlow::Continue(authenticated) => authenticated,
@@ -855,7 +855,7 @@ fn create_ipc_router() -> Result<Router> {
             }
             let kill_by = sigkill_deadline(handler_deadline, STOP_RESERVE);
             match CORE_MANAGER.lock().await.stop_core_by(kill_by).await {
-                Ok(_) => info!("Core stopped successfully"),
+                Ok(_) => info!("内核已停止"),
                 Err(e) => {
                     return service_unavailable(format!("Failed to stop core: {}", e));
                 }
@@ -868,7 +868,7 @@ fn create_ipc_router() -> Result<Router> {
                 set_core_lifecycle_state(ServiceLifecycleState::Fatal);
                 return service_unavailable(format!("Failed to clear active owner: {}", e));
             }
-            ok_empty("Core stopped successfully")
+            ok_empty("内核已停止")
         })
         .post(IpcCommand::WindowsNetwork.as_ref(), |ctx| async move {
             let (request, owner) = match authenticate_request::<
@@ -893,7 +893,7 @@ fn create_ipc_router() -> Result<Router> {
             }
         })
         .put(IpcCommand::StageRuntime.as_ref(), |ctx| async move {
-            trace!("Received StageRuntime command");
+            trace!("收到暂存运行时命令");
             let (request, owner) =
                 match authenticate_request::<AuthenticatedSessionRequest<RuntimeBundle>>(&ctx) {
                     ControlFlow::Continue(authenticated) => authenticated,
@@ -916,7 +916,7 @@ fn create_ipc_router() -> Result<Router> {
             }
         })
         .get(IpcCommand::ReadRuntimeFile.as_ref(), |ctx| async move {
-            trace!("Received ReadRuntimeFile command");
+            trace!("收到读取运行文件命令");
             let (request, owner) =
                 match authenticate_request::<AuthenticatedSessionRequest<RuntimeFileRequest>>(&ctx)
                 {
@@ -941,7 +941,7 @@ fn create_ipc_router() -> Result<Router> {
             }
         })
         .put(IpcCommand::UpdateWriter.as_ref(), |ctx| async move {
-            trace!("Received UpdateWriter command");
+            trace!("收到更新写入配置命令");
             let (request, owner) =
                 match authenticate_request::<AuthenticatedSessionRequest<WriterConfig>>(&ctx) {
                     ControlFlow::Continue(authenticated) => authenticated,
@@ -970,7 +970,7 @@ fn create_ipc_router() -> Result<Router> {
                 .to_string_lossy()
                 .into_owned();
             match set_or_update_writer(&writer_config) {
-                Ok(_) => info!("Update writer successfully"),
+                Ok(_) => info!("写入配置已更新"),
                 Err(e) => {
                     return service_unavailable(format!("Failed to update writer: {}", e));
                 }
@@ -981,7 +981,7 @@ fn create_ipc_router() -> Result<Router> {
             ok_empty("Update Writer successfully")
         })
         .put(IpcCommand::SetSystemProxy.as_ref(), |ctx| async move {
-            trace!("Received SetSystemProxy command");
+            trace!("收到设置系统代理命令");
             let (request, owner) = match authenticate_request::<
                 AuthenticatedSessionRequest<crate::proxy_owner::Operation>,
             >(&ctx)

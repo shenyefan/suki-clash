@@ -39,25 +39,6 @@ pub(super) fn save_report(
     let path = report_path(paths, report.id);
     crate::storage::atomic_write(&path, &bytes)
         .map_err(|error| crate::logging::diagnostic_error("脚本日志保存失败", error))?;
-    let directory = path.parent().ok_or("脚本日志目录无效")?;
-    let mut files = std::fs::read_dir(directory)
-        .map_err(|error| crate::logging::diagnostic_error("无法读取脚本日志目录", error))?
-        .filter_map(Result::ok)
-        .filter_map(|entry| {
-            let metadata = std::fs::symlink_metadata(entry.path()).ok()?;
-            (metadata.is_file()
-                && !metadata.file_type().is_symlink()
-                && entry.path().extension().is_some_and(|ext| ext == "json")
-                && entry.path() != path)
-                .then(|| (metadata.modified().ok(), entry.path()))
-        })
-        .collect::<Vec<_>>();
-    files.sort();
-    let excess = files.len().saturating_sub(127);
-    for (_, path) in files.into_iter().take(excess) {
-        std::fs::remove_file(path)
-            .map_err(|error| crate::logging::diagnostic_error("脚本日志清理失败", error))?;
-    }
     Ok(())
 }
 impl Actor {
@@ -84,7 +65,7 @@ impl Actor {
             return Err("脚本日志超过上限".into());
         }
         let report: crate::configuration::script::Report = serde_json::from_slice(&bytes)
-            .map_err(|error| crate::logging::diagnostic_error("脚本日志格式无效", error))?;
+            .map_err(|error| crate::logging::rejected("脚本日志格式无效", error))?;
         let mut text = format!(
             "{}  {}\n",
             report.at,
@@ -311,7 +292,8 @@ impl Actor {
         if ids.is_empty() {
             return Ok(());
         }
-        log::info!("自动更新覆写开始；条目={}", ids.len());
+        let count = ids.len();
+        log::debug!("开始自动更新覆写，共 {count} 项");
         self.snapshot.operation_active = true;
         self.snapshot.operation_module = Some("overrides");
         let result = self
@@ -323,8 +305,8 @@ impl Actor {
         self.snapshot.operation_active = false;
         self.snapshot.progress = None;
         match &result {
-            Ok(()) => log::info!("自动更新覆写完成"),
-            Err(error) => log::error!("自动更新覆写失败：{error}"),
+            Ok(()) => log::info!("自动更新覆写完成，共 {count} 项"),
+            Err(error) => log::error!("自动更新覆写失败（{error}）"),
         }
         result
     }

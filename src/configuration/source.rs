@@ -90,7 +90,7 @@ impl Source {
             .split(',')
             .map(str::parse::<u64>)
             .collect::<Result<Vec<_>, _>>()
-            .map_err(|error| crate::logging::diagnostic_error("订阅索引 ID 无效", error))?;
+            .map_err(|error| crate::logging::rejected("订阅索引 ID 无效", error))?;
         if values.get("format").map(String::as_str) != Some("1")
             || parsed.iter().filter(|value| **value == id).count() != 1
         {
@@ -139,7 +139,7 @@ impl Source {
                     return Ok(Self {
                         profile: None,
                         content: String::from_utf8(bytes).map_err(|error| {
-                            crate::logging::diagnostic_error("测试来源必须为 UTF-8", error)
+                            crate::logging::rejected("测试来源必须为 UTF-8", error)
                         })?,
                     });
                 }

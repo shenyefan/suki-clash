@@ -134,7 +134,7 @@ pub(super) fn unpack_gzip(bytes: &[u8]) -> Result<Vec<u8>, String> {
 pub(super) fn unpack_zip(bytes: &[u8]) -> Result<Vec<u8>, String> {
     use std::io::{Cursor, Read as _};
     let mut archive = zip::ZipArchive::new(Cursor::new(bytes))
-        .map_err(|error| crate::logging::diagnostic_error("内核 ZIP 归档无效", error))?;
+        .map_err(|error| crate::logging::rejected("内核 ZIP 归档无效", error))?;
     if archive.len() > 1024 {
         return Err("内核归档条目超过上限".into());
     }

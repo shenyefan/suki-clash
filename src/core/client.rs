@@ -42,7 +42,7 @@ impl Client {
                 .map(|stream| Box::new(stream) as Box<dyn Ipc>)
                 .map_err(|error| {
                     log::error!(
-                        "连接内核本地通道失败；{}",
+                        "连接内核本地通道失败（{}）",
                         crate::logging::error_chain(&error)
                     );
                     format!("连接内核本地通道失败：{}", error.kind())
@@ -84,7 +84,7 @@ impl Client {
                     crate::logging::diagnostic_error("无法构造内核 WebSocket 请求", error)
                 })?;
             let mut authorization = HeaderValue::from_str(&format!("Bearer {}", self.secret))
-                .map_err(|error| crate::logging::diagnostic_error("内核鉴权配置无效", error))?;
+                .map_err(|error| crate::logging::rejected("内核鉴权配置无效", error))?;
             authorization.set_sensitive(true);
             request.headers_mut().insert("Authorization", authorization);
             let config = WebSocketConfig::default()
@@ -95,7 +95,7 @@ impl Client {
                     .await
                     .map_err(|error| {
                         log::error!(
-                            "内核 WebSocket 握手原始错误：{}",
+                            "内核 WebSocket 握手失败（{}）",
                             crate::logging::error_chain(&error)
                         );
                         match error {
@@ -207,7 +207,7 @@ impl Client {
                 &path,
                 Duration::from_secs(5),
                 serde_json::to_vec(&serde_json::json!({"name":node}))
-                    .map_err(|error| crate::logging::diagnostic_error("节点名称无效", error))?,
+                    .map_err(|error| crate::logging::rejected("节点名称无效", error))?,
             )
             .await?;
         } else {
@@ -222,7 +222,7 @@ impl Client {
             "/configs",
             Duration::from_secs(5),
             serde_json::to_vec(&serde_json::json!({"mode":mode.label()}))
-                .map_err(|error| crate::logging::diagnostic_error("模式无效", error))?,
+                .map_err(|error| crate::logging::rejected("模式无效", error))?,
         )
         .await
         .map(|_| ())
@@ -253,7 +253,7 @@ impl Client {
         })
         .await
         .map_err(|error| {
-            log::debug!("测速超时：{error}");
+            log::debug!("节点测速超时（{error}）");
             MeasurementError::Timeout
         })?
         .map_err(MeasurementError::Failed)?;

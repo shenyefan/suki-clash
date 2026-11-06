@@ -186,7 +186,7 @@ pub(super) fn read() -> Result<OsSnapshot, String> {
                 (String::new(), 0)
             } else {
                 let url = url::Url::parse(&address)
-                    .map_err(|error| crate::logging::diagnostic_error("KDE 代理地址无效", error))?;
+                    .map_err(|error| crate::logging::rejected("KDE 代理地址无效", error))?;
                 (
                     url.host_str()
                         .unwrap_or_default()
@@ -200,9 +200,7 @@ pub(super) fn read() -> Result<OsSnapshot, String> {
             let host = string(&command("gsettings", &["get", &schema, "host"])?)?;
             let port = command("gsettings", &["get", &schema, "port"])?
                 .parse::<u16>()
-                .map_err(|error| {
-                    crate::logging::diagnostic_error("GSettings 代理端口无效", error)
-                })?;
+                .map_err(|error| crate::logging::rejected("GSettings 代理端口无效", error))?;
             (host, port)
         };
         Ok(Endpoint {

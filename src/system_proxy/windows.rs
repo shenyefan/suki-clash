@@ -95,7 +95,7 @@ fn query(connection: Option<&str>) -> Result<(OsSnapshot, ConnectionSettings), S
             (String::new(), 0)
         } else {
             let url = url::Url::parse(&format!("http://{address}"))
-                .map_err(|error| crate::logging::diagnostic_error("WinINET 代理地址无效", error))?;
+                .map_err(|error| crate::logging::rejected("WinINET 代理地址无效", error))?;
             (
                 url.host_str()
                     .unwrap_or_default()
@@ -236,7 +236,7 @@ fn connections() -> Result<Vec<Option<String>>, String> {
             .position(|unit| *unit == 0)
             .unwrap_or(entry.szEntryName.len());
         let name = String::from_utf16(&entry.szEntryName[..length])
-            .map_err(|error| crate::logging::diagnostic_error("RAS 连接名称编码无效", error))?;
+            .map_err(|error| crate::logging::rejected("RAS 连接名称编码无效", error))?;
         names.push(Some(name));
     }
     Ok(names)

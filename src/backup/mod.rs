@@ -91,7 +91,7 @@ fn sync_key(name: &str) -> bool {
 }
 fn sanitized_settings(bytes: &[u8], local: Option<&[u8]>) -> Result<Vec<u8>, String> {
     let mut root: serde_json::Map<String, serde_json::Value> = serde_json::from_slice(bytes)
-        .map_err(|error| crate::logging::diagnostic_error("备份程序设置格式无效", error))?;
+        .map_err(|error| crate::logging::rejected("备份程序设置格式无效", error))?;
     if root
         .get("schema_version")
         .and_then(serde_json::Value::as_u64)
@@ -103,9 +103,7 @@ fn sanitized_settings(bytes: &[u8], local: Option<&[u8]>) -> Result<Vec<u8>, Str
     let local = local
         .map(serde_json::from_slice::<serde_json::Value>)
         .transpose()
-        .map_err(|error| {
-            crate::logging::diagnostic_error("本机程序设置格式无效，不能恢复覆盖", error)
-        })?;
+        .map_err(|error| crate::logging::rejected("本机程序设置格式无效，不能恢复覆盖", error))?;
     let general = root
         .entry("general")
         .or_insert_with(|| serde_json::json!({}))
@@ -248,7 +246,7 @@ impl Archive {
         let text = if let Some(recipient) = recipient {
             let recipient = recipient
                 .parse::<age::x25519::Recipient>()
-                .map_err(|error| crate::logging::diagnostic_error("Age接收方公钥无效", error))?;
+                .map_err(|error| crate::logging::rejected("Age接收方公钥无效", error))?;
             let encryptor =
                 age::Encryptor::with_recipients(std::iter::once(&recipient as &dyn age::Recipient))
                     .map_err(|error| {
@@ -271,7 +269,7 @@ impl Archive {
                 .and_then(|armor| armor.finish())
                 .map_err(|error| crate::logging::diagnostic_error("无法完成Age备份", error))?;
             String::from_utf8(encrypted)
-                .map_err(|error| crate::logging::diagnostic_error("Age备份编码无效", error))?
+                .map_err(|error| crate::logging::rejected("Age备份编码无效", error))?
         } else {
             text
         };
@@ -289,9 +287,9 @@ impl Archive {
             let identity = identity
                 .ok_or("此备份需要Age私钥")?
                 .parse::<age::x25519::Identity>()
-                .map_err(|error| crate::logging::diagnostic_error("Age私钥无效", error))?;
+                .map_err(|error| crate::logging::rejected("Age私钥无效", error))?;
             let decryptor = age::Decryptor::new(age::armor::ArmoredReader::new(text.as_bytes()))
-                .map_err(|error| crate::logging::diagnostic_error("Age备份格式无效", error))?;
+                .map_err(|error| crate::logging::rejected("Age备份格式无效", error))?;
             let reader = decryptor
                 .decrypt(std::iter::once(&identity as &dyn age::Identity))
                 .map_err(|error| crate::logging::diagnostic_error("Age备份解密失败", error))?;
@@ -304,7 +302,7 @@ impl Archive {
                 return Err("Age备份解密后超过上限".into());
             }
             decrypted = String::from_utf8(bytes)
-                .map_err(|error| crate::logging::diagnostic_error("备份不是UTF-8文本", error))?;
+                .map_err(|error| crate::logging::rejected("备份不是UTF-8文本", error))?;
             decrypted.as_str()
         } else {
             text
@@ -314,9 +312,9 @@ impl Archive {
             .ok_or("不是当前Suki Clash备份格式")?;
         let bytes = base64::engine::general_purpose::STANDARD
             .decode(encoded)
-            .map_err(|error| crate::logging::diagnostic_error("备份编码无效", error))?;
+            .map_err(|error| crate::logging::rejected("备份编码无效", error))?;
         let mut zip = zip::ZipArchive::new(Cursor::new(bytes))
-            .map_err(|error| crate::logging::diagnostic_error("备份压缩包无效", error))?;
+            .map_err(|error| crate::logging::rejected("备份压缩包无效", error))?;
         if zip.len() > 10001 {
             return Err("备份文件数量超过上限".into());
         }
@@ -329,7 +327,7 @@ impl Archive {
                 .map_err(|error| crate::logging::diagnostic_error("无法读取备份条目", error))?;
             let name = entry
                 .name()
-                .map_err(|error| crate::logging::diagnostic_error("备份文件名编码无效", error))?
+                .map_err(|error| crate::logging::rejected("备份文件名编码无效", error))?
                 .into_owned();
             if entry.is_dir()
                 || entry
@@ -355,9 +353,10 @@ impl Archive {
                 if manifest.is_some() {
                     return Err("备份清单重复".into());
                 }
-                manifest = Some(serde_json::from_slice::<Manifest>(&bytes).map_err(|error| {
-                    crate::logging::diagnostic_error("备份清单格式无效", error)
-                })?);
+                manifest = Some(
+                    serde_json::from_slice::<Manifest>(&bytes)
+                        .map_err(|error| crate::logging::rejected("备份清单格式无效", error))?,
+                );
             } else if files.insert(name, bytes).is_some() {
                 return Err("备份文件名重复".into());
             }

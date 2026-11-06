@@ -33,7 +33,7 @@ pub(super) fn read(service: &str, id: u64) -> Result<(String, String), String> {
             )
         };
         let result = serde_json::from_slice(bytes)
-            .map_err(|error| crate::logging::diagnostic_error("订阅凭据格式无效".into(), error));
+            .map_err(|error| crate::logging::rejected("订阅凭据格式无效".into(), error));
         CredFree(pointer.cast());
         result
     }

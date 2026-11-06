@@ -73,9 +73,7 @@ impl Actor {
                     settings
                         .recipient
                         .parse::<age::x25519::Recipient>()
-                        .map_err(|error| {
-                            crate::logging::diagnostic_error("Age接收方公钥无效", error)
-                        })?;
+                        .map_err(|error| crate::logging::rejected("Age接收方公钥无效", error))?;
                 }
                 let vault = crate::profiles::CredentialStore::gist(&self.paths);
                 let previous = vault.read(0).await?;
@@ -84,7 +82,7 @@ impl Actor {
                     desired
                         .1
                         .parse::<age::x25519::Identity>()
-                        .map_err(|error| crate::logging::diagnostic_error("Age私钥无效", error))?;
+                        .map_err(|error| crate::logging::rejected("Age私钥无效", error))?;
                 }
                 if desired != previous {
                     vault.write(0, &desired.0, &desired.1).await?;

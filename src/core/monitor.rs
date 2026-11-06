@@ -106,7 +106,9 @@ impl Runtime {
                     self.memory_error = None;
                 }
                 Err(error) => {
-                    log::error!("内存流解析原始错误：{error}");
+                    if self.memory_error.is_none() {
+                        log::warn!("解析内核内存流失败（{error}）");
+                    }
                     self.memory_live = false;
                     self.memory_error = Some("内存流响应无效".into());
                 }
@@ -280,7 +282,7 @@ pub(super) async fn run(
                             #[derive(serde::Deserialize)] struct Traffic {up:u64,down:u64}
                             match serde_json::from_slice::<Traffic>(&packet.bytes) {
                                 Ok(rate)=> {runtime.statistics.upload_rate=Some(rate.up);runtime.statistics.download_rate=Some(rate.down);runtime.statistics.rates=recorder.record_rate(chrono::Local::now(),rate.up,rate.down);runtime.traffic_live=true;traffic_error=None;},
-                                Err(error)=>{log::error!("流量流解析原始错误：{error}");traffic_error=Some("流量流响应无效".into());runtime.traffic_live=false;runtime.statistics.upload_rate=None;runtime.statistics.download_rate=None;runtime.statistics.rates.clear();recorder.gap();}
+                                Err(error)=>{if traffic_error.is_none(){log::warn!("解析内核流量流失败（{error}）");}traffic_error=Some("流量流响应无效".into());runtime.traffic_live=false;runtime.statistics.upload_rate=None;runtime.statistics.download_rate=None;runtime.statistics.rates.clear();recorder.gap();}
                             }
                         } else if let Some(error)=state.error {recorder.gap();runtime.statistics.rates.clear();runtime.traffic_live=false;runtime.statistics.upload_rate=None;runtime.statistics.download_rate=None;traffic_error=Some(error);}
                     },
@@ -308,7 +310,7 @@ pub(super) async fn run(
                         if let Some(task)=probe.as_ref() && task.is_finished() && let Some(task)=probe.take() {
                             match task.await {
                                 Ok(result) if scope==Some((result.generation,result.epoch)) => {
-                                    if let Some(error) = &result.error { log::warn!("出口 IP 检测结束：{error}"); } else { log::info!("出口 IP 检测完成"); }
+                                    if let Some(error) = &result.error { log::warn!("出口 IP 检测失败（{error}）"); } else { log::debug!("出口 IP 检测完成"); }
                                     runtime.apply_probe(result)
                                 },
                                 Err(error) => runtime.probe_error=Some(format!("出口 IP 查询任务异常：{error}")),
@@ -368,7 +370,7 @@ async fn read_control(
         target.client.proxies(&target.order)
     )?;
     let mode = serde_json::from_value(config.get("mode").cloned().ok_or("内核缺少模式信息")?)
-        .map_err(|error| crate::logging::diagnostic_error("内核模式无效", error))?;
+        .map_err(|error| crate::logging::rejected("内核模式无效", error))?;
     let dns = config
         .get("dns")
         .and_then(|dns| dns.get("enhanced-mode"))
