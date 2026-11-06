@@ -495,10 +495,9 @@ impl Render for SukiApp {
                             .mr(space::SM)
                             .mb(space::SM)
                             .rounded(cx.theme().radius_lg)
-                            .when(
-                                self.page != Page::Overview || !ui::theme::translucent(cx),
-                                |pane| pane.bg(ui::workspace_tint(cx)),
-                            )
+                            .when(self.page != Page::Overview, |pane| {
+                                pane.bg(ui::workspace_tint(cx))
+                            })
                             .overflow_hidden()
                             .child({
                                 let layers = self.page_weights(window, cx);
@@ -565,6 +564,41 @@ mod tests {
         assert_eq!(std::fs::read(broken).unwrap(), b"broken settings");
         crate::integration::finish_test_services(cx);
     }
+    #[gpui_kit::test]
+    fn unavailable_executor_does_not_repeat_startup_error_from_background_pages(
+        cx: &mut TestAppContext,
+    ) {
+        let root = tempfile::tempdir().unwrap();
+        let service = crate::integration::Service::start(
+            crate::integration::Repository::open(crate::integration::AppPaths::isolated(
+                root.path(),
+            ))
+            .unwrap(),
+        )
+        .unwrap();
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            crate::integration::init(service, Some("内核执行端不可用".into()), cx);
+            cx.set_reduce_motion(true);
+        });
+        let handle = cx.open_window(size(px(1220.), px(820.)), |window, cx| {
+            let app = cx.new(|cx| SukiApp::new(window, cx));
+            gpui_kit::base::Root::new(app, window, cx)
+        });
+        cx.run_until_parked();
+        cx.update_window(handle.into(), |_, window, cx| {
+            assert_eq!(crate::ui::notifications::current(window, cx).len(), 1);
+            window.click("nav-resources", cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.update_window(handle.into(), |_, window, cx| {
+            assert_eq!(crate::ui::notifications::current(window, cx).len(), 1);
+        })
+        .unwrap();
+        crate::integration::finish_test_services(cx);
+    }
+
     #[gpui_kit::test]
     fn sidebar_geometry_moves_together_and_reverses_without_jumps(cx: &mut TestAppContext) {
         let root = tempfile::tempdir().unwrap();

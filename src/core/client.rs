@@ -297,7 +297,9 @@ impl Client {
         let config = self.json("/configs").await?;
         let actual = Self::read_tun_enabled(&config)?;
         if desired != actual {
-            return Err("内核虚拟网卡状态与请求不一致".into());
+            return Err(format!(
+                "内核虚拟网卡状态与请求不一致（期望 {desired}，实际 {actual}）"
+            ));
         }
         #[cfg(target_os = "macos")]
         if actual
@@ -315,6 +317,31 @@ impl Client {
             return Err("内核未确认虚拟网卡 DNS 模式，请更新内核或修正配置".into());
         }
         Ok(actual)
+    }
+
+    /// The IPC endpoint can precede asynchronous TUN adapter initialization.
+    /// Confirm the actual state within a bounded window before committing or rolling back.
+    pub(super) async fn wait_configuration_ready(
+        &self,
+        expected: &serde_yaml_ng::Value,
+    ) -> Result<bool, String> {
+        let mut last_error = None;
+        let ready = tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                let result = async {
+                    self.verify_listeners(expected).await?;
+                    self.verify_tun(expected).await
+                }
+                .await;
+                match result {
+                    Ok(actual) => return actual,
+                    Err(error) => last_error = Some(error),
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        })
+        .await;
+        ready.map_err(|_| last_error.unwrap_or_else(|| "内核配置就绪检查超时".into()))
     }
     pub(super) async fn reload_file(&self, path: &str) -> Result<(), String> {
         let body = serde_json::to_vec(&serde_json::json!({"path":path}))
@@ -576,6 +603,7 @@ pub(super) fn random_token() -> Result<String, io::Error> {
 #[cfg(all(test, unix))]
 mod tests {
     use super::{Client, Endpoint};
+    use std::time::Duration;
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
     #[tokio::test]
@@ -727,6 +755,53 @@ mod tests {
             assert!(!error.contains("secret-response"));
             assert!(!error.contains("test-secret"));
             server.await.unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn readiness_waits_for_listeners_and_tun_and_bounds_persistent_mismatch() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+        for (field, becomes_ready) in [("tun", true), ("mixed-port", true), ("tun", false)] {
+            let root = tempfile::tempdir().unwrap();
+            let socket = root.path().join("tun-ready.sock");
+            let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+            let requests = Arc::new(AtomicUsize::new(0));
+            let count = requests.clone();
+            let server = tokio::spawn(async move {
+                loop {
+                    let (mut stream, _) = listener.accept().await.unwrap();
+                    let mut request = [0; 4096];
+                    let read = stream.read(&mut request).await.unwrap();
+                    assert!(request[..read].starts_with(b"GET /configs "));
+                    let ready = becomes_ready && count.fetch_add(1, Ordering::SeqCst) >= 2;
+                    let body = serde_json::json!({
+                        "tun": {"enable": field != "tun" || ready},
+                        "mixed-port": if field == "mixed-port" && !ready {0} else {7897},
+                    })
+                    .to_string();
+                    stream.write_all(format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
+                }
+            });
+            let client = Client::new(Endpoint::Unix(socket), String::new());
+            let expected =
+                serde_yaml_ng::from_str("mixed-port: 7897\ntun: {enable: true}").unwrap();
+            let result = tokio::time::timeout(
+                Duration::from_secs(5),
+                client.wait_configuration_ready(&expected),
+            )
+            .await
+            .unwrap();
+            if becomes_ready {
+                assert!(result.unwrap());
+                assert!(requests.load(Ordering::SeqCst) >= 3);
+            } else {
+                let error = result.unwrap_err();
+                assert!(error.contains("期望 true，实际 false"), "{error}");
+            }
+            server.abort();
         }
     }
 

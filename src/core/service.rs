@@ -455,6 +455,10 @@ impl Actor {
         }
     }
     pub(super) fn publish(&mut self, phase: Phase, error: Option<String>) {
+        self.publish_snapshot(phase, error, false);
+    }
+
+    fn publish_snapshot(&mut self, phase: Phase, error: Option<String>, error_logged: bool) {
         if let Ok(chain) = crate::proxies::chain_config::Config::load(&self.paths) {
             self.snapshot.chain = chain;
         }
@@ -470,6 +474,7 @@ impl Actor {
             self.snapshot.tun = None;
         }
         self.snapshot.error = error;
+        self.snapshot.error_logged = error_logged;
         self.snapshot.resources.refresh_files(&self.paths);
         self.snapshot.core_installed = Some(crate::bootstrap::require_core(&self.paths).is_ok());
         let mut notices = Vec::new();
@@ -749,7 +754,7 @@ impl Actor {
                         log::error!("{}失败，请求编号 {}，{}（{}）", operation_name, request.id, if self.snapshot.operation_committed { "部分更改已提交" } else { "未提交任何更改" }, error);
                         // Preparation failure must preserve an existing ready child.
                         let phase = if matches!(&request.command, Command::Gist(_) | Command::LocalBackup(_) | Command::AppUpdate(_)) { self.snapshot.phase } else if self.running.is_some() && self.snapshot.phase == Phase::Ready { Phase::Ready } else { Phase::Failed };
-                        self.publish(phase, Some(error));
+                        self.publish_snapshot(phase, Some(error), true);
                     } else {
                         log::debug!("{}已完成，请求编号 {}", operation_name, request.id);
                         self.publish(self.snapshot.phase,None);
@@ -883,6 +888,10 @@ impl Actor {
                         // Observe the same owned process for at most 15 further health probes.
                         self.health_recovery_remaining = 15;
                         self.snapshot.tun = None;
+                        let error = match self.mark_runtime_failed().await {
+                            Ok(()) => error,
+                            Err(cleanup) => format!("{error}；{cleanup}"),
+                        };
                         self.publish(Phase::Failed, Some(error));
                     }
                     Err(error) if recovering && self.health_recovery_remaining == 0 => {
@@ -1273,7 +1282,9 @@ impl Actor {
                 let mut errors = vec![format!("{name} 加载失败：{cause}")];
                 if let Err(error) = files {
                     errors.push(format!("原数据库文件恢复失败：{error}"));
-                    self.publish(Phase::Failed, None);
+                    if let Err(cleanup) = self.mark_runtime_failed().await {
+                        errors.push(cleanup);
+                    }
                 } else {
                     let restored = async {
                         // The same candidate workflow stages the restored asset
@@ -1289,8 +1300,10 @@ impl Actor {
                     }
                     .await;
                     if let Err(error) = restored {
-                        self.publish(Phase::Failed, None);
                         errors.push(format!("原数据库运行状态恢复失败：{error}"));
+                        if let Err(cleanup) = self.mark_runtime_failed().await {
+                            errors.push(cleanup);
+                        }
                     }
                 }
                 return Err(crate::failure::join(&errors));
@@ -2114,8 +2127,7 @@ impl Actor {
         self.invalidate_monitor();
         let result = async {
             self.reload_prepared(&reload, &yaml).await?;
-            client.verify_listeners(&expected).await?;
-            self.snapshot.tun = Some(client.verify_tun(&expected).await?);
+            self.snapshot.tun = Some(client.wait_configuration_ready(&expected).await?);
             desired.save(&self.paths)?;
             // Persist the source/config pair only after the API accepts the candidate.
             candidate.source.commit(&self.paths)?;
@@ -2139,8 +2151,7 @@ impl Actor {
                     &old_yaml,
                 )
                 .await?;
-                client.verify_listeners(&old_expected).await?;
-                self.snapshot.tun = Some(client.verify_tun(&old_expected).await?);
+                self.snapshot.tun = Some(client.wait_configuration_ready(&old_expected).await?);
                 Ok(())
             }
             .await;
@@ -2150,15 +2161,15 @@ impl Actor {
                 .ok_or_else(|| "旧内核不存在".to_owned())
                 .and_then(|r| r.launch.source.commit(&self.paths));
             self.snapshot.preferences = Some(previous);
-            if restored.is_err() {
-                self.publish(Phase::Failed, None);
-            }
             let mut failures = vec![cause];
             if let Err(error) = files {
                 failures.push(format!("旧设置恢复失败：{error}"));
             }
             if let Err(error) = restored {
                 failures.push(format!("旧内核配置恢复失败：{error}"));
+                if let Err(cleanup) = self.mark_runtime_failed().await {
+                    failures.push(cleanup);
+                }
             }
             if let Err(error) = record {
                 failures.push(format!("来源恢复失败：{error}"));
@@ -2438,8 +2449,13 @@ impl Actor {
                     serde_yaml_ng::from_str(&running.launch.composed).map_err(|error| {
                         crate::logging::diagnostic_error("无法读取候选监听设置", error)
                     })?;
-                running.launch.client.verify_listeners(&expected).await?;
-                self.snapshot.tun = Some(running.launch.client.verify_tun(&expected).await?);
+                self.snapshot.tun = Some(
+                    running
+                        .launch
+                        .client
+                        .wait_configuration_ready(&expected)
+                        .await?,
+                );
                 self.snapshot.service_mode = matches!(running.child, Process::Service(_));
                 if self.snapshot.service_mode {
                     self.snapshot.service_state = super::privileged::State::Ready;
@@ -2530,10 +2546,15 @@ impl Actor {
                 self.publish(Phase::Failed, Some(error));
             }
             Ok(None) => {}
-            Err(error) => self.publish(
-                Phase::Failed,
-                Some(format!("无法检查内核进程：{}", error.kind())),
-            ),
+            Err(error) => {
+                let mut error = format!("无法检查内核进程：{}", error.kind());
+                if self.snapshot.phase != Phase::Failed
+                    && let Err(cleanup) = self.mark_runtime_failed().await
+                {
+                    error = format!("{error}；{cleanup}");
+                }
+                self.publish(Phase::Failed, Some(error));
+            }
         }
     }
 }

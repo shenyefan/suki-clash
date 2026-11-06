@@ -128,6 +128,7 @@ pub(crate) struct Snapshot {
     service_state: privileged::State,
     uwp_apps: Vec<suki_service::windows_network::UwpApp>,
     error: Option<String>,
+    error_logged: bool,
     notice: Option<String>,
     profile: Option<crate::configuration::ProfileIdentity>,
     preferences: Option<Preferences>,

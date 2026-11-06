@@ -599,6 +599,10 @@ async fn preparing_exit_keeps_the_executor_available_until_final_shutdown() {
     .await
     .unwrap();
     assert!(snapshot.error().unwrap().contains("未安装"));
+    assert!(
+        snapshot.error_logged,
+        "the UI must not log the same command failure again"
+    );
     let worker = service.shutdown().unwrap();
     tokio::task::spawn_blocking(move || worker.join().unwrap().unwrap())
         .await
@@ -3285,6 +3289,30 @@ async fn proxy_observation_does_not_retry_failed_startup_intent() {
             .map(String::as_str),
         Some("true")
     );
+}
+
+#[tokio::test]
+async fn stopped_proxy_poll_only_observes_and_preserves_owner_transactions() {
+    let (_root, paths) = fixture(None);
+    let mut owner = actor(paths);
+    let mut values = crate::preferences::defaults(crate::preferences::SettingsKind::SysProxy);
+    values.insert("IsSystemProxyEnabled".into(), "true".into());
+    owner.system_proxy.apply(&values, 7897).await.unwrap();
+    owner.snapshot.phase = Phase::Stopped;
+    for _ in 0..3 {
+        owner.poll_system_proxy().await.unwrap();
+    }
+    assert_eq!(owner.snapshot.system_proxy.enabled(), Some(true));
+    assert!(owner.system_proxy.is_current(&values, 7897));
+    // Polling is not a lifecycle transition and must not consume this checkpoint.
+    owner.system_proxy.rollback().await.unwrap();
+    owner.mark_runtime_failed().await.unwrap();
+    assert_eq!(owner.snapshot.phase, Phase::Failed);
+    for _ in 0..3 {
+        owner.poll_system_proxy().await.unwrap();
+    }
+    assert_eq!(owner.snapshot.system_proxy.enabled(), Some(false));
+    assert!(!owner.system_proxy.is_current(&values, 7897));
 }
 
 #[cfg(target_os = "macos")]

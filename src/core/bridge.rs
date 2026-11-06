@@ -285,7 +285,7 @@ fn install(service: Option<Service>, snapshot: Snapshot, cx: &mut App) {
                                         "ERROR",
                                         error.to_owned(),
                                         this.notification_window,
-                                        snapshot.request_id != this.snapshot.request_id,
+                                        snapshot.error_logged,
                                     )
                                 })
                                 .or_else(|| {
@@ -418,10 +418,6 @@ pub(crate) fn submit(command: Command, window: &mut Window, cx: &mut App) -> Res
         Ok::<_, super::ServiceError>(id)
     });
     result.map_err(|error| {
-        log::error!(
-            "{operation}的提交被拒绝（{}）",
-            crate::logging::error_chain(&error)
-        );
         let message = match error {
             super::ServiceError::Closed => owner
                 .read(cx)
@@ -431,7 +427,7 @@ pub(crate) fn submit(command: Command, window: &mut Window, cx: &mut App) -> Res
                 .unwrap_or_else(|| error.to_string()),
             _ => error.to_string(),
         };
-        crate::integration::announce_module("ERROR", "core", message.clone(), cx);
+        log::error!("{operation}的提交被拒绝（{message}）");
         message
     })
 }

@@ -285,7 +285,7 @@ fn palette(dark: bool) -> Palette {
     if dark { DARK } else { LIGHT }
 }
 
-pub(crate) fn translucent(cx: &App) -> bool {
+fn translucent(cx: &App) -> bool {
     cfg!(any(target_os = "macos", target_os = "windows"))
         && crate::integration::read("settings", cx)
             .get("BackdropIndex")

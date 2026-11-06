@@ -197,6 +197,23 @@ impl Actor {
         }
         Ok(())
     }
+    pub(super) async fn mark_runtime_failed(&mut self) -> Result<(), String> {
+        if self.snapshot.phase == Phase::Failed {
+            return Ok(());
+        }
+        let cleanup = match self.system_proxy.clear().await {
+            Ok(observed) => {
+                self.snapshot.system_proxy = observed;
+                Ok(())
+            }
+            Err(error) => {
+                self.snapshot.system_proxy = Default::default();
+                Err(format!("系统代理清理失败：{error}"))
+            }
+        };
+        self.publish(Phase::Failed, None);
+        cleanup
+    }
     pub(super) async fn poll_system_proxy(&mut self) -> Result<(), String> {
         if self.system_proxy.automatic_suspended() {
             return Ok(());
@@ -222,7 +239,8 @@ impl Actor {
             let values = self.proxy_settings()?;
             self.system_proxy.poll(&values).await
         } else {
-            self.system_proxy.clear().await?;
+            // Stop/failure transitions own cleanup. A health tick only observes;
+            // repeatedly issuing Clear here also repeats successful-cleanup logs.
             self.system_proxy.observe().await
         };
         match observed {
