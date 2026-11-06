@@ -66,3 +66,23 @@ pub(super) fn title(menu: &tray_icon::menu::Submenu, name: &str, node: &str, wid
     }
     menu.set_attributed_title(Some(&title));
 }
+
+/// AppKit menus inherit application appearance, including native submenus.
+pub(super) fn theme(dark: bool) {
+    use objc2::MainThreadMarker;
+    use objc2_app_kit::{
+        NSAppearance, NSAppearanceNameAqua, NSAppearanceNameDarkAqua, NSApplication,
+    };
+    let Some(main) = MainThreadMarker::new() else {
+        return;
+    };
+    let name = unsafe {
+        if dark {
+            NSAppearanceNameDarkAqua
+        } else {
+            NSAppearanceNameAqua
+        }
+    };
+    let appearance = NSAppearance::appearanceNamed(name);
+    NSApplication::sharedApplication(main).setAppearance(appearance.as_deref());
+}
