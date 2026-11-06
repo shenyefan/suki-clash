@@ -143,7 +143,7 @@ impl Gist {
         }
         let url = file.raw_url.as_deref().ok_or("Gist未提供完整备份地址")?;
         let parsed = url::Url::parse(url)
-            .map_err(|error| crate::logging::diagnostic_error("Gist原始备份地址无效", error))?;
+            .map_err(|error| crate::logging::rejected("Gist原始备份地址无效", error))?;
         if parsed.scheme() != "https"
             || parsed.host_str() != Some("gist.githubusercontent.com")
             || !parsed.username().is_empty()
@@ -161,7 +161,7 @@ impl Gist {
             )
             .await?;
         let content = String::from_utf8(bytes)
-            .map_err(|error| crate::logging::diagnostic_error("Gist备份不是UTF-8文本", error))?;
+            .map_err(|error| crate::logging::rejected("Gist备份不是UTF-8文本", error))?;
         validate_content(&content)?;
         Ok(content)
     }

@@ -129,7 +129,7 @@ async fn run(
                         Ok(Some(Err(
                             error @ tokio_tungstenite::tungstenite::Error::Capacity(_),
                         ))) => {
-                            break Err(crate::logging::diagnostic_error(
+                            break Err(crate::logging::rejected(
                                 "内核 WebSocket 消息超过大小上限".into(),
                                 error,
                             ));

@@ -144,7 +144,7 @@ impl Recovery {
         self.manifest.committed = true;
         self.write_manifest()?;
         if let Err(error) = fs::remove_dir_all(&self.root) {
-            log::warn!("内核更新已提交，但恢复目录清理失败：{error}");
+            log::warn!("内核更新已提交，但清理恢复目录失败（{error}）");
         }
         Ok(())
     }
@@ -185,9 +185,8 @@ impl Recovery {
         for (role, path, bytes) in verified {
             match bytes {
                 Some(bytes) if role == "app" => {
-                    let snapshot = serde_json::from_slice(&bytes).map_err(|error| {
-                        crate::logging::diagnostic_error("内核设置恢复材料无效", error)
-                    })?;
+                    let snapshot = serde_json::from_slice(&bytes)
+                        .map_err(|error| crate::logging::rejected("内核设置恢复材料无效", error))?;
                     crate::preferences::app::restore(&self.paths, &snapshot)?;
                 }
                 Some(bytes) => atomic_write(&path, &bytes).map_err(|error| {
@@ -237,7 +236,7 @@ pub(crate) fn recover_pending(paths: &AppPaths) -> Result<(), String> {
         return Err("更新恢复清单超限".into());
     }
     let manifest: Manifest = serde_json::from_slice(&bytes)
-        .map_err(|error| crate::logging::diagnostic_error("更新恢复清单格式无效", error))?;
+        .map_err(|error| crate::logging::rejected("更新恢复清单格式无效", error))?;
     if manifest.version != 2 {
         return Err("更新恢复记录版本不受支持".into());
     }

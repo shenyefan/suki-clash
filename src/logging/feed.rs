@@ -2,8 +2,29 @@
 use super::Source;
 use std::{
     collections::{BTreeSet, VecDeque},
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex, OnceLock,
+        atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering},
+        mpsc::{SyncSender, TrySendError},
+    },
 };
+
+/// Pending records for the log thread. Above three quarters only WARNING and
+/// ERROR are accepted so a burst cannot push out the failures that explain it.
+pub(crate) const QUEUE: usize = 4096;
+pub(crate) enum Message {
+    Record(Record),
+    Wake,
+    Stop,
+}
+#[derive(Default)]
+struct Shared {
+    minimum: AtomicU8,
+    reload: AtomicBool,
+    dropped: AtomicU64,
+    queued: AtomicUsize,
+    queue: OnceLock<SyncSender<Message>>,
+}
 
 pub(crate) const CAPACITY: usize = 2000;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -104,8 +125,66 @@ struct State {
     entries: VecDeque<Record>,
 }
 #[derive(Clone, Default)]
-pub(crate) struct Feed(Arc<Mutex<State>>);
+pub(crate) struct Feed(Arc<Mutex<State>>, Arc<Shared>);
 impl Feed {
+    pub(crate) fn attach(&self, queue: SyncSender<Message>) {
+        let _ = self.1.queue.set(queue);
+    }
+    pub(crate) fn set_minimum(&self, level: Level) {
+        self.1.minimum.store(level as u8, Ordering::Relaxed);
+    }
+    pub(crate) fn allows(&self, level: Level) -> bool {
+        level as u8 >= self.1.minimum.load(Ordering::Relaxed)
+    }
+    /// Memory and file entry point for program logs; records below the selected level are discarded here.
+    pub(crate) fn emit(&self, level: Level, module: &str, message: &str) {
+        if !self.allows(level) {
+            return;
+        }
+        let record = Record::program(level, module, message);
+        self.publish(record.clone());
+        let used = self.1.queued.load(Ordering::Relaxed);
+        let accepted = used < QUEUE && (used * 4 <= QUEUE * 3 || level >= Level::Warning);
+        if !accepted || !self.send(Message::Record(record)) {
+            self.1.dropped.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+    /// Ask the log thread to re-read the program log policy.
+    pub(crate) fn reload(&self) {
+        self.1.reload.store(true, Ordering::Release);
+        self.send(Message::Wake);
+    }
+    pub(crate) fn take_reload(&self) -> bool {
+        self.1.reload.swap(false, Ordering::AcqRel)
+    }
+    pub(crate) fn take_dropped(&self) -> u64 {
+        self.1.dropped.swap(0, Ordering::Relaxed)
+    }
+    pub(crate) fn received(&self) {
+        self.1.queued.fetch_sub(1, Ordering::Relaxed);
+    }
+    /// The thread drains every earlier record before it stops.
+    pub(crate) fn close(&self) {
+        if let Some(queue) = self.1.queue.get() {
+            self.1.queued.fetch_add(1, Ordering::Relaxed);
+            if queue.send(Message::Stop).is_err() {
+                self.1.queued.fetch_sub(1, Ordering::Relaxed);
+            }
+        }
+    }
+    fn send(&self, message: Message) -> bool {
+        let Some(queue) = self.1.queue.get() else {
+            return false;
+        };
+        self.1.queued.fetch_add(1, Ordering::Relaxed);
+        match queue.try_send(message) {
+            Ok(()) => true,
+            Err(TrySendError::Full(_) | TrySendError::Disconnected(_)) => {
+                self.1.queued.fetch_sub(1, Ordering::Relaxed);
+                false
+            }
+        }
+    }
     pub(crate) fn track(&self, sink: &super::Sink) {
         self.0
             .lock()
@@ -251,5 +330,29 @@ mod tests {
         assert_eq!(records.len(), CAPACITY / 2);
         assert_eq!(records[0].id, (CAPACITY / 2 + 4) as u64);
         assert!(feed.since(records.last().unwrap().id).is_empty());
+    }
+    #[test]
+    fn full_queue_keeps_warnings_longer_and_reports_drops() {
+        let feed = Feed::default();
+        let (sender, _receiver) = std::sync::mpsc::sync_channel(QUEUE);
+        feed.attach(sender);
+        for _ in 0..QUEUE {
+            feed.emit(Level::Info, "storage", "info");
+        }
+        assert_eq!(feed.take_dropped(), (QUEUE / 4 - 1) as u64);
+        for _ in 0..QUEUE / 4 - 1 {
+            feed.emit(Level::Error, "storage", "error");
+        }
+        assert_eq!(feed.take_dropped(), 0);
+        feed.emit(Level::Error, "storage", "overflow");
+        assert_eq!(feed.take_dropped(), 1);
+    }
+    #[test]
+    fn minimum_level_discards_before_memory() {
+        let feed = Feed::default();
+        feed.set_minimum(Level::Warning);
+        feed.emit(Level::Info, "core", "hidden");
+        feed.emit(Level::Warning, "core", "shown");
+        assert_eq!(feed.since(0).len(), 1);
     }
 }

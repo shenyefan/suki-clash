@@ -41,7 +41,7 @@ fn windows_owner_credentials(app_data_root: &Path) -> Result<(OwnerIdentity, Opt
     let OwnerIdentity::Windows { sid } = &identity else {
         anyhow::bail!("Windows owner identity required")
     };
-    let token = windows_owner::load_or_create_token(app_data_root, &sid)?;
+    let token = windows_owner::load_or_create_token(app_data_root, sid)?;
     Ok((identity, Some(token)))
 }
 

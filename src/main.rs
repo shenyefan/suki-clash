@@ -67,6 +67,12 @@ fn main() {
     };
     service.enable_logging();
     logging::install_panic_hook();
+    log::info!(
+        "Suki Clash {} 已启动，系统 {}，架构 {}",
+        env!("CARGO_PKG_VERSION"),
+        std::env::consts::OS,
+        std::env::consts::ARCH
+    );
     let url_sender = instance.as_ref().map(|instance| instance.sender.clone());
     let application = application().with_assets(assets::AllAssets);
     application.on_open_urls(move |urls| {

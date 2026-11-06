@@ -40,7 +40,7 @@ pub fn init_service_logging() {
         Err(error) => eprintln!("Failed to install service logging: {error:#}"),
     }
     if let Some(error) = file_error {
-        tracing::warn!("Service log file unavailable, logging to stdout only: {error:#}");
+        tracing::warn!("服务日志文件不可用，仅输出到标准输出（{error:#}）");
     }
 }
 

@@ -57,8 +57,8 @@ fn query(connection: Option<&str>) -> Result<(OsSnapshot, ConnectionSettings), S
         ));
     }
     let flags = unsafe { options[0].Value.dwValue };
-    let mut strings = Vec::new();
-    for option in &options[1..] {
+    let mut strings: [String; 3] = std::array::from_fn(|_| String::new());
+    for (value, option) in strings.iter_mut().zip(&options[1..]) {
         let pointer = unsafe { option.Value.pszValue };
         let text = if pointer.is_null() {
             String::new()
@@ -76,7 +76,7 @@ fn query(connection: Option<&str>) -> Result<(OsSnapshot, ConnectionSettings), S
             }
             text
         };
-        strings.push(text);
+        *value = text;
     }
     let endpoint = |protocol: &str| -> Result<Endpoint, String> {
         let server = &strings[0];
@@ -95,7 +95,7 @@ fn query(connection: Option<&str>) -> Result<(OsSnapshot, ConnectionSettings), S
             (String::new(), 0)
         } else {
             let url = url::Url::parse(&format!("http://{address}"))
-                .map_err(|error| crate::logging::diagnostic_error("WinINET 代理地址无效", error))?;
+                .map_err(|error| crate::logging::rejected("WinINET 代理地址无效", error))?;
             (
                 url.host_str()
                     .unwrap_or_default()
@@ -130,15 +130,7 @@ fn query(connection: Option<&str>) -> Result<(OsSnapshot, ConnectionSettings), S
     {
         snapshot.http.switched_on = true;
     }
-    Ok((
-        snapshot,
-        ConnectionSettings {
-            flags,
-            strings: strings
-                .try_into()
-                .map_err(|error| crate::logging::diagnostic_error("WinINET 字段数量无效", error))?,
-        },
-    ))
+    Ok((snapshot, ConnectionSettings { flags, strings }))
 }
 
 fn restore_connection(
@@ -244,7 +236,7 @@ fn connections() -> Result<Vec<Option<String>>, String> {
             .position(|unit| *unit == 0)
             .unwrap_or(entry.szEntryName.len());
         let name = String::from_utf16(&entry.szEntryName[..length])
-            .map_err(|error| crate::logging::diagnostic_error("RAS 连接名称编码无效", error))?;
+            .map_err(|error| crate::logging::rejected("RAS 连接名称编码无效", error))?;
         names.push(Some(name));
     }
     Ok(names)

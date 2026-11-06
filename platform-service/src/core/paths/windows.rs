@@ -19,10 +19,10 @@ pub(super) fn persistent_state_dir() -> io::Result<PathBuf> {
     Ok(STATE_DIR
         .get_or_init(|| {
             if let Some(error) = recovery {
-                eprintln!("Could not resolve ProgramData ({error}); using protected service registration: {path:?}");
+                eprintln!("无法解析 ProgramData（{error}），使用受保护的服务注册路径 {path:?}");
                 #[cfg(feature = "standalone")]
                 tracing::warn!(
-                    "Could not resolve ProgramData ({error}); using protected service registration: {path:?}"
+                    "无法解析 ProgramData（{error}），使用受保护的服务注册路径 {path:?}"
                 );
             }
             path

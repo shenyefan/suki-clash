@@ -214,6 +214,8 @@ fn redact(message: &str, paths: &AppPaths) -> String {
         DirectoryKind::Config,
         DirectoryKind::Data,
         DirectoryKind::Cache,
+        DirectoryKind::Runtime,
+        DirectoryKind::Logs,
     ] {
         text = text.replace(
             paths.directory(directory).to_string_lossy().as_ref(),

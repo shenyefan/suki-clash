@@ -99,7 +99,7 @@ async fn load(http: &Http, paths: &AppPaths, source: &str) -> Result<PathBuf, St
         if metadata.ends_with(";base64") {
             base64::engine::general_purpose::STANDARD
                 .decode(data)
-                .map_err(|error| crate::logging::diagnostic_error("图标 Base64 无效", error))?
+                .map_err(|error| crate::logging::rejected("图标 Base64 无效", error))?
         } else {
             percent_encoding::percent_decode_str(data).collect()
         }
@@ -128,7 +128,7 @@ fn validate(bytes: &[u8]) -> Result<Vec<u8>, String> {
         .trim_start();
     if text.starts_with("<svg") || text.starts_with("<?xml") {
         let tree = usvg::Tree::from_data(bytes, &usvg::Options::default())
-            .map_err(|error| crate::logging::diagnostic_error("SVG 图标无效", error))?;
+            .map_err(|error| crate::logging::rejected("SVG 图标无效", error))?;
         if tree.size().width() > 4096. || tree.size().height() > 4096. {
             return Err("代理组图标尺寸超过上限".into());
         }
@@ -140,7 +140,7 @@ fn validate(bytes: &[u8]) -> Result<Vec<u8>, String> {
     }
     let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes))
         .with_guessed_format()
-        .map_err(|error| crate::logging::diagnostic_error("图标格式无效", error))?;
+        .map_err(|error| crate::logging::rejected("图标格式无效", error))?;
     let mut limits = image::Limits::default();
     limits.max_image_width = Some(4096);
     limits.max_image_height = Some(4096);
@@ -148,7 +148,7 @@ fn validate(bytes: &[u8]) -> Result<Vec<u8>, String> {
     reader.limits(limits);
     let decoded = reader
         .decode()
-        .map_err(|error| crate::logging::diagnostic_error("代理组图标内容无效", error))?;
+        .map_err(|error| crate::logging::rejected("代理组图标内容无效", error))?;
     let mut output = std::io::Cursor::new(Vec::new());
     decoded
         .write_to(&mut output, image::ImageFormat::Png)

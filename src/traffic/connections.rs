@@ -345,7 +345,6 @@ fn record(
         ],
         active: true,
         enabled: true,
-        source: 0,
         details,
     }
 }

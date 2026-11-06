@@ -32,7 +32,7 @@ impl Transfer {
         limit: u64,
     ) -> Result<Self, String> {
         let parsed = url::Url::parse(url)
-            .map_err(|error| crate::logging::diagnostic_error("内核下载地址无效", error))?;
+            .map_err(|error| crate::logging::rejected("内核下载地址无效", error))?;
         if parsed.scheme() != "https"
             || !matches!(parsed.host_str(), Some("github.com" | "api.github.com"))
         {
@@ -104,7 +104,7 @@ impl Transfer {
             document
                 .timeout
                 .parse()
-                .map_err(|error| crate::logging::diagnostic_error("下载超时无效", error))?,
+                .map_err(|error| crate::logging::rejected("下载超时无效", error))?,
         );
         Self::request(
             http,
@@ -272,7 +272,7 @@ fn header(value: &str) -> Result<HeaderValue, String> {
         return Err("HTTP 请求标头含无效字符".into());
     }
     HeaderValue::from_str(value)
-        .map_err(|error| crate::logging::diagnostic_error("HTTP 请求标头无效".into(), error))
+        .map_err(|error| crate::logging::rejected("HTTP 请求标头无效".into(), error))
 }
 
 #[cfg(test)]

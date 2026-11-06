@@ -186,7 +186,7 @@ pub(super) fn read() -> Result<OsSnapshot, String> {
                 (String::new(), 0)
             } else {
                 let url = url::Url::parse(&address)
-                    .map_err(|error| crate::logging::diagnostic_error("KDE 代理地址无效", error))?;
+                    .map_err(|error| crate::logging::rejected("KDE 代理地址无效", error))?;
                 (
                     url.host_str()
                         .unwrap_or_default()
@@ -200,9 +200,7 @@ pub(super) fn read() -> Result<OsSnapshot, String> {
             let host = string(&command("gsettings", &["get", &schema, "host"])?)?;
             let port = command("gsettings", &["get", &schema, "port"])?
                 .parse::<u16>()
-                .map_err(|error| {
-                    crate::logging::diagnostic_error("GSettings 代理端口无效", error)
-                })?;
+                .map_err(|error| crate::logging::rejected("GSettings 代理端口无效", error))?;
             (host, port)
         };
         Ok(Endpoint {
@@ -344,13 +342,11 @@ const KDE_KEYS: [&str; 6] = [
 struct KdeCheckpoint([String; 6]);
 impl KdeCheckpoint {
     fn capture() -> Result<Self, String> {
-        let values = KDE_KEYS
-            .map(get)
-            .into_iter()
-            .collect::<Result<Vec<_>, _>>()?;
-        Ok(Self(values.try_into().map_err(|error| {
-            crate::logging::diagnostic_error("KDE 代理字段数量无效", error)
-        })?))
+        let mut values = std::array::from_fn(|_| String::new());
+        for (value, key) in values.iter_mut().zip(KDE_KEYS) {
+            *value = get(key)?;
+        }
+        Ok(Self(values))
     }
     fn restore_with(
         &self,

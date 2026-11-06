@@ -80,7 +80,7 @@ fn manager(source: &Path) -> Result<UpdateManager, velopack::Error> {
 }
 fn validate_feed(bytes: &[u8]) -> Result<VelopackAssetFeed, String> {
     let mut feed: VelopackAssetFeed = serde_json::from_slice(bytes)
-        .map_err(|error| crate::logging::diagnostic_error("应用更新清单格式无效", error))?;
+        .map_err(|error| crate::logging::rejected("应用更新清单格式无效", error))?;
     feed.Assets.retain(|asset| asset.Type == "Full");
     for asset in &feed.Assets {
         let expected = format!("{PACKAGE_ID}-{}-{}-full.nupkg", asset.Version, channel());

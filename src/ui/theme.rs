@@ -44,7 +44,6 @@ pub(crate) mod layout {
     pub(crate) const FOOTER_HEIGHT: Rems = rems(1.5);
     pub(crate) const CONNECTION_DETAILS_COLUMNS: u16 = 2;
     pub(crate) const CONNECTION_DETAILS_HEIGHT: Rems = rems(15.);
-    pub(crate) const TABLE_ACTIONS_WIDTH: Rems = rems(5.);
     pub(crate) const CONTROL_HEIGHT: Rems = rems(2.);
     pub(crate) const NAV_ITEM_HEIGHT: Rems = rems(2.5);
     pub(crate) const SIDEBAR_GROUP_HEADER_HEIGHT: Rems = rems(2.);
@@ -223,7 +222,6 @@ pub(crate) mod column {
     pub(crate) const RULE_TYPE: f32 = 11.;
     pub(crate) const STRATEGY: f32 = 7.5;
     pub(crate) const LAST_HIT: f32 = 7.;
-    pub(crate) const TIME: f32 = 6.5;
     pub(crate) const MESSAGE: f32 = 25.;
     pub(crate) const LOG_LEVEL: f32 = 7.;
     pub(crate) const LOG_TIME: f32 = 10.5;

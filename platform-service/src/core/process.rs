@@ -316,7 +316,7 @@ async fn terminate_process_inner(
         } else {
             process_identity(pid).ok().flatten()
         };
-        warn!("Terminating process {}", pid);
+        warn!("正在终止进程 {}", pid);
         if unsafe { platform_lib::kill(unix_pid, platform_lib::SIGTERM) } != 0
             && std::io::Error::last_os_error().raw_os_error() != Some(platform_lib::ESRCH)
         {
@@ -340,7 +340,7 @@ async fn terminate_process_inner(
             }
         }
         warn!(
-            "Process {} did not exit within {:?}, sending SIGKILL",
+            "进程 {} 在 {:?} 内未退出，发送 SIGKILL",
             pid, grace
         );
         if unsafe { platform_lib::kill(unix_pid, platform_lib::SIGKILL) } != 0
@@ -360,7 +360,7 @@ async fn terminate_process_inner(
     #[cfg(windows)]
     {
         let _ = grace;
-        warn!("Terminating process {}", pid);
+        warn!("正在终止进程 {}", pid);
         if pid == 0 {
             bail!("invalid Windows process ID 0");
         }

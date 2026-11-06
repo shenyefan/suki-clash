@@ -1,6 +1,14 @@
 # 设置存储
 
-设置位于平台应用目录的 `settings/`。macOS 默认位置为 `~/Library/Application Support/suki-clash/settings/`。
+设置位于本机配置目录（不漫游）的 `suki-clash/settings/`；各类内容使用各平台的标准位置，不读取旧位置。
+
+| 内容 | Windows | macOS | Linux |
+| --- | --- | --- | --- |
+| 设置 | `%LOCALAPPDATA%\suki-clash` | `~/Library/Application Support/suki-clash` | `~/.config/suki-clash` |
+| 数据（订阅、覆写、内核、备份） | `%LOCALAPPDATA%\suki-clash` | `~/Library/Application Support/suki-clash` | `~/.local/share/suki-clash` |
+| 日志 | `%LOCALAPPDATA%\suki-clash\logs` | `~/Library/Logs/suki-clash` | `~/.local/state/suki-clash/logs` |
+| 缓存 | `%LOCALAPPDATA%\suki-clash\cache` | `~/Library/Caches/suki-clash` | `~/.cache/suki-clash` |
+| 实例锁 | 同缓存 | 同缓存 | `$XDG_RUNTIME_DIR/suki-clash`，缺失时同缓存 |
 
 | 文件 | 内容 |
 | --- | --- |

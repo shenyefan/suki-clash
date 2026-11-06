@@ -108,7 +108,7 @@ pub(crate) fn prepare(
     }
     let bytes = read_bounded(&manifest_path, 64 * 1024)?;
     let manifest: Manifest = serde_json::from_slice(&bytes)
-        .map_err(|error| crate::logging::diagnostic_error("运行资源清单格式无效", error))?;
+        .map_err(|error| crate::logging::rejected("运行资源清单格式无效", error))?;
     if manifest.version != 1 || manifest.target != target() || manifest.assets.len() != names.len()
     {
         return Err("运行资源清单版本、平台或文件数量不匹配".into());

@@ -444,7 +444,7 @@ impl Selections {
             return Err("代理选择记录超过上限".into());
         }
         let result: Self = serde_json::from_slice(&bytes)
-            .map_err(|error| crate::logging::diagnostic_error("代理选择记录无效", error))?;
+            .map_err(|error| crate::logging::rejected("代理选择记录无效", error))?;
         if result.schema_version != 1 {
             return Err("代理选择记录版本无效".into());
         }

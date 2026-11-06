@@ -188,7 +188,7 @@ pub(crate) fn apply_dns(
     if enabled {
         let document = if let Some(yaml) = dns.get("DnsYaml") {
             serde_yaml_ng::from_str::<Value>(yaml)
-                .map_err(|error| crate::logging::diagnostic_error("DNS 设置文档无效", error))?
+                .map_err(|error| crate::logging::rejected("DNS 设置文档无效", error))?
         } else {
             dns_document(&preferences::choices::decode(dns), Value::Null)?
         };
@@ -313,7 +313,7 @@ pub(crate) fn sniffer_form(values: &Values, root: Value) -> Result<Value, String
 pub(crate) fn sniffer_document(values: &Values) -> Result<Value, String> {
     if let Some(text) = values.get("SnifferYaml") {
         let value: Value = serde_yaml_ng::from_str(text)
-            .map_err(|error| crate::logging::diagnostic_error("嗅探 YAML 无效", error))?;
+            .map_err(|error| crate::logging::rejected("嗅探 YAML 无效", error))?;
         let map = value.as_mapping().ok_or("嗅探配置需为对象")?;
         if map.len() != 1 || !map.contains_key("sniffer") {
             return Err("嗅探配置仅支持 sniffer 对象".into());
@@ -327,7 +327,7 @@ pub(crate) fn validate_settings(kind: SettingsKind, values: &Values) -> Result<(
     if kind == SettingsKind::Dns {
         let root = if let Some(text) = values.get("DnsYaml") {
             serde_yaml_ng::from_str(text)
-                .map_err(|error| crate::logging::diagnostic_error("DNS YAML 无效", error))?
+                .map_err(|error| crate::logging::rejected("DNS YAML 无效", error))?
         } else {
             dns_document(&preferences::choices::decode(values.clone()), Value::Null)?
         };
@@ -447,7 +447,7 @@ pub(crate) fn validate_settings(kind: SettingsKind, values: &Values) -> Result<(
                         ("HttpPorts".into(), text),
                     ]);
                     preferences::validate(SettingsKind::Sniffer, &candidate).map_err(|error| {
-                        crate::logging::diagnostic_error(
+                        crate::logging::rejected(
                             format!("{} 端口无效", name.as_str().unwrap_or("协议")),
                             error,
                         )

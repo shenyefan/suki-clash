@@ -39,7 +39,7 @@ async fn run_daemon() -> Result<()> {
     init_service_logging();
     let result = run_standalone().await;
     if let Err(error) = &result {
-        warn!("Service exited with an error: {error:#}");
+        warn!("服务异常退出（{error:#}）");
     }
     flush_service_log();
     result
@@ -59,12 +59,12 @@ fn run_daemon() -> Result<()> {
     if service_dispatcher::start(suki_clash_service::WINDOWS_SERVICE_NAME, ffi_service_main)
         .is_err()
     {
-        info!("Not running as a service, starting in standalone mode.");
+        info!("未作为系统服务运行，以独立模式启动");
         let result = tokio::runtime::Runtime::new()
             .map_err(anyhow::Error::from)
             .and_then(|rt| rt.block_on(run_standalone()));
         if let Err(error) = &result {
-            warn!("Service exited with an error: {error:#}");
+            warn!("服务异常退出（{error:#}）");
         }
         flush_service_log();
         result?;
@@ -78,7 +78,7 @@ define_windows_service!(ffi_service_main, my_service_main);
 #[cfg(windows)]
 fn my_service_main(_args: Vec<OsString>) {
     if let Err(e) = run_service() {
-        info!("Service failed to run: {}", e);
+        info!("服务运行失败（{}）", e);
     }
     flush_service_log();
 }
@@ -120,7 +120,7 @@ fn run_service() -> platform_lib::Result<()> {
             Ok(Some(owner_guard)) => owner_guard,
             Ok(None) => return false,
             Err(error) => {
-                tracing::warn!("Failed to acquire service owner lock: {}", error);
+                tracing::warn!("获取服务所有权锁失败（{}）", error);
                 return true;
             }
         };
@@ -129,13 +129,13 @@ fn run_service() -> platform_lib::Result<()> {
             Ok(()) => {
                 if let Err(error) = restore_desired_state().await {
                     tracing::warn!(
-                        "Desired state restoration failed; keeping IPC available for GUI recovery: {:#}",
+                        "期望状态恢复失败，保留本地通道供界面恢复（{:#}）",
                         error
                     );
                 }
             }
             Err(error) => tracing::warn!(
-                "Service startup reconciliation failed; core starts remain blocked while IPC is available: {}",
+                "服务启动对账失败，内核启动保持阻止，本地通道仍可用（{}）",
                 error
             ),
         }
@@ -145,7 +145,7 @@ fn run_service() -> platform_lib::Result<()> {
         })
         .await;
         if let Err(error) = result {
-            tracing::warn!("IPC supervisor failed: {}", error);
+            tracing::warn!("本地通道监督失败（{}）", error);
             drop(owner_guard);
             return true;
         }
@@ -175,8 +175,8 @@ fn run_service() -> platform_lib::Result<()> {
 
 async fn run_standalone() -> Result<()> {
     let pid = std::process::id();
-    info!("Suki Clash Service - Standalone Mode");
-    info!("Current process PID: {}", pid);
+    info!("Suki Clash 服务独立模式");
+    info!("当前进程 PID {}", pid);
 
     let Some(_owner_guard) = acquire_service_owner().await? else {
         return Ok(());
@@ -187,14 +187,13 @@ async fn run_standalone() -> Result<()> {
         Ok(()) => {
             if let Err(error) = restore_desired_state().await {
                 warn!(
-                    "Failed to restore desired core state on startup; core will not be auto-started. \
-                     Keeping the IPC server up so the GUI can reconnect and recover: {error:#}"
+                    "启动时恢复期望内核状态失败，不自动启动内核，保留本地通道供界面重连恢复（{error:#}）"
                 );
             }
         }
         Err(error) => {
             warn!(
-                "Service startup reconciliation failed; core starts remain blocked while IPC is available: {error:#}"
+                "服务启动对账失败，内核启动保持阻止，本地通道仍可用（{error:#}）"
             )
         }
     }
@@ -205,12 +204,12 @@ async fn run_standalone() -> Result<()> {
         && error.is::<suki_clash_service::IpcRecoveryBudgetExhausted>()
     {
         // An intentional exhausted supervisor must not be relaunched forever by launchd.
-        warn!("Service recovery budget exhausted; explicit repair required: {error:#}");
+        warn!("服务恢复次数已耗尽，需要手动修复（{error:#}）");
         return Ok(());
     }
     result?;
 
-    info!("Service shutdown complete.");
+    info!("服务已停止");
     Ok(())
 }
 
@@ -223,8 +222,8 @@ async fn shutdown_signal() {
             signal(SignalKind::terminate()).expect("Failed to install SIGTERM handler");
 
         tokio::select! {
-            _ = sigint.recv() => info!("Received SIGINT (Ctrl+C)"),
-            _ = sigterm.recv() => info!("Received SIGTERM"),
+            _ = sigint.recv() => info!("收到 SIGINT（Ctrl+C）"),
+            _ = sigterm.recv() => info!("收到 SIGTERM"),
         }
     }
 
@@ -239,11 +238,11 @@ async fn shutdown_signal() {
         let mut ctrl_shutdown = ctrl_shutdown().expect("Failed to install Ctrl+Shutdown handler");
 
         tokio::select! {
-            _ = ctrl_c.recv() => info!("Received Ctrl+C"),
-            _ = ctrl_break.recv() => info!("Received Ctrl+Break"),
-            _ = ctrl_close.recv() => info!("Received console close"),
-            _ = ctrl_logoff.recv() => info!("Received logoff"),
-            _ = ctrl_shutdown.recv() => info!("Received system shutdown"),
+            _ = ctrl_c.recv() => info!("收到 Ctrl+C"),
+            _ = ctrl_break.recv() => info!("收到 Ctrl+Break"),
+            _ = ctrl_close.recv() => info!("收到控制台关闭信号"),
+            _ = ctrl_logoff.recv() => info!("收到用户注销信号"),
+            _ = ctrl_shutdown.recv() => info!("收到系统关机信号"),
         }
     }
 }

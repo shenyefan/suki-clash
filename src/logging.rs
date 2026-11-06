@@ -1,15 +1,26 @@
 //! Bounded per-file application/core logs with age-based retention, owned off the UI thread.
 mod feed;
 mod redact;
+mod writer;
 use crate::storage::{AppPaths, DirectoryKind};
 pub(crate) use feed::{Feed, Level, Record, core_record};
 pub(crate) use redact::redact;
+pub(crate) use writer::{install, start};
 /// Record the original cause without changing the error returned to the UI.
 #[track_caller]
 pub(crate) fn diagnostic_error<T: std::fmt::Display>(
     message: T,
     cause: impl std::fmt::Display,
 ) -> T {
+    report(log::Level::Error, message, cause)
+}
+/// Input or configuration that failed validation is recoverable by the user, so it is a WARNING.
+#[track_caller]
+pub(crate) fn rejected<T: std::fmt::Display>(message: T, cause: impl std::fmt::Display) -> T {
+    report(log::Level::Warn, message, cause)
+}
+#[track_caller]
+fn report<T: std::fmt::Display>(level: log::Level, message: T, cause: impl std::fmt::Display) -> T {
     let location = std::panic::Location::caller();
     let module = location
         .file()
@@ -17,9 +28,10 @@ pub(crate) fn diagnostic_error<T: std::fmt::Display>(
         .trim_end_matches(".rs")
         .replace(['/', '\\'], "::");
     let target = format!("suki_clash::{module}");
-    log::error!(
+    log::log!(
         target: &target,
-        "{message}；原始错误：{cause:#}；位置={}:{}",
+        level,
+        "{message}（{cause:#}），位于 {} 第 {} 行",
         location.file(),
         location.line()
     );
@@ -40,7 +52,7 @@ pub(crate) fn install_panic_hook() {
     let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         log::error!(
-            "程序 panic：{info}\n{}",
+            "程序发生 panic，{info}\n{}",
             std::backtrace::Backtrace::force_capture()
         );
         previous(info);
@@ -48,11 +60,14 @@ pub(crate) fn install_panic_hook() {
 }
 pub(crate) fn error_chain(error: &(dyn std::error::Error + 'static)) -> String {
     let mut details = error.to_string();
+    let mut causes = Vec::new();
     let mut source = error.source();
     while let Some(error) = source {
-        details.push_str("；原因：");
-        details.push_str(&error.to_string());
+        causes.push(error.to_string());
         source = error.source();
+    }
+    if !causes.is_empty() {
+        details.push_str(&format!("（{}）", causes.join("，")));
     }
     details
 }
@@ -254,7 +269,7 @@ mod tests {
         struct Transport(#[source] io::Error);
         let error = Transport(io::Error::from_raw_os_error(13));
         let details = error_chain(&error);
-        assert!(details.starts_with("transport failed；原因："));
+        assert!(details.starts_with("transport failed（"));
         assert!(details.contains("13"));
         assert_eq!(diagnostic_error("原有 Toast", details), "原有 Toast");
     }

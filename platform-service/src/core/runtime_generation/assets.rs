@@ -151,7 +151,7 @@ async fn plan_runtime_refresh(
         .unwrap_or_else(|detail| {
             tracing::warn!(
                 detail = %detail,
-                "Rebuilding the runtime generation from nothing: its manifest could not be read"
+                "运行代清单无法读取，将重新生成"
             );
             super::staging::RuntimeManifest::default()
         });
@@ -203,7 +203,7 @@ async fn materialize_plan(
         if super::staging::source_identity_changed(&copy.source, &copy.identity).await {
             tracing::warn!(
                 destination = %copy.destination,
-                "Runtime asset changed while being copied; not recording what it was copied from"
+                "运行资源在复制过程中发生变化，未记录其来源"
             );
             manifest.assets.remove(&copy.destination);
         }
@@ -221,7 +221,7 @@ async fn materialize_plan(
         {
             tracing::warn!(
                 error = %discard,
-                "Left a manifest behind that describes an uncommitted configuration"
+                "遗留了描述未提交配置的清单"
             );
         }
         return Err(invalid_asset(format!(
@@ -237,14 +237,14 @@ async fn materialize_plan(
                     tracing::warn!(
                         destination = %destination,
                         error = %error,
-                        "Left an undeclared file behind in the runtime generation"
+                        "运行代中遗留了未声明的文件"
                     );
                 }
             }
             Err(error) => tracing::warn!(
                 destination = %destination,
                 error = %error,
-                "Refused to sweep a recorded destination that no longer validates"
+                "已记录的目标路径校验未通过，未清理"
             ),
         }
     }
@@ -253,7 +253,7 @@ async fn materialize_plan(
         copied = plan.copies.len(),
         skipped = plan.skipped.len(),
         discarded = plan.required_deletes.len(),
-        "Prepared the runtime generation"
+        "已准备运行代"
     );
     Ok(())
 }

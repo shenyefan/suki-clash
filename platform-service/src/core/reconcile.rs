@@ -20,7 +20,7 @@ pub(super) fn ensure_startup_reconciled() -> Result<()> {
 
 pub async fn reconcile_service_startup() -> Result<()> {
     STARTUP_RECONCILED.store(false, Ordering::Release);
-    info!("Running service startup reconciliation");
+    info!("正在执行服务启动对账");
 
     let Some(record) = read_core_runtime_record().await? else {
         STARTUP_RECONCILED.store(true, Ordering::Release);
@@ -32,7 +32,7 @@ pub async fn reconcile_service_startup() -> Result<()> {
 
     if current_identity.as_ref() == Some(&record.identity) {
         warn!(
-            "Found verified previous core process {} during startup; stopping it before supervision resumes",
+            "启动时发现已验证的旧内核进程 {}，先停止再恢复看护",
             record.pid
         );
         terminate_process_if_identity(record.pid, &record.identity, CORE_TERM_GRACE).await?;
@@ -44,19 +44,19 @@ pub async fn reconcile_service_startup() -> Result<()> {
 
     if let Some(current_identity) = current_identity {
         warn!(
-            "Runtime PID {} now belongs to a different process ({:?}); refusing to terminate it",
+            "运行记录中的 PID {} 已属于其他进程（{:?}），不予终止",
             record.pid, current_identity
         );
     }
     if !socket_reachable {
         info!(
-            "Cleaning stale core socket from dead process: {}",
+            "清理已退出进程遗留的内核套接字 {}",
             record.ipc_path
         );
         cleanup_core_socket(&record.ipc_path).await;
     } else {
         warn!(
-            "Core runtime PID {} is dead but socket {} is reachable; leaving socket untouched",
+            "内核进程 {} 已退出但套接字 {} 仍可连接，保留不清理",
             record.pid, record.ipc_path
         );
     }

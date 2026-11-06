@@ -39,12 +39,12 @@ struct Composition {
 impl Launch {
     pub(super) fn tun_enabled(&self) -> Result<bool, String> {
         let value: Value = serde_yaml_ng::from_str(&self.composed)
-            .map_err(|error| crate::logging::diagnostic_error("运行配置无效", error))?;
+            .map_err(|error| crate::logging::rejected("运行配置无效", error))?;
         configuration::tun::enabled(&value)
     }
     pub(super) fn privileged_network(&self) -> Result<bool, String> {
         let config: Value = serde_yaml_ng::from_str(&self.composed)
-            .map_err(|error| crate::logging::diagnostic_error("运行配置无效", error))?;
+            .map_err(|error| crate::logging::rejected("运行配置无效", error))?;
         Ok(self.tun_enabled()?
             || (cfg!(target_os = "linux")
                 && ["tproxy-port", "routing-mark"].iter().any(|key| {
@@ -227,13 +227,13 @@ impl Launch {
                 .await
                 .map_err(|error| crate::logging::diagnostic_error("无法读取运行配置", error))?,
         )
-        .map_err(|error| crate::logging::diagnostic_error("运行配置无效", error))?;
+        .map_err(|error| crate::logging::rejected("运行配置无效", error))?;
         let mut candidate: Value = serde_yaml_ng::from_slice(
             &tokio::fs::read(&self.config)
                 .await
                 .map_err(|error| crate::logging::diagnostic_error("无法读取候选配置", error))?,
         )
-        .map_err(|error| crate::logging::diagnostic_error("候选配置无效", error))?;
+        .map_err(|error| crate::logging::rejected("候选配置无效", error))?;
         for key in ["external-controller-unix", "external-controller-pipe"] {
             candidate
                 .as_mapping_mut()
@@ -261,12 +261,12 @@ impl Launch {
             serde_yaml_ng::from_slice(&std::fs::read(&self.config).map_err(|error| {
                 crate::logging::diagnostic_error("无法读取私有运行配置", error)
             })?)
-            .map_err(|error| crate::logging::diagnostic_error("私有运行配置无效", error))?;
+            .map_err(|error| crate::logging::rejected("私有运行配置无效", error))?;
         yaml["mode"] = mode.label().into();
         let text = serde_yaml_ng::to_string(&yaml)
             .map_err(|error| crate::logging::diagnostic_error("无法编码运行模式", error))?;
         let mut composed: Value = serde_yaml_ng::from_str(&self.composed)
-            .map_err(|error| crate::logging::diagnostic_error("已应用配置无效", error))?;
+            .map_err(|error| crate::logging::rejected("已应用配置无效", error))?;
         composed["mode"] = mode.label().into();
         let composed = serde_yaml_ng::to_string(&composed)
             .map_err(|error| crate::logging::diagnostic_error("无法记录运行模式", error))?;
@@ -282,7 +282,7 @@ impl Launch {
         self.composed = candidate.composed.clone();
         self.client = self.client.clone().with_proxy_config(
             &serde_yaml_ng::from_str(&self.composed)
-                .map_err(|error| crate::logging::diagnostic_error("已应用配置无效", error))?,
+                .map_err(|error| crate::logging::rejected("已应用配置无效", error))?,
         );
         Ok(())
     }
@@ -327,11 +327,11 @@ impl Launch {
         )
         .await?;
         let mut config: Value = serde_yaml_ng::from_str(&launch.yaml().await?)
-            .map_err(|error| crate::logging::diagnostic_error("资源校验配置无效", error))?;
+            .map_err(|error| crate::logging::rejected("资源校验配置无效", error))?;
         config["rules"] = serde_yaml_ng::to_value(vec![rule, "MATCH,DIRECT".into()])
-            .map_err(|error| crate::logging::diagnostic_error("资源校验规则无效", error))?;
+            .map_err(|error| crate::logging::rejected("资源校验规则无效", error))?;
         let yaml = serde_yaml_ng::to_string(&config)
-            .map_err(|error| crate::logging::diagnostic_error("资源校验配置无效", error))?;
+            .map_err(|error| crate::logging::rejected("资源校验配置无效", error))?;
         crate::storage::atomic_write(&launch.config, yaml.as_bytes())
             .map_err(|error| crate::logging::diagnostic_error("无法写入资源校验配置", error))?;
         launch.work_dir = directory;
@@ -366,9 +366,8 @@ impl Launch {
                 Some(values) => values,
                 None => repository
                     .read_limited(
-                        &Namespace::parse(&format!("profile-enhance-{id}")).map_err(|error| {
-                            crate::logging::diagnostic_error("订阅增强身份无效", error)
-                        })?,
+                        &Namespace::parse(&format!("profile-enhance-{id}"))
+                            .map_err(|error| crate::logging::rejected("订阅增强身份无效", error))?,
                         SOURCE_LIMIT,
                     )
                     .map_err(|error| crate::logging::diagnostic_error("无法读取订阅增强", error))?,
@@ -379,7 +378,7 @@ impl Launch {
         };
         // Global DNS supplies the base; ordered user overrides can specialize it.
         let enhanced: Value = serde_yaml_ng::from_slice(&enhanced)
-            .map_err(|error| crate::logging::diagnostic_error("订阅配置无效", error))?;
+            .map_err(|error| crate::logging::rejected("订阅配置无效", error))?;
         let mut base = match enhanced {
             Value::Mapping(mapping) => configuration::lowercase_root(mapping),
             _ => return Err("订阅配置需为对象".into()),
@@ -437,7 +436,7 @@ impl Launch {
             None => configuration::Preferences::load(paths)?,
         };
         let mut mapped: Value = serde_yaml_ng::from_slice(&bytes)
-            .map_err(|error| crate::logging::diagnostic_error("合成结果无效", error))?;
+            .map_err(|error| crate::logging::rejected("合成结果无效", error))?;
         preferences.overlay(mapped.as_mapping_mut().ok_or("合成结果必须为对象")?);
         configuration::flow::apply_settings(
             paths,
@@ -465,7 +464,7 @@ impl Launch {
             .tempdir_in(&work_dir)
             .map_err(|error| {
                 log::error!(
-                    "无法创建内核运行目录；{}",
+                    "创建内核运行目录失败（{}）",
                     crate::logging::error_chain(&error)
                 );
                 format!("无法创建内核运行目录：{}", error.kind())
@@ -476,7 +475,7 @@ impl Launch {
             std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700))
                 .map_err(|error| {
                     log::error!(
-                        "无法保护内核本地通道；{}",
+                        "设置内核本地通道权限失败（{}）",
                         crate::logging::error_chain(&error)
                     );
                     format!("无法保护内核本地通道：{}", error.kind())

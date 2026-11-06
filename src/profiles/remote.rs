@@ -12,9 +12,9 @@ pub(crate) fn apply(
         let identity = document
             .age_key
             .parse::<age::x25519::Identity>()
-            .map_err(|error| crate::logging::diagnostic_error("Age 私钥无效", error))?;
+            .map_err(|error| crate::logging::rejected("Age 私钥无效", error))?;
         let decryptor = age::Decryptor::new(age::armor::ArmoredReader::new(bytes))
-            .map_err(|error| crate::logging::diagnostic_error("Age 订阅格式无效", error))?;
+            .map_err(|error| crate::logging::rejected("Age 订阅格式无效", error))?;
         let reader = decryptor
             .decrypt(std::iter::once(&identity as &dyn age::Identity))
             .map_err(|error| crate::logging::diagnostic_error("Age 订阅解密失败", error))?;
@@ -29,7 +29,7 @@ pub(crate) fn apply(
         return Err("订阅超过大小上限".into());
     }
     let content = String::from_utf8(body)
-        .map_err(|error| crate::logging::diagnostic_error("订阅不是 UTF-8 文本", error))?;
+        .map_err(|error| crate::logging::rejected("订阅不是 UTF-8 文本", error))?;
     if document.kind == super::model::DocumentKind::JavaScript {
         crate::configuration::script::validate(&content)?;
     } else {

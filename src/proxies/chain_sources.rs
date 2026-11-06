@@ -315,15 +315,13 @@ fn raw_provider_nodes(provider: &Value, directory: &Path) -> Result<Vec<Value>, 
                     error,
                 )
             })?)
-            .map_err(|error| {
-                crate::logging::diagnostic_error("Provider 缓存来源证明无效", error)
-            })?;
+            .map_err(|error| crate::logging::rejected("Provider 缓存来源证明无效", error))?;
         if proof.url_sha256 != digest(url.as_bytes()) || proof.content_sha256 != digest(&bytes) {
             return Err("Provider 缓存与当前来源不一致，请同步后重试代理链".into());
         }
     }
     let value: Value = serde_yaml_ng::from_slice(&bytes)
-        .map_err(|error| crate::logging::diagnostic_error("Provider 缓存 YAML 无效", error))?;
+        .map_err(|error| crate::logging::rejected("Provider 缓存 YAML 无效", error))?;
     value
         .get("proxies")
         .and_then(Value::as_sequence)

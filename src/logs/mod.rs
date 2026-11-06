@@ -209,7 +209,7 @@ impl LogsPage {
         let _ = window;
         cx.notify();
     }
-    // The runtime adapter can deliver batches here; paused reception never fabricates new rows.
+    // The runtime adapter delivers batches here.
     pub(crate) fn append(
         &mut self,
         entries: Vec<LogEntry>,

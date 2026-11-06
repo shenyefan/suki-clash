@@ -96,6 +96,7 @@ jobs:
           $installation = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.${{ matrix.msvc_arch == 'arm64' && 'ARM64' || 'x86.x64' }} -property installationPath
           if (-not $installation) { throw "Visual Studio C++ toolchain not found" }
           & "$installation/Common7/Tools/Launch-VsDevShell.ps1" -SkipAutomaticLocation -Arch ${{ matrix.msvc_arch == 'x64' && 'amd64' || 'arm64' }} -HostArch amd64
+          $env:GPUI_FXC_PATH = (Get-Command fxc.exe -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
           Get-ChildItem Env: | Where-Object { $before[$_.Name] -ne $_.Value } | ForEach-Object {
             "$($_.Name)=$($_.Value)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           }
@@ -108,7 +109,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y clang cmake ninja-build pkg-config libfontconfig1-dev libfreetype6-dev libxkbcommon-dev libxkbcommon-x11-dev libxcb1-dev libxcb-xkb-dev libwayland-dev libssl-dev libasound2-dev libudev-dev libvulkan-dev libgit2-dev patchelf file
-          sudo apt-get install -y libfuse2
+          sudo apt-get install -y libfuse2 squashfs-tools desktop-file-utils
       - name: Install pinned Velopack CLI
         shell: bash
         run: dotnet tool install vpk --version "$VELOPACK_VERSION" --tool-path .tools
@@ -168,7 +169,7 @@ jobs:
       - name: Assemble user downloads and release description
         shell: python
         run: |
-          import json, pathlib, shutil
+          import os, pathlib, shutil
           output = pathlib.Path("Releases")
           output.mkdir()
           downloads = {
@@ -179,26 +180,31 @@ jobs:
           }
           notes = [
               "## 下载", "",
-              "按系统和架构选择下方附件。Windows 提供安装版和免安装压缩包；macOS 提供安装包和应用压缩包；Linux 提供 AppImage。", "",
-              "| 平台 | 文件 | 签名状态 |", "| --- | --- | --- |",
+              "按系统和架构点击文件名下载。Windows 提供安装版和免安装压缩包；macOS 提供安装包和应用压缩包；Linux 提供 AppImage。", "",
+              "| 平台 | 文件 |", "| --- | --- |",
           ]
+          base = f"https://github.com/{os.environ['GITHUB_REPOSITORY']}/releases/download/{os.environ['GITHUB_REF_NAME']}/"
           for channel, (label, formats) in downloads.items():
               source = pathlib.Path("packages") / ("packages-" + channel)
-              metadata = json.loads((source / f"build.{channel}.json").read_text())
-              status = ("已签名并公证" if channel.startswith("osx") else "已签名") if metadata["signed"] else "未签名"
               for suffix in formats:
                   name = f"SukiClash-{channel}" + ("." if suffix == "AppImage" else "-") + suffix
                   package = source / name
                   if not package.is_file() or package.stat().st_size == 0:
                       raise ValueError("missing or empty release package: " + str(package))
                   shutil.copy2(package, output / name)
-                  notes.append(f"| {label} | `{name}` | {status} |")
+                  notes.append(f"| {label} | [{name}]({base}{name}) |")
+              feed = source / f"releases.{channel}.json"
+              packages = sorted(source.glob(f"SukiClash-*-{channel}-full.nupkg"))
+              if not feed.is_file() or len(packages) != 1 or packages[0].stat().st_size == 0:
+                  raise ValueError("missing update feed or full package for " + channel)
+              shutil.copy2(feed, output / feed.name)
+              shutil.copy2(packages[0], output / packages[0].name)
           notes.extend([
               "", "## 使用说明", "",
               "- 已内置 Mihomo 内核和 Geo 数据。",
               "- 免安装版的用户配置仍保存在系统应用目录；TUN 需要相应服务与权限。",
               "- Linux 下载后需为 AppImage 添加执行权限。",
-              "- 此版本通过下载安装包或压缩包手动升级。", "",
+              "- 通过 Velopack 安装的版本可在应用内检查并安装更新；其他方式下载安装包或压缩包升级。", "",
           ])
           pathlib.Path("release-notes.md").write_text("\n".join(notes), encoding="utf-8")
       - name: Create or update one draft GitHub release
@@ -207,7 +213,21 @@ jobs:
           GH_REPO: ${{ github.repository }}
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
-          gh api "repos/$GH_REPO/releases/generate-notes" -f tag_name="$RELEASE_TAG" --jq .body >> release-notes.md
+          gh api "repos/$GH_REPO/releases/generate-notes" -f tag_name="$RELEASE_TAG" --jq .body > generated-notes.md
+          # The full-changelog link stays on its own line after a blank line.
+          python3 - <<'PYTHON'
+          import pathlib
+          lines = pathlib.Path("generated-notes.md").read_text().splitlines()
+          out = []
+          for line in lines:
+              if line.startswith("**Full Changelog**:"):
+                  line = "**完整变更**：" + line.split(":", 1)[1].strip()
+                  if out and out[-1]:
+                      out.append("")
+              out.append(line)
+          with open("release-notes.md", "a", encoding="utf-8") as notes:
+              notes.write("\n".join(out) + "\n")
+          PYTHON
           if gh release view "$RELEASE_TAG" --json isDraft,assets > release.json; then
             python3 -c 'import json; assert json.load(open("release.json"))["isDraft"], "refusing to change a published release"'
             gh release edit "$RELEASE_TAG" --title "Suki Clash $RELEASE_TAG" --notes-file release-notes.md

@@ -137,8 +137,8 @@ def main():
     version = tomllib.loads((ROOT / "Cargo.toml").read_text())["package"]["version"]
     os_name, arch = TARGETS[args.target]
     expected_host = {"win": "Windows", "osx": "Darwin", "linux": "Linux"}[os_name]
-    if platform.system() != expected_host:
-        raise ValueError("build and package on the native target OS")
+    if os_name != "win" and platform.system() != expected_host:
+        raise ValueError("macOS packaging requires macOS; Linux packaging requires Linux (use packaging/local.py on macOS)")
     args.work.mkdir(parents=True, exist_ok=True)
     args.app_dir = args.app_dir.resolve()
     args.service_dir = args.service_dir.resolve()
@@ -151,11 +151,14 @@ def main():
         raise ValueError(f"vpk must be exactly {VPK_VERSION}")
     channel = f"{os_name}-{arch}"
     output = args.work / "Releases"
-    command = [args.vpk, "--skip-updates", "--yes", "pack", "--packId", PACK_ID,
+    command = [args.vpk]
+    if platform.system() != expected_host:
+        command.append(f"[{os_name}]")
+    command.extend(["--skip-updates", "--yes", "pack", "--packId", PACK_ID,
                "--packTitle", "Suki Clash", "--packAuthors", "Suki", "--packVersion", version,
                "--packDir", package, "--mainExe", "suki-clash.exe" if os_name == "win" else "suki-clash",
                "--runtime", f"{os_name}-{arch}", "--channel", channel,
-               "--delta", "None", "--outputDir", output]
+               "--delta", "None", "--outputDir", output])
     signed = False
     if os_name == "win":
         command.extend(["--icon", ROOT / "assets/logo.ico"])

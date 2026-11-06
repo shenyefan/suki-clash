@@ -9,6 +9,7 @@ pub(crate) enum DirectoryKind {
     Config,
     Data,
     Cache,
+    Runtime,
     Logs,
     Core,
     Backups,
@@ -19,19 +20,46 @@ pub(crate) struct AppPaths {
     config: PathBuf,
     data: PathBuf,
     cache: PathBuf,
+    runtime: PathBuf,
+    logs: PathBuf,
 }
 impl AppPaths {
+    /// Each kind uses its platform location: local (non-roaming) settings and data,
+    /// system cache, runtime and log directories.
     pub(crate) fn discover() -> Result<Self, StorageError> {
+        const NAME: &str = "suki-clash";
+        let missing = || StorageError::MissingDirectory;
+        let config = dirs::config_local_dir().ok_or_else(missing)?.join(NAME);
+        let data = dirs::data_local_dir().ok_or_else(missing)?.join(NAME);
+        let cache = if cfg!(windows) {
+            data.join("cache")
+        } else {
+            dirs::cache_dir().ok_or_else(missing)?.join(NAME)
+        };
+        let runtime = if cfg!(target_os = "linux") {
+            dirs::runtime_dir().map_or_else(|| cache.clone(), |directory| directory.join(NAME))
+        } else {
+            cache.clone()
+        };
+        let logs = if cfg!(target_os = "macos") {
+            dirs::home_dir()
+                .ok_or_else(missing)?
+                .join("Library/Logs")
+                .join(NAME)
+        } else if cfg!(target_os = "linux") {
+            dirs::state_dir()
+                .ok_or_else(missing)?
+                .join(NAME)
+                .join("logs")
+        } else {
+            data.join("logs")
+        };
         Ok(Self {
-            config: dirs::config_dir()
-                .ok_or(StorageError::MissingDirectory)?
-                .join("suki-clash"),
-            data: dirs::data_local_dir()
-                .ok_or(StorageError::MissingDirectory)?
-                .join("suki-clash"),
-            cache: dirs::cache_dir()
-                .ok_or(StorageError::MissingDirectory)?
-                .join("suki-clash"),
+            config,
+            data,
+            cache,
+            runtime,
+            logs,
         })
     }
     pub(crate) fn staged(root: &Path) -> Self {
@@ -39,6 +67,8 @@ impl AppPaths {
             config: root.join("config"),
             data: root.join("data"),
             cache: root.join("cache"),
+            runtime: root.join("runtime"),
+            logs: root.join("logs"),
         }
     }
     #[cfg(test)]
@@ -47,6 +77,8 @@ impl AppPaths {
             config: root.join("config"),
             data: root.join("data"),
             cache: root.join("cache"),
+            runtime: root.join("runtime"),
+            logs: root.join("logs"),
         }
     }
     pub(crate) fn directory(&self, kind: DirectoryKind) -> PathBuf {
@@ -54,7 +86,8 @@ impl AppPaths {
             DirectoryKind::Config => self.config.clone(),
             DirectoryKind::Data => self.data.clone(),
             DirectoryKind::Cache => self.cache.clone(),
-            DirectoryKind::Logs => self.data.join("logs"),
+            DirectoryKind::Runtime => self.runtime.clone(),
+            DirectoryKind::Logs => self.logs.clone(),
             DirectoryKind::Core => self.data.join("core"),
             DirectoryKind::Backups => self.data.join("backups"),
         }
@@ -102,6 +135,7 @@ impl AppPaths {
             DirectoryKind::Config,
             DirectoryKind::Data,
             DirectoryKind::Cache,
+            DirectoryKind::Runtime,
             DirectoryKind::Logs,
             DirectoryKind::Core,
             DirectoryKind::Backups,
@@ -152,6 +186,7 @@ mod reset_tests {
             DirectoryKind::Logs,
             DirectoryKind::Backups,
             DirectoryKind::Cache,
+            DirectoryKind::Runtime,
         ]
         .map(|kind| paths.directory(kind).join("keep"));
         for path in &kept {

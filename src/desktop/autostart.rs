@@ -21,7 +21,7 @@ fn registration() -> Result<auto_launch::AutoLaunch, String> {
 pub(crate) fn apply(enabled: bool) -> Result<(), String> {
     #[cfg(all(windows, not(test)))]
     {
-        return windows::apply(enabled);
+        windows::apply(enabled)
     }
     #[cfg(all(not(windows), not(test)))]
     {
@@ -39,10 +39,13 @@ pub(crate) fn apply(enabled: bool) -> Result<(), String> {
         {
             return Err("自启动设置回读不一致".into());
         }
+        Ok(())
     }
     #[cfg(test)]
-    TEST_ENABLED.set(enabled);
-    Ok(())
+    {
+        TEST_ENABLED.set(enabled);
+        Ok(())
+    }
 }
 pub(crate) fn enabled() -> Result<bool, String> {
     #[cfg(all(windows, not(test)))]

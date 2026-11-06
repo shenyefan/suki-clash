@@ -243,12 +243,6 @@ impl Service {
         test: crate::proxies::runtime::Test,
     ) -> Result<u64, String> {
         self.next_id = self.next_id.checked_add(1).ok_or("测速请求编号已耗尽")?;
-        log::info!(
-            "操作开始：测速；请求={}；内核代次={}；配置修订={}",
-            self.next_id,
-            test.generation,
-            test.epoch
-        );
         self.tests
             .try_send(super::delays::Request {
                 id: self.next_id,
@@ -258,7 +252,7 @@ impl Service {
         Ok(self.next_id)
     }
     pub(crate) fn refresh_ip(&self) {
-        log::info!("操作开始：刷新出口 IP");
+        log::debug!("开始刷新出口 IP");
         self.probe_refresh
             .send_modify(|control| control.revision = control.revision.wrapping_add(1));
     }
@@ -627,9 +621,9 @@ impl Actor {
                     }
                     self.snapshot.request_id = Some(request.id);
                     let operation_name = request.command.operation();
-                    log::info!("请求 {} 开始：{}；内核代次={}，配置修订={}", request.id, operation_name, self.snapshot.generation, self.snapshot.monitor_epoch);
+                    log::debug!("开始{}，请求编号 {}，内核代次 {}，配置修订 {}", operation_name, request.id, self.snapshot.generation, self.snapshot.monitor_epoch);
                     if let Command::Settings { kind, patch } = &request.command {
-                        log::info!("请求 {} 设置域={}，字段={}", request.id, kind.id(), patch.keys().cloned().collect::<Vec<_>>().join(","));
+                        log::debug!("请求 {} 修改 {} 设置，涉及字段 {}", request.id, kind.id(), patch.keys().cloned().collect::<Vec<_>>().join("、"));
                     }
                     self.snapshot.operation_active=true;
                     self.snapshot.operation_committed=false;
@@ -713,7 +707,7 @@ impl Actor {
                                 self.snapshot.runtime_yaml = Some(if let Some(running) = &self.running { running.launch.composed.clone() } else { Launch::preview(&self.paths).await?.composed });
                                 if candidates {
                                     if self.running.is_some() { self.sync_provider_cache().await?; }
-                                    let mut root:serde_yaml_ng::Value=serde_yaml_ng::from_str(self.snapshot.runtime_yaml.as_deref().ok_or("运行配置不可用")?).map_err(|error| crate::logging::diagnostic_error("运行配置无效", error))?;
+                                    let mut root:serde_yaml_ng::Value=serde_yaml_ng::from_str(self.snapshot.runtime_yaml.as_deref().ok_or("运行配置不可用")?).map_err(|error| crate::logging::rejected("运行配置无效", error))?;
                                     let (definitions,sources,errors)=crate::proxies::chain_sources::candidates(&root,&self.paths.directory(crate::storage::DirectoryKind::Core));
                                     root["proxies"]=serde_yaml_ng::Value::Sequence(definitions.into_values().collect());
                                     self.snapshot.chain_sources=sources;
@@ -752,12 +746,12 @@ impl Actor {
                     self.snapshot.operation_active=false;
                     self.snapshot.progress=None;
                     if let Err(error) = result {
-                        log::error!("请求 {} 失败：{}；已提交={}；{}", request.id, operation_name, self.snapshot.operation_committed, error);
+                        log::error!("{}失败，请求编号 {}，{}（{}）", operation_name, request.id, if self.snapshot.operation_committed { "部分更改已提交" } else { "未提交任何更改" }, error);
                         // Preparation failure must preserve an existing ready child.
                         let phase = if matches!(&request.command, Command::Gist(_) | Command::LocalBackup(_) | Command::AppUpdate(_)) { self.snapshot.phase } else if self.running.is_some() && self.snapshot.phase == Phase::Ready { Phase::Ready } else { Phase::Failed };
                         self.publish(phase, Some(error));
                     } else {
-                        log::info!("请求 {} 完成：{}；已提交={}", request.id, operation_name, self.snapshot.operation_committed);
+                        log::debug!("{}已完成，请求编号 {}", operation_name, request.id);
                         self.publish(self.snapshot.phase,None);
                     }
                     drop(request);
@@ -838,7 +832,7 @@ impl Actor {
         let result = result.and(recovered);
         if let Err(error) = &result {
             self.publish(Phase::Failed, Some(format!("退出清理失败：{error}")));
-            log::error!("退出时无法确认本应用内核进程已结束：{error}");
+            log::error!("退出时无法确认应用内核进程已结束（{error}）");
         }
         self.updates.close();
         result
@@ -1005,7 +999,10 @@ impl Actor {
             .stderr(std::process::Stdio::piped())
             .spawn()
             .map_err(|error| {
-                log::error!("无法启动内核校验；{}", crate::logging::error_chain(&error));
+                log::error!(
+                    "启动内核校验进程失败（{}）",
+                    crate::logging::error_chain(&error)
+                );
                 format!("无法启动内核校验：{}", error.kind())
             })?;
         let pipe_suppressed = Default::default();
@@ -1127,9 +1124,15 @@ impl Actor {
 
     async fn activate(&mut self, id: u64) -> Result<(), String> {
         let source = crate::configuration::Source::from_profile(&self.paths, id)?;
+        let name = source
+            .profile()
+            .map_or_else(String::new, |profile| profile.name().to_owned());
+        log::debug!("开始合成并校验订阅配置 {name}");
         let launch = Launch::from_source(&self.paths, source).await?;
         let launch = self.validate(launch).await?;
+        log::debug!("订阅配置校验通过，开始应用 {name}");
         self.replace(launch, true).await?;
+        log::info!("已激活订阅 {name}");
         self.refresh_profiles()?;
         self.publish(Phase::Ready, None);
         Ok(())
@@ -1191,7 +1194,7 @@ impl Actor {
         let (_, key, name, file) = database.spec();
         let config: serde_yaml_ng::Value = match &self.running {
             Some(running) => serde_yaml_ng::from_str(&running.launch.composed)
-                .map_err(|error| crate::logging::diagnostic_error("运行配置无效", error))?,
+                .map_err(|error| crate::logging::rejected("运行配置无效", error))?,
             None => serde_yaml_ng::Value::Mapping(
                 super::Preferences::load(&self.paths)?.native().clone(),
             ),
@@ -1498,7 +1501,7 @@ impl Actor {
                 self.fetch(selection.version_url().ok_or("发行通道无效")?, 1024)
                     .await?,
             )
-            .map_err(|error| crate::logging::diagnostic_error("版本号不是 UTF-8", error))?
+            .map_err(|error| crate::logging::rejected("版本号不是 UTF-8", error))?
             .trim()
             .to_owned(),
         };
@@ -1534,7 +1537,7 @@ impl Actor {
             )
             .await?;
         let tags: Vec<super::release::Tag> = serde_json::from_slice(&bytes)
-            .map_err(|error| crate::logging::diagnostic_error("官方版本列表格式无效", error))?;
+            .map_err(|error| crate::logging::rejected("官方版本列表格式无效", error))?;
         let mut versions = Vec::new();
         for tag in tags {
             if super::release::normalize(&tag.name).is_ok() && !versions.contains(&tag.name) {
@@ -1714,7 +1717,7 @@ impl Actor {
         let repository = crate::storage::Repository::open(self.paths.clone())
             .map_err(|error| crate::logging::diagnostic_error("无法读取设置存储", error))?;
         let namespace = crate::storage::Namespace::parse(kind.id())
-            .map_err(|error| crate::logging::diagnostic_error("设置名称无效", error))?;
+            .map_err(|error| crate::logging::rejected("设置名称无效", error))?;
         let previous =
             preferences::values(&repository, kind).map_err(crate::logging::error_message)?;
         if kind == SettingsKind::SysProxy {
@@ -1736,15 +1739,14 @@ impl Actor {
         desired.extend(preferences::choices::encode(patch));
         if let Some(key) = preferences::native::key(kind) {
             let root = if let Some(text) = native_patch.get(key) {
-                serde_yaml_ng::from_str(text).map_err(|error| {
-                    crate::logging::diagnostic_error("原生配置无效".to_owned(), error)
-                })?
+                serde_yaml_ng::from_str(text)
+                    .map_err(|error| crate::logging::rejected("原生配置无效".to_owned(), error))?
             } else {
                 let root = previous
                     .get(key)
                     .map(|text| {
                         serde_yaml_ng::from_str(text).map_err(|error| {
-                            crate::logging::diagnostic_error("原生配置无效".to_owned(), error)
+                            crate::logging::rejected("原生配置无效".to_owned(), error)
                         })
                     })
                     .unwrap_or_else(|| preferences::native::initial(kind))?;
@@ -1826,6 +1828,9 @@ impl Actor {
         }
         if kind == SettingsKind::General && native_patch.contains_key("AutoRun") {
             self.snapshot.autostart = Some(crate::desktop::autostart::enabled());
+        }
+        if kind == SettingsKind::General {
+            self.logs.reload();
         }
         self.snapshot
             .settings
@@ -2081,7 +2086,7 @@ impl Actor {
         let client = running.launch.client.clone();
         let old_yaml = running.launch.yaml().await?;
         let old_expected: serde_yaml_ng::Value = serde_yaml_ng::from_str(&running.launch.composed)
-            .map_err(|error| crate::logging::diagnostic_error("旧配置无效", error))?;
+            .map_err(|error| crate::logging::rejected("旧配置无效", error))?;
         let mut candidate = Launch::with_preferences(&self.paths, source, desired.clone()).await?;
         candidate
             .reuse_control(&self.running.as_ref().ok_or("内核尚未运行")?.launch)
@@ -2100,7 +2105,7 @@ impl Actor {
             }
         };
         let expected: serde_yaml_ng::Value = serde_yaml_ng::from_str(&candidate.composed)
-            .map_err(|error| crate::logging::diagnostic_error("候选配置无效", error))?;
+            .map_err(|error| crate::logging::rejected("候选配置无效", error))?;
         if let Some(settings) = self.running.as_ref().and_then(|r| r.log_settings.as_ref()) {
             let mut redactions = settings.borrow().0.clone();
             redactions.extend(candidate.redactions());
@@ -2191,9 +2196,11 @@ impl Actor {
             .is_some_and(|running| matches!(running.child, Process::Service(_)));
         let previous = self.stop_owned().await?;
         let started = self.start_prepared(launch).await;
+        log::debug!("内核启动阶段结束，开始提交配置选择");
         let result = started.and_then(|()| commit());
         match result {
             Ok(()) => {
+                log::debug!("配置选择已提交");
                 self.publish(Phase::Ready, None);
                 if let Err(error) = self.sync_system_proxy().await {
                     self.runtime_warning = Some(match self.runtime_warning.take() {
@@ -2273,19 +2280,9 @@ impl Actor {
         })();
         self.snapshot.autostart = Some(crate::desktop::autostart::enabled());
         if let Err(error) = autostart {
-            self.logs.publish(crate::logging::Record::program(
-                crate::logging::Level::Error,
-                "startup",
-                &error,
-            ));
             self.runtime_warning = Some(error);
         }
         if let Err(error) = crate::desktop::startup_script(&self.paths).await {
-            self.logs.publish(crate::logging::Record::program(
-                crate::logging::Level::Error,
-                "startup",
-                &error,
-            ));
             self.runtime_warning = Some(match self.runtime_warning.take() {
                 Some(previous) => format!("{previous}；{error}"),
                 None => error,
@@ -2334,7 +2331,10 @@ impl Actor {
                 .stderr(std::process::Stdio::piped())
                 .spawn()
                 .map_err(|error| {
-                    log::error!("无法启动 Mihomo；{}", crate::logging::error_chain(&error));
+                    log::error!(
+                        "启动 Mihomo 进程失败（{}）",
+                        crate::logging::error_chain(&error)
+                    );
                     format!("无法启动 Mihomo：{}", error.kind())
                 })?;
             let pipe_suppressed = Default::default();
@@ -2425,7 +2425,10 @@ impl Actor {
                 session.status().await?;
             }
             if let Some(status) = running.child.try_wait().map_err(|error| {
-                log::error!("无法检查内核进程；{}", crate::logging::error_chain(&error));
+                log::error!(
+                    "检查内核进程状态失败（{}）",
+                    crate::logging::error_chain(&error)
+                );
                 format!("无法检查内核进程：{}", error.kind())
             })? {
                 return Err(format!("内核在 API 就绪前退出（{status}）"));
@@ -2490,11 +2493,13 @@ impl Actor {
             if let Some(mut output) = running.output.take() {
                 match tokio::time::timeout(Duration::from_secs(2), &mut output).await {
                     Ok(Ok(Ok(()))) => {}
-                    Ok(result) => log::warn!("内核进程已退出，但日志任务未完成：{result:?}"),
+                    Ok(result) => {
+                        log::warn!("内核进程已退出，但日志采集任务未正常结束，结果为{result:?}")
+                    }
                     Err(_) => {
                         output.abort();
                         let _ = output.await;
-                        log::info!("内核进程已退出，日志任务已停止");
+                        log::debug!("内核进程已退出，已强制停止日志采集任务");
                     }
                 }
             }

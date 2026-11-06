@@ -96,7 +96,7 @@ pub(crate) fn apply(values: &Values, native: &mut Mapping) -> Result<(), String>
             | "auto-detect-interface" => Value::Bool(text == "true"),
             "mtu" => Value::Number(
                 text.parse::<u64>()
-                    .map_err(|error| crate::logging::diagnostic_error("MTU 无效", error))?
+                    .map_err(|error| crate::logging::rejected("MTU 无效", error))?
                     .into(),
             ),
             "dns-hijack" | "route-exclude-address" => Value::Sequence(

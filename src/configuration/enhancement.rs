@@ -17,7 +17,7 @@ fn name(value: &Value) -> Option<&str> {
 }
 pub(crate) fn apply(source: &[u8], values: &Values) -> Result<Vec<u8>, String> {
     let root: Value = serde_yaml_ng::from_slice(source)
-        .map_err(|error| crate::logging::diagnostic_error("订阅 YAML 无效", error))?;
+        .map_err(|error| crate::logging::rejected("订阅 YAML 无效", error))?;
     let mut config = root.as_mapping().cloned().ok_or("订阅顶层必须是对象")?;
     // Top-level names use the same lowercase contract as ordinary composition.
     config = config
@@ -38,9 +38,8 @@ pub(crate) fn apply(source: &[u8], values: &Values) -> Result<Vec<u8>, String> {
         if text.len() as u64 > super::INPUT_LIMIT {
             return Err("订阅增强超过上限".into());
         }
-        let edit: SequenceEdit = serde_yaml_ng::from_str(text).map_err(|error| {
-            crate::logging::diagnostic_error(format!("{field} 增强格式无效"), error)
-        })?;
+        let edit: SequenceEdit = serde_yaml_ng::from_str(text)
+            .map_err(|error| crate::logging::rejected(format!("{field} 增强格式无效"), error))?;
         for value in edit.prepend.iter().chain(&edit.append) {
             let valid = if field == "rules" {
                 value.is_string()
@@ -81,7 +80,7 @@ pub(crate) fn apply(source: &[u8], values: &Values) -> Result<Vec<u8>, String> {
         .into_bytes();
     // Reuse composition budgets, including depth and node limits, after expansion.
     super::compose(&bytes, None, &Values::new())
-        .map_err(|error| crate::logging::diagnostic_error("订阅增强无效或超过上限".into(), error))
+        .map_err(|error| crate::logging::rejected("订阅增强无效或超过上限".into(), error))
 }
 fn update_groups(config: &mut Mapping, deleted: &BTreeSet<&str>, added: &[String]) {
     let Some(groups) = config

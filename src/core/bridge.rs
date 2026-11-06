@@ -213,7 +213,7 @@ fn install(service: Option<Service>, snapshot: Snapshot, cx: &mut App) {
                                 crate::integration::announce_module(
                                     "DEBUG",
                                     "proxies",
-                                    format!("图标缓存已就绪，{} 项", runtime.icons.files.len()),
+                                    format!("图标缓存已就绪，共 {} 项", runtime.icons.files.len()),
                                     cx,
                                 );
                             }
@@ -221,9 +221,13 @@ fn install(service: Option<Service>, snapshot: Snapshot, cx: &mut App) {
                                 if *sequence > this.delay_log_sequence {
                                     this.delay_log_sequence = *sequence;
                                     crate::integration::announce_module(
-                                        if *failed == 0 { "INFO" } else { "WARNING" },
+                                        if *failed == 0 { "DEBUG" } else { "WARNING" },
                                         "proxies",
-                                        format!("测速完成，{count} 项，{failed} 项失败"),
+                                        if *failed == 0 {
+                                            format!("测速完成，共 {count} 项")
+                                        } else {
+                                            format!("测速完成，共 {count} 项，其中 {failed} 项失败")
+                                        },
                                         cx,
                                     );
                                 }
@@ -276,7 +280,14 @@ fn install(service: Option<Service>, snapshot: Snapshot, cx: &mut App) {
                                     Some(*error) != this.snapshot.error()
                                         || snapshot.request_id != this.snapshot.request_id
                                 })
-                                .map(|error| ("ERROR", error.to_owned(), this.notification_window))
+                                .map(|error| {
+                                    (
+                                        "ERROR",
+                                        error.to_owned(),
+                                        this.notification_window,
+                                        snapshot.request_id != this.snapshot.request_id,
+                                    )
+                                })
                                 .or_else(|| {
                                     (snapshot.notice != this.snapshot.notice)
                                         .then(|| {
@@ -285,6 +296,7 @@ fn install(service: Option<Service>, snapshot: Snapshot, cx: &mut App) {
                                                     "WARNING",
                                                     notice.clone(),
                                                     this.notification_window,
+                                                    false,
                                                 )
                                             })
                                         })
@@ -295,7 +307,7 @@ fn install(service: Option<Service>, snapshot: Snapshot, cx: &mut App) {
                                         || snapshot.request_id != this.snapshot.request_id)
                                         .then(|| {
                                             snapshot.information.as_ref().map(|message| {
-                                                ("INFO", message.clone(), this.notification_window)
+                                                ("INFO", message.clone(), this.notification_window, false)
                                             })
                                         })
                                         .flatten()
@@ -307,14 +319,18 @@ fn install(service: Option<Service>, snapshot: Snapshot, cx: &mut App) {
                             this.snapshot = snapshot;
                             this.sync_progress(cx);
                             cx.notify();
-                            report.map(|(level, message, window)| (level, message, window, module))
+                            report.map(|(level, message, window, logged)| {
+                                (level, message, window, module, logged)
+                            })
                         } else {
                             None
                         }
                     });
                     match report {
-                        Ok(Some((level, message, origin, module))) => cx.update(|cx| {
-                            crate::integration::announce_module(level, module, message.clone(), cx);
+                        Ok(Some((level, message, origin, module, logged))) => cx.update(|cx| {
+                            if !logged {
+                                crate::integration::announce_module(level, module, message.clone(), cx);
+                            }
                             if let Some(window) = origin.or_else(|| cx.active_window()) {
                                 let _ = window.update(cx, |_, window, cx| {
                                     if level == "ERROR" {
@@ -364,7 +380,7 @@ fn install(service: Option<Service>, snapshot: Snapshot, cx: &mut App) {
                 }
             }));
         }
-        this._quit = Some(cx.on_app_quit(move |this, cx| {
+        this._quit = Some(cx.on_app_quit(move |this, _cx| {
             let worker = this.service.as_mut().and_then(Service::shutdown);
             // GPUI gives returned futures only 200 ms. A native termination is
             // already irreversible, so wait here with a hard deadline for the
@@ -373,11 +389,7 @@ fn install(service: Option<Service>, snapshot: Snapshot, cx: &mut App) {
             if let Some(worker) = worker
                 && let Err(error) = wait_session_cleanup(worker, std::time::Duration::from_secs(3))
             {
-                crate::integration::logs(cx).publish(crate::logging::Record::program(
-                    crate::logging::Level::Error,
-                    "core",
-                    &format!("系统结束清理未完成：{error}"),
-                ));
+                log::error!(target: "suki_clash::core", "系统结束时内核清理未完成（{error}）");
             }
             std::future::ready(())
         }));
@@ -407,7 +419,7 @@ pub(crate) fn submit(command: Command, window: &mut Window, cx: &mut App) -> Res
     });
     result.map_err(|error| {
         log::error!(
-            "提交操作被拒绝：{operation}；{}",
+            "{operation}的提交被拒绝（{}）",
             crate::logging::error_chain(&error)
         );
         let message = match error {
@@ -490,7 +502,7 @@ fn finish(exit: Exit, cx: &mut App) {
             Exit::Reset(_) => "重置程序",
             Exit::Update(_) => "应用更新",
         };
-        log::info!("操作开始：{operation}");
+        log::info!("开始{operation}");
         this.quitting = Some(cx.spawn(async move |owner, cx| {
             let joined = async {
                 let installer = if let Exit::Update(expected) = &exit {
@@ -597,7 +609,7 @@ fn finish(exit: Exit, cx: &mut App) {
                     .ok()
                     .flatten();
                 cx.update(|cx| {
-                    crate::integration::announce("ERROR", format!("退出清理未完成：{error}"), cx);
+                    crate::integration::announce("ERROR", format!("退出清理未完成（{error}）"), cx);
                     if let Some(window) = window.or_else(|| cx.active_window()) {
                         crate::desktop::show_main(window, cx);
                         let _ = window.update(cx, |_, window, cx| {
@@ -607,7 +619,7 @@ fn finish(exit: Exit, cx: &mut App) {
                 });
                 return;
             }
-            log::info!("{operation}：清理与准备完成，正在结束执行线程");
+            log::debug!("{operation}的清理与准备已完成，正在结束执行线程");
             // All fallible preparation completed. Only now destroy owners.
             let (core_worker, storage_worker, desktop_worker) = cx.update(|cx| {
                 let core_worker = controller(cx).update(cx, |this, _| {

@@ -324,7 +324,7 @@ mod native {
                     "防火墙规则回读不一致"
                 );
                 ensure!(
-                    unsafe { observed.ApplicationName() }?.to_string() == core.to_string_lossy(),
+                    unsafe { observed.ApplicationName() }? == core.to_string_lossy(),
                     "防火墙程序路径回读不一致"
                 );
             }

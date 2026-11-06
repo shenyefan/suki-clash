@@ -99,7 +99,7 @@ pub(crate) fn read_path(path: &Path) -> Result<String, String> {
         return Err("备份超过48MiB上限".into());
     }
     String::from_utf8(bytes)
-        .map_err(|error| crate::logging::diagnostic_error("备份不是UTF-8文本".into(), error))
+        .map_err(|error| crate::logging::rejected("备份不是UTF-8文本".into(), error))
 }
 pub(crate) fn read(paths: &AppPaths, id: &Id) -> Result<String, String> {
     read_path(&file(paths, id))

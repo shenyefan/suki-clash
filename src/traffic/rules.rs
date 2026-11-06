@@ -44,7 +44,6 @@ impl Snapshot {
                     numbers: vec![],
                     active: true,
                     enabled: true,
-                    source: 0,
                     details: format!(
                         "顺序\t{}\n类型\t{kind}\n匹配内容\t{}\n策略\t{}",
                         index + 1,

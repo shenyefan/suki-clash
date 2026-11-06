@@ -150,7 +150,7 @@ pub async fn clear_active_owner() -> Result<()> {
 
 pub async fn restore_desired_state() -> Result<()> {
     let Some(active_owner) = load_active_owner().await? else {
-        info!("No active owner to restore");
+        info!("无活动所有者，跳过恢复");
         return Ok(());
     };
     let state = load_owner_desired_state(&active_owner.owner_key).await?;
@@ -158,21 +158,21 @@ pub async fn restore_desired_state() -> Result<()> {
     if let Some(writer_config) = state.last_writer_config.as_ref()
         && let Err(error) = set_or_update_writer(writer_config)
     {
-        warn!("Failed to restore writer config: {}", error);
+        warn!("恢复写入配置失败（{}）", error);
     }
 
     if !state.core_should_be_running {
-        info!("Desired state does not require core restore");
+        info!("期望状态无需恢复内核");
         return Ok(());
     }
 
     let Some(config) = state.last_clash_config else {
-        warn!("Desired state requests core restore but has no ClashConfig");
+        warn!("期望状态要求恢复内核但缺少内核配置");
         return Ok(());
     };
 
     info!(
-        "Restoring core from desired state generation {}",
+        "按期望状态第 {} 代恢复内核",
         state.generation
     );
     if let Err(error) = CORE_MANAGER
@@ -258,7 +258,7 @@ where
         && cleanup_error.kind() != std::io::ErrorKind::NotFound
     {
         warn!(
-            "Failed to clean up state temp file {:?}: {}",
+            "清理状态临时文件 {:?} 失败（{}）",
             temp_path, cleanup_error
         );
     }

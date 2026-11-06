@@ -154,7 +154,7 @@ impl Actor {
         {
             let namespace =
                 crate::storage::Namespace::parse(&format!("profile-enhance-{}", document.id))
-                    .map_err(|error| crate::logging::diagnostic_error("订阅增强身份无效", error))?;
+                    .map_err(|error| crate::logging::rejected("订阅增强身份无效", error))?;
             let enhancement = repository
                 .read_limited(&namespace, crate::configuration::INPUT_LIMIT)
                 .map_err(|error| {
@@ -253,9 +253,7 @@ impl Actor {
                 if !entry.enhancement.is_empty() {
                     let namespace =
                         crate::storage::Namespace::parse(&format!("profile-enhance-{id}"))
-                            .map_err(|error| {
-                                crate::logging::diagnostic_error("订阅增强身份无效", error)
-                            })?;
+                            .map_err(|error| crate::logging::rejected("订阅增强身份无效", error))?;
                     store
                         .save(&namespace, &entry.enhancement)
                         .map_err(|error| {
@@ -297,7 +295,7 @@ impl Actor {
         let repository = crate::storage::Repository::open(self.paths.clone())
             .map_err(|error| crate::logging::diagnostic_error("无法读取订阅增强存储", error))?;
         let namespace = crate::storage::Namespace::parse(&format!("profile-enhance-{id}"))
-            .map_err(|error| crate::logging::diagnostic_error("订阅增强身份无效", error))?;
+            .map_err(|error| crate::logging::rejected("订阅增强身份无效", error))?;
         let previous = repository
             .read_limited(&namespace, crate::configuration::INPUT_LIMIT)
             .map_err(|error| crate::logging::diagnostic_error("无法读取订阅增强", error))?;
@@ -480,7 +478,7 @@ impl Actor {
         let client = running.launch.client.clone();
         let previous_yaml = running.launch.yaml().await?;
         let previous: serde_yaml_ng::Value = serde_yaml_ng::from_str(&running.launch.composed)
-            .map_err(|error| crate::logging::diagnostic_error("旧内核配置无效", error))?;
+            .map_err(|error| crate::logging::rejected("旧内核配置无效", error))?;
         candidate.reuse_control(&running.launch).await?;
         let mut candidate = self.validate(candidate).await?;
         if candidate.privileged_network()?
@@ -499,7 +497,7 @@ impl Actor {
             None => return self.replace_committing(candidate, commit).await,
         };
         let expected: serde_yaml_ng::Value = serde_yaml_ng::from_str(&candidate.composed)
-            .map_err(|error| crate::logging::diagnostic_error("候选内核配置无效", error))?;
+            .map_err(|error| crate::logging::rejected("候选内核配置无效", error))?;
         if let Some(settings) = self
             .running
             .as_ref()
@@ -628,7 +626,8 @@ impl Actor {
         if ids.is_empty() {
             return Ok(());
         }
-        log::info!("自动更新订阅开始；条目={}", ids.len());
+        let count = ids.len();
+        log::debug!("开始自动更新订阅，共 {count} 项");
         self.snapshot.operation_active = true;
         let result = self
             .profiles(ProfileCommand::Update {
@@ -639,8 +638,8 @@ impl Actor {
         self.snapshot.operation_active = false;
         self.snapshot.progress = None;
         match &result {
-            Ok(()) => log::info!("自动更新订阅完成"),
-            Err(error) => log::error!("自动更新订阅失败：{error}"),
+            Ok(()) => log::info!("自动更新订阅完成，共 {count} 项"),
+            Err(error) => log::error!("自动更新订阅失败（{error}）"),
         }
         result
     }

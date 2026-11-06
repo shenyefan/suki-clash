@@ -34,7 +34,7 @@ pub(crate) fn decode(values: &Values) -> Result<Vec<Document>, String> {
     for id in ids.split(',').filter(|id| !id.is_empty()) {
         let id = id
             .parse::<u64>()
-            .map_err(|error| crate::logging::diagnostic_error("订阅 ID 无效", error))?;
+            .map_err(|error| crate::logging::rejected("订阅 ID 无效", error))?;
         if id == 0 || !unique.insert(id) {
             return Err("订阅 ID 重复或无效".into());
         }
@@ -66,7 +66,7 @@ pub(crate) fn validate(document: &Document) -> Result<(), String> {
         let timeout = document
             .timeout
             .parse::<u64>()
-            .map_err(|error| crate::logging::diagnostic_error("订阅超时无效", error))?;
+            .map_err(|error| crate::logging::rejected("订阅超时无效", error))?;
         if !(1..=3600).contains(&timeout) {
             return Err("订阅超时需为 1–3600 秒".into());
         }
@@ -85,7 +85,7 @@ pub(crate) fn validate(document: &Document) -> Result<(), String> {
         Some(document.id),
         &Values::new(),
     )
-    .map_err(|error| crate::logging::diagnostic_error("订阅 YAML 无效或超过大小上限", error))?;
+    .map_err(|error| crate::logging::rejected("订阅 YAML 无效或超过大小上限", error))?;
     Ok(())
 }
 pub(crate) fn body_path(paths: &AppPaths, id: u64) -> PathBuf {

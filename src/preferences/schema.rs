@@ -1248,7 +1248,7 @@ fn original_sections(kind: SettingsKind) -> Vec<SectionSpec> {
                     FieldSpec {
                         key: "MaxLogDays",
                         label: "保留天数",
-                        description: "程序日志与内核日志",
+                        description: "内核日志",
                         kind: FieldKind::Number,
                         default: "7",
                         options: &[],
@@ -1257,7 +1257,7 @@ fn original_sections(kind: SettingsKind) -> Vec<SectionSpec> {
                     FieldSpec {
                         key: "MaxLogFileSizeMb",
                         label: "单文件大小（MB）",
-                        description: "达到限制后自动创建新日志文件",
+                        description: "内核日志达到限制后创建新文件",
                         kind: FieldKind::Number,
                         default: "10",
                         options: &[],

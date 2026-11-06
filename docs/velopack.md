@@ -14,7 +14,7 @@
 | macOS Apple Silicon | osx-arm64 | SukiClash-{channel}-Setup.pkg；同时保留Velopack生成的Portable.zip |
 | Linux x64 | linux-x64 | SukiClash-{channel}.AppImage |
 
-Release附件严格限定为上表的7个安装器／压缩包，不上传JSON、nupkg或其他内部文件。每个channel的`releases.{channel}.json`、`assets.{channel}.json`、`build.{channel}.json`和完整更新包仅保留在Actions artifacts中14天。禁用delta，不依赖历史版本下载。SDK的PackageId固定`SukiClash`。Linux原生不生成deb／rpm，需要时另接发行版打包工具，不能把AppImage称为deb安装器。各架构文件互不覆盖。
+Release附件为上表的7个安装器／压缩包，加上每个channel的更新清单`releases.{channel}.json`和完整更新包`SukiClash-{version}-{channel}-full.nupkg`（应用内更新的数据源，缺少任一项则汇总失败）。`assets.{channel}.json`、`build.{channel}.json`仅保留在Actions artifacts中14天。禁用delta，不依赖历史版本下载。SDK的PackageId固定`SukiClash`。Linux原生不生成deb／rpm，需要时另接发行版打包工具，不能把AppImage称为deb安装器。各架构文件互不覆盖。
 
 Windows便携版是**免安装程序包**，用户配置仍沿当前平台应用目录保存，不宣称数据与程序同目录。Windows构建采用静态CRT，避免只在安装版补VC运行库而让便携版漏依赖。便携版使用TUN仍遵守现有服务安装／权限要求。
 
@@ -40,9 +40,9 @@ Windows签名使用：`SUKI_WINDOWS_CERTIFICATE_P12`（base64）、`SUKI_WINDOWS
 
 macOS签名需要完整的一组secrets：`SUKI_MACOS_CERTIFICATE_P12`（包含Developer ID Application和Developer ID Installer的base64 p12）、`SUKI_MACOS_CERTIFICATE_PASSWORD`、`SUKI_MACOS_APPLICATION_IDENTITY`、`SUKI_MACOS_INSTALLER_IDENTITY`、`SUKI_APPLE_API_KEY_P8`（原始p8文本）、`SUKI_APPLE_API_KEY_ID`、`SUKI_APPLE_API_ISSUER`。CI创建临时keychain，给vpk指定该keychain和notary profile。使用空的hardened-runtime entitlements，不为GPUI／QuickJS额外开启JIT或关闭库验证。材料仅在runner临时目录，不进入源码或产物。配置不完整直接失败，不退回未签名成功。
 
-GitHub上传权限只给最终草稿job；不需要在仓库写PAT。更新源仓库通过构建环境`SUKI_UPDATE_REPOSITORY=${{ github.repository }}`写入程序；本地开发没有该值时不得猜GitHub地址或伪造可更新状态。Release描述包含平台／文件／签名状态表、必要使用说明，以及GitHub自动生成的版本变更记录；重跑时同步更新草稿说明，并删除草稿中不属于当前7个下载文件的旧附件。已公开的同名Release仍拒绝修改。
+GitHub上传权限只给最终草稿job；不需要在仓库写PAT。更新源仓库通过构建环境`SUKI_UPDATE_REPOSITORY=${{ github.repository }}`写入程序；本地开发没有该值时不得猜GitHub地址或伪造可更新状态。Release描述包含平台／可点击下载的文件名表、必要使用说明，以及GitHub自动生成的版本变更记录，其中“完整变更”链接单独成行；实际签名状态见Actions产物的`build.{channel}.json`；重跑时同步更新草稿说明，并删除草稿中不属于当前下载文件、更新清单和完整包的旧附件。已公开的同名Release仍拒绝修改。
 
-当前分发策略不公开更新清单和nupkg，因此新Release仅支持手动下载安装／解压升级。现有已安装版自动更新代码仍请求公开stable Release的channel JSON；对这些新Release检查会报清单获取错误，不能宣称支持自动更新。后续若恢复自动更新，需要单独确定更新源方案。草稿不会成为普通用户的更新源。
+更新清单和完整包随Release公开，应用请求`releases/latest/download/releases.{channel}.json`并按清单下载完整包。v0.2.4与v0.2.6的Release未包含这些文件，对它们检查会报清单获取错误；自动更新从包含清单的版本开始生效，且需要用旧版本安装包升级到该版本后再验证。草稿不会成为普通用户的更新源。
 
 ## 当前验证边界
 

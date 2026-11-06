@@ -24,7 +24,6 @@ gpui_kit::actions!(connections, [DismissConnectionDetails]);
 pub(crate) enum TrafficKind {
     Connections,
     Rules,
-    Logs,
 }
 pub(crate) struct TrafficPage {
     kind: TrafficKind,
@@ -56,20 +55,12 @@ impl TrafficPage {
             InputState::new(window, cx).placeholder(match kind {
                 TrafficKind::Connections => "搜索主机、进程或代理链",
                 TrafficKind::Rules => "筛选规则、策略或类型",
-                TrafficKind::Logs => "搜索日志",
             })
         });
-        let filters: Vec<SharedString> = if kind == TrafficKind::Logs {
-            ["全部", "DEBUG", "INFO", "WARN", "ERROR"]
-                .iter()
-                .map(|s| (*s).into())
-                .collect()
-        } else {
-            std::iter::once("全部类型")
-                .chain(crate::ui::RULE_TYPES.iter().copied())
-                .map(Into::into)
-                .collect()
-        };
+        let filters: Vec<SharedString> = std::iter::once("全部类型")
+            .chain(crate::ui::RULE_TYPES.iter().copied())
+            .map(Into::into)
+            .collect();
         let filter = cx.new(|cx| SelectState::new(filters, Some(IndexPath::new(0)), window, cx));
         let observed_table = table.clone();
         let subscriptions = vec![
@@ -160,10 +151,8 @@ impl TrafficPage {
             cx.subscribe_in(
                 &observed_table,
                 window,
-                |this, state, event: &TableEvent, window, cx| {
-                    if this.kind != TrafficKind::Logs
-                        && let TableEvent::SelectRow(index) = event
-                    {
+                |_, state, event: &TableEvent, window, cx| {
+                    if let TableEvent::SelectRow(index) = event {
                         state.update(cx, |table, cx| {
                             table.delegate_mut().detail_id = table
                                 .delegate()
@@ -284,53 +273,16 @@ impl TrafficPage {
         });
         cx.notify();
     }
-    fn clear_or_close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let kind = self.kind;
-        if kind == TrafficKind::Connections {
-            let runtime = self.session.read(cx).runtime();
-            crate::core::request(
-                crate::core::Command::Connections(ConnectionAction::CloseAll {
-                    generation: runtime.generation,
-                    epoch: runtime.epoch,
-                }),
-                window,
-                cx,
-            );
-            return;
-        }
-        let removed = self.table.update(cx, |table, cx| {
-            let delegate = table.delegate_mut();
-            let tab = delegate.tab;
-            let removed = delegate
-                .records
-                .iter()
-                .filter(|record| record.source == tab)
-                .cloned()
-                .collect::<Vec<_>>();
-            delegate.records.retain(|record| record.source != tab);
-            delegate.rebuild();
-            table.clear_selection(cx);
-            cx.notify();
-            removed
-        });
-        let table = self.table.downgrade();
-        crate::ui::notifications::undo(window, "已清空日志", cx, move |_, cx| {
-            table
-                .update(cx, |table, cx| {
-                    let delegate = table.delegate_mut();
-                    for record in &removed {
-                        if !delegate.records.iter().any(|entry| entry.id == record.id) {
-                            delegate.records.push(record.clone());
-                        }
-                    }
-                    delegate.records.sort_by_key(|record| record.id);
-                    delegate.rebuild();
-                    cx.notify();
-                    true
-                })
-                .unwrap_or(true)
-        });
-        cx.notify();
+    fn close_all_connections(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let runtime = self.session.read(cx).runtime();
+        crate::core::request(
+            crate::core::Command::Connections(ConnectionAction::CloseAll {
+                generation: runtime.generation,
+                epoch: runtime.epoch,
+            }),
+            window,
+            cx,
+        );
     }
 }
 

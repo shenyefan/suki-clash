@@ -120,7 +120,7 @@ pub(crate) fn decode(kind: SettingsKind, bytes: &[u8]) -> Result<Values, String>
 pub(crate) fn encode(kind: SettingsKind, values: &Values) -> Result<Vec<u8>, String> {
     let root = if let Some(text) = values.get(key(kind).ok_or("不是原生文档设置")?) {
         serde_yaml_ng::from_str(text)
-            .map_err(|error| crate::logging::diagnostic_error("YAML 文档无效", error))?
+            .map_err(|error| crate::logging::rejected("YAML 文档无效", error))?
     } else {
         let mut merged = defaults(kind);
         merged.extend(values.clone());

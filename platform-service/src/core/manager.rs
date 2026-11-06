@@ -25,7 +25,7 @@ use tokio::{
     sync::{Mutex, oneshot},
     task::JoinHandle,
 };
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 pub(super) const CORE_IPC_READY_TIMEOUT: Duration = Duration::from_secs(15);
 const CORE_IPC_POLL_INTERVAL: Duration = Duration::from_millis(50);
@@ -110,7 +110,7 @@ impl ChildGuard {
     async fn terminate(&mut self, grace: Duration) -> Result<()> {
         let Some(child) = self.child.as_mut() else {
             self.drain_output().await;
-            info!("No running core process found");
+            info!("未发现运行中的内核进程");
             return Ok(());
         };
         let child_id = child.id();
@@ -125,7 +125,7 @@ impl ChildGuard {
         result?;
         self.child.take();
         self.drain_output().await;
-        info!("Core ({:?}) stopped", child_id);
+        info!("内核（{:?}）已停止", child_id);
         Ok(())
     }
 
@@ -135,9 +135,9 @@ impl ChildGuard {
         while let Some(reader) = self.readers.first_mut() {
             match tokio::time::timeout_at(deadline, &mut *reader).await {
                 Ok(Ok(())) => {}
-                Ok(Err(error)) => warn!("Failed to finish reading exited core output: {error}"),
+                Ok(Err(error)) => warn!("读取已退出内核的剩余输出失败（{error}）"),
                 Err(_) => {
-                    warn!("Core output stayed open after the core exited; dropping the rest");
+                    warn!("内核退出后输出管道仍未关闭，丢弃剩余输出");
                     reader.abort();
                 }
             }
@@ -156,13 +156,13 @@ impl Drop for ChildGuard {
         if let Some(mut child) = self.child.take() {
             tokio::spawn(async move {
                 if let Err(e) = child.kill().await {
-                    warn!("Failed to kill child ({:?}): {e}", child.id());
+                    warn!("终止子进程（{:?}）失败（{e}）", child.id());
                 } else {
-                    info!("Successfully killed child ({:?})", child.id());
+                    info!("已终止子进程（{:?}）", child.id());
                 }
             });
         } else {
-            info!("No running core process found");
+            info!("未发现运行中的内核进程");
         }
     }
 }
@@ -251,7 +251,7 @@ fn log_core_exit(status: &std::process::ExitStatus, uptime: Duration) -> String 
     };
 
     error!(
-        "Core exited unexpectedly - code: {:?}, diagnosis: {}, uptime: {:.1}s",
+        "内核意外退出（退出码 {:?}，诊断 {}，已运行 {:.1} 秒）",
         exit_info.exit_code,
         exit_info.diagnosis(),
         exit_info.uptime.as_secs_f64()
@@ -259,7 +259,7 @@ fn log_core_exit(status: &std::process::ExitStatus, uptime: Duration) -> String 
 
     #[cfg(unix)]
     if let Some(sig) = exit_info.signal {
-        error!("Core terminated by signal: {}", sig);
+        error!("内核被信号终止（{}）", sig);
     }
 
     format!(
@@ -357,7 +357,7 @@ impl CoreManager {
         ensure_startup_reconciled()?;
         set_core_lifecycle_state(ServiceLifecycleState::Starting);
         if self.running_pid.load(Ordering::Relaxed) != 0 || self.execution.lock().await.is_some() {
-            info!("Core is already running, stopping existing instance");
+            info!("内核已在运行，先停止现有实例");
             self.stop_core().await?;
         }
 
@@ -377,7 +377,8 @@ impl CoreManager {
         owner: OwnerIdentity,
         execution: Arc<crate::execution::CoreExecutionGuard>,
     ) -> Result<()> {
-        info!("Starting core with config: {:?}", config);
+        info!("正在启动内核进程");
+        debug!("内核启动参数已生成");
 
         prepare_core_ipc_socket(&config.core_config.core_ipc_path, &owner)?;
         let args = core_args(&config);
@@ -410,7 +411,7 @@ impl CoreManager {
                 )
                 .await
                 {
-                    warn!("Failed to record unconfirmed core cleanup: {record_error:#}");
+                    warn!("记录未确认的内核清理失败（{record_error:#}）");
                 }
                 *self.failed_child.lock().await = Some(child_guard);
                 set_core_lifecycle_state(ServiceLifecycleState::Fatal);
@@ -460,7 +461,7 @@ impl CoreManager {
 
     /// Stops the core; IPC handlers pass the deadline by which it must be SIGKILLed.
     pub(super) async fn stop_core_by(&self, kill_by: Option<Instant>) -> Result<()> {
-        info!("Stopping core");
+        info!("正在停止内核");
         LOG_RING.clear_logs();
 
         let watchdog_result = self.stop_watchdog(kill_by).await;
@@ -486,10 +487,10 @@ impl CoreManager {
         let core_ipc_path = start_clash
             .as_ref()
             .map(|config| config.core_config.core_ipc_path.clone());
-        if let Some(config) = start_clash {
-            info!("Clearing running config: {:?}", config);
+        if let Some(_) = start_clash {
+            debug!("清除运行配置");
         } else {
-            info!("No running config to clear");
+            debug!("无运行配置可清除");
         }
 
         remove_core_runtime_record().await;
@@ -536,7 +537,7 @@ impl CoreManager {
 
                     tokio::select! {
                         kill_by = &mut shutdown_rx => {
-                            info!("Core watchdog received shutdown signal");
+                            info!("内核看护收到停止信号");
                             let grace = term_grace(kill_by.unwrap_or(None));
                             if let Err(error) = current_guard.terminate(grace).await {
                                 *failed_child_arc.lock().await = Some(current_guard);
@@ -554,7 +555,7 @@ impl CoreManager {
                 let status = match wait_result {
                     Ok(status) => status,
                     Err(error) => {
-                        warn!("Failed to wait for core process: {}", error);
+                        warn!("等待内核进程失败（{}）", error);
                         recovery_exhausted = true;
                         break;
                     }
@@ -587,7 +588,7 @@ impl CoreManager {
                 loop {
                     if restart_timestamps.len() as u32 > watchdog_config.max_restarts {
                         error!(
-                            "Core restarted {} times in {}s, giving up",
+                            "内核在 {1} 秒内重启 {0} 次，停止重试",
                             restart_timestamps.len(),
                             watchdog_config.restart_window.as_secs()
                         );
@@ -597,7 +598,7 @@ impl CoreManager {
 
                     let delay = backoff_delay(consecutive_attempt, watchdog_config.max_backoff);
                     info!(
-                        "Restart attempt #{} after {}ms backoff",
+                        "第 {} 次重启尝试（退避 {} 毫秒）",
                         consecutive_attempt + 1,
                         delay.as_millis()
                     );
@@ -612,7 +613,7 @@ impl CoreManager {
                     if let Err(error) =
                         prepare_core_ipc_socket(&config.core_config.core_ipc_path, &owner)
                     {
-                        error!("Failed to prepare core IPC before restart: {error:#}");
+                        error!("重启前准备内核通道失败（{error:#}）");
                         consecutive_attempt += 1;
                         let now = Instant::now();
                         restart_timestamps.retain(|timestamp| {
@@ -636,10 +637,10 @@ impl CoreManager {
                                 .await_ipc(config.core_config.core_ipc_path.clone(), owner.clone())
                                 .await
                             {
-                                error!("Failed to secure restarted core IPC: {error:#}");
+                                error!("加固重启后的内核通道失败（{error:#}）");
                                 if let Err(kill_error) = new_guard.terminate(Duration::ZERO).await {
                                     error!(
-                                        "Failed to terminate core after IPC hardening failure: {kill_error:#}"
+                                        "通道加固失败后终止内核失败（{kill_error:#}）"
                                     );
                                     let now_secs = unix_timestamp_secs();
                                     running_pid_arc
@@ -654,7 +655,7 @@ impl CoreManager {
                                     .await
                                     {
                                         warn!(
-                                            "Failed to record unconfirmed restarted core cleanup: {record_error:#}"
+                                            "记录重启后未确认的内核清理失败（{record_error:#}）"
                                         );
                                     }
                                     *failed_child_arc.lock().await = Some(new_guard);
@@ -674,7 +675,7 @@ impl CoreManager {
                                 write_runtime_record_for_config(new_pid, &config, "after restart")
                                     .await
                             {
-                                error!("Failed to commit restarted core runtime: {record_error:#}");
+                                error!("提交重启后的内核运行记录失败（{record_error:#}）");
                                 if let Err(kill_error) = new_guard.terminate(Duration::ZERO).await {
                                     let now_secs = unix_timestamp_secs();
                                     running_pid_arc
@@ -698,7 +699,7 @@ impl CoreManager {
                             last_recovery_at_arc.store(now_secs, Ordering::Relaxed);
                             consecutive_attempt += 1;
                             info!(
-                                "Core restarted successfully (attempt #{})",
+                                "内核已重启（第 {} 次尝试）",
                                 consecutive_attempt
                             );
                             set_core_lifecycle_state(ServiceLifecycleState::Running);
@@ -706,7 +707,7 @@ impl CoreManager {
                             continue 'watchdog;
                         }
                         Err(error) => {
-                            error!("Failed to restart core: {}", error);
+                            error!("重启内核失败（{}）", error);
                             consecutive_attempt += 1;
                             let now = Instant::now();
                             restart_timestamps.retain(|t| {
@@ -739,7 +740,7 @@ impl CoreManager {
 
         if let Some(handle) = self.watchdog_handle.lock().await.take() {
             handle.await.context("watchdog task failed to join")??;
-            info!("Watchdog stopped");
+            info!("内核看护已停止");
         }
 
         Ok(())
@@ -764,13 +765,13 @@ impl CoreManager {
 
             if let Some(core_ipc_path) = core_ipc_path {
                 let target = Path::new(&core_ipc_path);
-                info!("Removing socket file {:?}", target);
+                debug!("移除套接字文件 {:?}", target);
                 if !target.exists() {
-                    info!("{:?} does not exist, no need to remove", target);
+                    debug!("套接字文件 {:?} 不存在", target);
                 } else {
                     match fs::remove_file(target).await {
-                        Ok(_) => info!("Successfully removed {:?}", target),
-                        Err(e) => warn!("Failed to remove {:?}: {}", target, e),
+                        Ok(_) => debug!("已移除套接字文件 {:?}", target),
+                        Err(e) => warn!("移除 {:?} 失败（{}）", target, e),
                     }
                 }
             }
@@ -1026,7 +1027,7 @@ async fn secure_core_ipc_socket(
                 .into());
         }
         grant_core_ipc_directory_to_owner(&target, uid, gid)?;
-        info!("Secured core IPC socket {:?} for uid {}", target, uid);
+        debug!("已为用户 {1} 加固内核通道套接字 {0:?}", target, uid);
         Ok(())
     }
 
@@ -1137,7 +1138,7 @@ async fn secure_core_ipc_socket(
         if status != 0 {
             anyhow::bail!("failed to secure core IPC pipe: Windows error {status}");
         }
-        info!("Secured core IPC pipe for owner SID");
+        info!("已按所有者 SID 加固内核通道管道");
         Ok(())
     }
 }

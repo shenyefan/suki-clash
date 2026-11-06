@@ -1,0 +1,8 @@
+#!/usr/bin/env python3
+"""ring's ARM64 assembler invokes clang with cargo-xwin's clang-cl include flags."""
+import os
+import sys
+
+compiler = os.environ["SUKI_REAL_CLANG"]
+arguments = ["-isystem" if argument == "/imsvc" else argument for argument in sys.argv[1:]]
+os.execv(compiler, [compiler, *arguments])

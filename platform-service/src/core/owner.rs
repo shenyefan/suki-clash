@@ -35,7 +35,7 @@ impl Drop for ServiceOwnerGuard {
         let _ = std::fs::remove_file(self.paths.pid_file_path());
 
         info!(
-            "Released service owner lock: {:?}",
+            "已释放服务所有权锁 {:?}",
             self.paths.owner_lock_path()
         );
     }
@@ -50,18 +50,18 @@ pub async fn acquire_service_owner() -> Result<Option<ServiceOwnerGuard>> {
     crate::core::windows_security::ensure_private_service_directory(paths.runtime_dir())?;
 
     if let Some(guard) = try_acquire_owner_once(&paths)? {
-        info!("Acquired service owner lock: {:?}", paths.owner_lock_path());
+        info!("已获取服务所有权锁 {:?}", paths.owner_lock_path());
         return Ok(Some(guard));
     }
 
     let old_pid = read_owner_pid(&paths);
     warn!(
-        "Service owner lock is already held; inspecting old owner: {:?}",
+        "服务所有权锁已被占用，正在检查原所有者 {:?}",
         old_pid
     );
 
     if wait_for_owner_health(&paths).await {
-        info!("Existing service owner is reachable; current process will exit");
+        info!("原服务所有者可连接，当前进程退出");
         return Ok(None);
     }
 
@@ -73,7 +73,7 @@ pub async fn acquire_service_owner() -> Result<Option<ServiceOwnerGuard>> {
             "current process already holds the service owner lock"
         ));
     }
-    warn!("Existing service owner is not reachable; stopping old owner before lock takeover");
+    warn!("原服务所有者不可连接，停止原所有者后接管所有权锁");
     if is_process_alive(old_pid) {
         terminate_process(old_pid).await?;
     }
@@ -87,7 +87,7 @@ pub async fn acquire_service_owner() -> Result<Option<ServiceOwnerGuard>> {
     for attempt in 1..=OWNER_REACQUIRE_ATTEMPTS {
         if let Some(guard) = try_acquire_owner_once(&paths)? {
             info!(
-                "Acquired service owner lock after cleanup on attempt {}",
+                "清理后已获取服务所有权锁（第 {} 次尝试）",
                 attempt
             );
             return Ok(Some(guard));
@@ -222,7 +222,7 @@ async fn is_ipc_healthy(paths: &ServicePaths) -> bool {
     ) {
         Ok(client) => client,
         Err(error) => {
-            warn!("Failed to create IPC health client: {}", error);
+            warn!("创建本地通道健康检查客户端失败（{}）", error);
             return false;
         }
     };
@@ -235,7 +235,7 @@ async fn is_ipc_healthy(paths: &ServicePaths) -> bool {
     {
         Ok(response) => response.is_success(),
         Err(error) => {
-            warn!("IPC owner health probe failed: {}", error);
+            warn!("本地通道所有者健康检查失败（{}）", error);
             false
         }
     }

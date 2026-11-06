@@ -33,7 +33,7 @@ fn document(paths: &AppPaths, limit: u64) -> Result<Map<String, Value>, String> 
         return Err(format!("{}：程序设置超过读取上限", path.display()));
     }
     let root: Map<String, Value> = serde_json::from_slice(&bytes).map_err(|error| {
-        log::error!("{}：程序设置解析原始错误：{error}", path.display());
+        log::error!("解析程序设置文件 {} 失败（{error}）", path.display());
         format!(
             "{}：JSON 格式或类型无效，第 {} 行第 {} 列；请修正文件后重试",
             path.display(),
@@ -53,7 +53,7 @@ pub(crate) fn read<T: DeserializeOwned + Default>(
     let root = document(paths, LIMIT)?;
     match root.get(section) {
         Some(value) => serde_json::from_value(value.clone()).map_err(|error| {
-            crate::logging::diagnostic_error(
+            crate::logging::rejected(
                 format!("{}：{section} 设置类型无效", path(paths).display()),
                 error,
             )
