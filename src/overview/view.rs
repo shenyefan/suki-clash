@@ -551,6 +551,7 @@ impl Render for Overview {
             );
         let controls = h_flex()
             .w_full()
+            .px(space::XL)
             .items_start()
             .gap(space::LG)
             .child(Self::context("配置", profile, text::BODY, cx))

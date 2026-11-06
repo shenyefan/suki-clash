@@ -510,8 +510,7 @@ impl Actor {
         self.invalidate_monitor();
         let result = async {
             self.reload_prepared(&reload, &yaml).await?;
-            client.verify_listeners(&expected).await?;
-            self.snapshot.tun = Some(client.verify_tun(&expected).await?);
+            self.snapshot.tun = Some(client.wait_configuration_ready(&expected).await?);
             commit()?;
             self.running
                 .as_mut()
@@ -528,16 +527,18 @@ impl Actor {
                     &previous_yaml,
                 )
                 .await?;
-                client.verify_listeners(&previous).await?;
-                self.snapshot.tun = Some(client.verify_tun(&previous).await?);
+                self.snapshot.tun = Some(client.wait_configuration_ready(&previous).await?);
                 Ok::<(), String>(())
             }
             .await;
             return match restored {
                 Ok(()) => Err(format!("{error}；旧内核配置已恢复")),
                 Err(recovery) => {
-                    self.publish(Phase::Failed, None);
-                    Err(format!("{error}；旧内核配置恢复失败：{recovery}"))
+                    let error = format!("{error}；旧内核配置恢复失败：{recovery}");
+                    Err(match self.mark_runtime_failed().await {
+                        Ok(()) => error,
+                        Err(cleanup) => format!("{error}；{cleanup}"),
+                    })
                 }
             };
         }

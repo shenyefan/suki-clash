@@ -13,7 +13,7 @@ use gpui_kit::{
 
 impl SettingsPage {
     pub(super) fn refresh_resources(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.session.read(cx).core_busy() {
+        if self.session.read(cx).core_busy() || !self.session.read(cx).is_running() {
             return;
         }
         // A failed submission is still this generation's automatic attempt.

@@ -117,6 +117,7 @@ impl SettingsPage {
                     field.control = FieldControl::Toggle(enabled);
                 }
                 let refresh_resources = this.kind == SettingsKind::Resources
+                    && observed_core.phase() == crate::core::Phase::Ready
                     && !observed_busy
                     && this.resource_generation != Some(observed_core.generation());
                 if let Some((id, _, _)) = &this.core_pending
@@ -369,14 +370,6 @@ impl SettingsPage {
         }
         let panels = schema::panels_from_values(&saved);
         let next_panel_id = panels.iter().map(|panel| panel.0).max().unwrap_or(0) + 1;
-        if kind == SettingsKind::Resources {
-            let owner = cx.weak_entity();
-            cx.defer(move |cx| {
-                let _ = settings_window.update(cx, |_, window, cx| {
-                    let _ = owner.update(cx, |this, cx| this.refresh_resources(window, cx));
-                });
-            });
-        }
         Self {
             lists: ["panels", "tunnels", "providers"]
                 .into_iter()
@@ -513,6 +506,9 @@ impl SettingsPage {
     pub(crate) fn reopen(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.kind == SettingsKind::General && !self.session.read(cx).core_busy() {
             crate::core::request(crate::core::Command::AutostartStatus, window, cx);
+        }
+        if self.kind == SettingsKind::Resources {
+            self.refresh_resources(window, cx);
         }
         if self.saving {
             return;
