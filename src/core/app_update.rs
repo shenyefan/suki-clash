@@ -40,10 +40,21 @@ impl Actor {
                 self.snapshot.app_update.available =
                     release.as_ref().map(|release| release.version().into());
                 self.snapshot.app_update.checked = true;
-                self.app_release = release.map(|release| *release);
-                if self.snapshot.app_update.available.is_none() {
-                    self.completed("当前已是最新版本".into());
+                self.snapshot.app_update.changelog = release
+                    .as_ref()
+                    .and_then(|release| release.changelog.as_ref().ok())
+                    .cloned()
+                    .unwrap_or_default();
+                self.snapshot.app_update.comparison_url = release
+                    .as_ref()
+                    .map(|release| release.comparison_url.clone());
+                if let Some(error) = release
+                    .as_ref()
+                    .and_then(|release| release.changelog.as_ref().err())
+                {
+                    self.runtime_warning = Some(format!("获取完整变更失败：{error}"));
                 }
+                self.app_release = release.map(|release| *release);
             }
             Command::Download { expected } => {
                 let release = self

@@ -21,6 +21,8 @@ pub(crate) struct State {
     pub(crate) downloaded: Option<String>,
     pub(crate) checked: bool,
     pub(crate) manual_url: Option<String>,
+    pub(crate) changelog: String,
+    pub(crate) comparison_url: Option<String>,
 }
 pub(crate) enum Check {
     Managed(Option<Box<Release>>),
@@ -30,6 +32,8 @@ pub(crate) struct Release {
     info: UpdateInfo,
     directory: tempfile::TempDir,
     pub(crate) staged: bool,
+    pub(crate) changelog: Result<String, String>,
+    pub(crate) comparison_url: String,
 }
 pub(crate) fn channel() -> String {
     let os = match std::env::consts::OS {
@@ -164,13 +168,106 @@ pub(crate) async fn check(http: &Http, paths: &AppPaths) -> Result<Check, String
     .await
     .map_err(|error| crate::logging::diagnostic_error("应用更新任务异常退出", error))??;
     match update {
-        UpdateCheck::UpdateAvailable(info) => Ok(Check::Managed(Some(Box::new(Release {
-            staged: staged.as_deref() == Some(info.TargetFullRelease.Version.as_str()),
-            info: *info,
-            directory,
-        })))),
+        UpdateCheck::UpdateAvailable(info) => {
+            let repository = repository()?;
+            let comparison = format!(
+                "v{}...v{}",
+                env!("CARGO_PKG_VERSION"),
+                info.TargetFullRelease.Version
+            );
+            let endpoint =
+                format!("https://api.github.com/repos/{repository}/compare/{comparison}");
+            let changelog = tokio::time::timeout(
+                Duration::from_secs(30),
+                changelog(
+                    &http.client(&Transport::System, true)?,
+                    paths,
+                    repository,
+                    &endpoint,
+                ),
+            )
+            .await
+            .unwrap_or_else(|_| Err("获取完整变更超时".into()));
+            Ok(Check::Managed(Some(Box::new(Release {
+                staged: staged.as_deref() == Some(info.TargetFullRelease.Version.as_str()),
+                info: *info,
+                directory,
+                changelog,
+                comparison_url: format!("https://github.com/{repository}/compare/{comparison}"),
+            }))))
+        }
         UpdateCheck::NoUpdateAvailable => Ok(Check::Managed(None)),
         UpdateCheck::RemoteIsEmpty => Err("应用更新源没有可用发布包".into()),
+    }
+}
+
+async fn changelog(
+    client: &reqwest::Client,
+    paths: &AppPaths,
+    repository: &str,
+    endpoint: &str,
+) -> Result<String, String> {
+    #[derive(serde::Deserialize)]
+    struct Comparison {
+        total_commits: usize,
+        commits: Vec<Commit>,
+    }
+    #[derive(serde::Deserialize)]
+    struct Commit {
+        sha: String,
+        commit: Message,
+    }
+    #[derive(serde::Deserialize)]
+    struct Message {
+        message: String,
+    }
+    let mut markdown = String::new();
+    let mut received = 0;
+    let mut page = 1;
+    loop {
+        let url = format!("{endpoint}?per_page=100&page={page}");
+        let mut response = client
+            .get(crate::network::github_proxy_url(paths, &url, "")?)
+            .header("Accept", "application/vnd.github+json")
+            .timeout(Duration::from_secs(30))
+            .send()
+            .await
+            .map_err(crate::network::error)?
+            .error_for_status()
+            .map_err(crate::network::error)?;
+        let mut bytes = Vec::new();
+        while let Some(chunk) = response.chunk().await.map_err(crate::network::error)? {
+            if bytes.len().saturating_add(chunk.len()) > 8 * 1024 * 1024 {
+                return Err("完整变更响应超过 8 MiB 上限".into());
+            }
+            bytes.extend(chunk);
+        }
+        let comparison: Comparison =
+            serde_json::from_slice(&bytes).map_err(|error| format!("完整变更响应无效：{error}"))?;
+        if comparison.commits.is_empty() && received < comparison.total_commits {
+            return Err("GitHub 未返回完整的变更记录".into());
+        }
+        received += comparison.commits.len();
+        for commit in comparison.commits {
+            let title = commit.commit.message.lines().next().unwrap_or_default();
+            markdown.push_str("- ");
+            for character in title.chars() {
+                if character.is_ascii_punctuation() {
+                    markdown.push('\\');
+                }
+                markdown.push(character);
+            }
+            let short = commit.sha.chars().take(7).collect::<String>();
+            let sha =
+                url::form_urlencoded::byte_serialize(commit.sha.as_bytes()).collect::<String>();
+            markdown.push_str(&format!(
+                " ([{short}](https://github.com/{repository}/commit/{sha}))\n"
+            ));
+        }
+        if received >= comparison.total_commits {
+            return Ok(markdown);
+        }
+        page += 1;
     }
 }
 
@@ -291,6 +388,80 @@ pub(crate) fn prepare_installer(expected: &str) -> Result<Installer, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn changelog_paginates_beyond_250_commits_and_preserves_titles_as_text() {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+        let root = tempfile::tempdir().unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            for page in 1..=3 {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut request = [0; 2048];
+                let count = stream.read(&mut request).await.unwrap();
+                let request = String::from_utf8_lossy(&request[..count]);
+                assert!(request.starts_with(&format!("GET /compare?per_page=100&page={page} ")));
+                let start = (page - 1) * 100;
+                let commits = (start..(start + 100).min(251)).map(|index| {
+                    serde_json::json!({"sha":format!("{index:040x}"), "commit":{"message": if index == 0 { "fix: [文字](https://example.org) *原文*\n提交详情".to_owned() } else { format!("change {index}") }}})
+                }).collect::<Vec<_>>();
+                let body = serde_json::json!({"total_commits":251,"commits":commits}).to_string();
+                stream.write_all(format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).as_bytes()).await.unwrap();
+            }
+        });
+        let client = Http::default().client(&Transport::Direct, false).unwrap();
+        let notes = changelog(
+            &client,
+            &AppPaths::isolated(root.path()),
+            "owner/repo",
+            &format!("http://{address}/compare"),
+        )
+        .await
+        .unwrap();
+        server.await.unwrap();
+        assert_eq!(notes.lines().count(), 251);
+        assert!(notes.contains("change 250"));
+        assert!(notes.contains(r"\[文字\]\(https\:\/\/example\.org\) \*原文\*"));
+        assert!(!notes.contains("提交详情"));
+        assert!(notes.contains("https://github.com/owner/repo/commit/"));
+    }
+
+    #[tokio::test]
+    async fn incomplete_changelog_is_an_error_instead_of_partial_success() {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+        let root = tempfile::tempdir().unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = [0; 2048];
+            assert!(stream.read(&mut request).await.unwrap() > 0);
+            let body = r#"{"total_commits":2,"commits":[]}"#;
+            stream
+                .write_all(
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    )
+                    .as_bytes(),
+                )
+                .await
+                .unwrap();
+        });
+        let client = Http::default().client(&Transport::Direct, false).unwrap();
+        assert!(
+            changelog(
+                &client,
+                &AppPaths::isolated(root.path()),
+                "owner/repo",
+                &format!("http://{address}/compare")
+            )
+            .await
+            .unwrap_err()
+            .contains("未返回完整")
+        );
+        server.await.unwrap();
+    }
     fn feed(filename: String) -> Vec<u8> {
         serde_json::to_vec(&serde_json::json!({"Assets":[{"PackageId":PACKAGE_ID,"Version":"0.2.0","Type":"Full","FileName":filename,"SHA256":"a".repeat(64),"Size":20}]})).unwrap()
     }
