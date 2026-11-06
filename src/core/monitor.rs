@@ -310,7 +310,7 @@ pub(super) async fn run(
                         if let Some(task)=probe.as_ref() && task.is_finished() && let Some(task)=probe.take() {
                             match task.await {
                                 Ok(result) if scope==Some((result.generation,result.epoch)) => {
-                                    if let Some(error) = &result.error { log::warn!("出口 IP 检测失败（{error}）"); } else { log::debug!("出口 IP 检测完成"); }
+                                    if result.error.is_none() { log::debug!("出口 IP 检测完成"); }
                                     runtime.apply_probe(result)
                                 },
                                 Err(error) => runtime.probe_error=Some(format!("出口 IP 查询任务异常：{error}")),
