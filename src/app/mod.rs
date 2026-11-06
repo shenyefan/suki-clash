@@ -321,10 +321,30 @@ impl SukiApp {
                     .gap(space::SM)
                     .overflow_hidden()
                     .child(
-                        img(self.logo.clone())
+                        Button::new("toggle-sidebar-logo")
+                            .ghost()
+                            .p(space::NONE)
                             .size(layout::BRAND_LOGO_SIZE)
                             .flex_shrink_0()
-                            .object_fit(ObjectFit::Contain),
+                            .accessibility_label(if self.collapsed {
+                                "展开侧栏"
+                            } else {
+                                "收起侧栏"
+                            })
+                            .tooltip(if cx.platform_info().is_mac() {
+                                "切换侧栏 · ⌘B"
+                            } else {
+                                "切换侧栏 · Ctrl+B"
+                            })
+                            .child(
+                                img(self.logo.clone())
+                                    .size(layout::BRAND_LOGO_SIZE)
+                                    .object_fit(ObjectFit::Contain),
+                            )
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.collapsed = !this.collapsed;
+                                cx.notify();
+                            })),
                     )
                     .child(
                         div()
@@ -412,25 +432,16 @@ impl Render for SukiApp {
                             .min_w_0()
                             .gap(space::SM)
                             .pr(space::SM)
-                            .child(window::titlebar_control(
-                                ui::icon_button(
-                                    "toggle-sidebar",
-                                    IconName::PanelLeft,
-                                    if cx.platform_info().is_mac() {
-                                        "切换侧栏 · ⌘B"
-                                    } else {
-                                        "切换侧栏 · Ctrl+B"
-                                    },
-                                )
-                                .on_click(cx.listener(
-                                    |this, _, _, cx| {
-                                        this.collapsed = !this.collapsed;
-                                        cx.notify();
-                                    },
-                                )),
-                            ))
-                            .when(self.page != Page::Overview, |bar| {
-                                bar.child(ui::muted("Suki Clash", cx).text_size(text::CAPTION))
+                            .when(self.collapsed, |bar| {
+                                let title = ui::muted("Suki Clash", cx)
+                                    .id("window-title")
+                                    .text_size(text::BODY);
+                                #[cfg(test)]
+                                let title = {
+                                    use gpui_kit::test::TestSupportExt;
+                                    title.test_support()
+                                };
+                                bar.child(title)
                             })
                             .child(div().flex_1())
                             .child(window::titlebar_control(
@@ -484,9 +495,10 @@ impl Render for SukiApp {
                             .mr(space::SM)
                             .mb(space::SM)
                             .rounded(cx.theme().radius_lg)
-                            .when(self.page != Page::Overview, |pane| {
-                                pane.bg(ui::workspace_tint(cx))
-                            })
+                            .when(
+                                self.page != Page::Overview || !ui::theme::translucent(cx),
+                                |pane| pane.bg(ui::workspace_tint(cx)),
+                            )
                             .overflow_hidden()
                             .child({
                                 let layers = self.page_weights(window, cx);
@@ -646,7 +658,11 @@ mod tests {
             gpui_kit::init(cx);
             cx.set_reduce_motion(true);
         });
-        for dimensions in [size(px(1220.), px(820.)), size(px(960.), px(640.))] {
+        for dimensions in [
+            size(px(1220.), px(820.)),
+            size(px(960.), px(640.)),
+            size(px(2400.), px(1080.)),
+        ] {
             let owner = std::rc::Rc::new(std::cell::RefCell::new(None));
             let captured = owner.clone();
             let window = cx.open_window(dimensions, move |window, cx| {
@@ -657,11 +673,17 @@ mod tests {
             cx.run_until_parked();
             let app = owner.borrow().as_ref().unwrap().clone();
             cx.update_window(window.into(), |_, window, cx| {
-                window.click("toggle-sidebar", cx);
+                window.click("toggle-sidebar-logo", cx);
             })
             .unwrap();
             cx.run_until_parked();
             cx.update(|cx| assert!(app.read(cx).collapsed));
+            cx.update_window(window.into(), |_, window, cx| {
+                window.render_frame(cx);
+                assert!(window.find("window-title").visible());
+                assert!(window.find_all("toggle-sidebar").is_empty());
+            })
+            .unwrap();
             cx.update_window(window.into(), |_, window, cx| {
                 window.press(
                     if cx.platform_info().is_mac() {
@@ -686,6 +708,10 @@ mod tests {
                 cx.run_until_parked();
                 cx.update_window(window.into(), |_, window, cx| {
                     window.render_frame(cx);
+                    assert!(
+                        window.find_all("window-title").is_empty(),
+                        "title visible while sidebar is expanded"
+                    );
                     if page == Page::Overview {
                         for id in ["upload-empty-plot", "download-empty-plot"] {
                             let bounds = window.find(id).bounds();

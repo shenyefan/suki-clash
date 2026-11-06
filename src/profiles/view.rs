@@ -559,8 +559,7 @@ impl Render for ProfilesPage {
                         };
                         let gap = profile::GAP.to_pixels(window.rem_size());
                         let min = profile::MIN_WIDTH.to_pixels(window.rem_size());
-                        let columns =
-                            ((bounds.size.width + gap) / (min + gap)).floor().max(1.) as u16;
+                        let columns = ui::adaptive_columns(bounds.size.width, min, gap) as u16;
                         if columns == current_columns {
                             return;
                         }
@@ -915,6 +914,25 @@ mod interaction_tests {
             assert!(page.read(cx).selected.contains(&401));
         })
         .unwrap();
+        for (width, wide) in [(520., false), (2200., true)] {
+            cx.simulate_window_resize(
+                window,
+                gpui_kit::size(gpui_kit::px(width), gpui_kit::px(800.)),
+            );
+            cx.run_until_parked();
+            cx.update_window(window, |_, window, cx| window.render_frame(cx))
+                .unwrap();
+            cx.run_until_parked();
+            cx.update(|cx| {
+                let columns = page.read(cx).columns;
+                if wide {
+                    assert!(columns > 3);
+                } else {
+                    assert_eq!(columns, 2);
+                }
+                assert!(page.read(cx).selected.contains(&401));
+            });
+        }
         crate::integration::finish_test_services(cx);
     }
 }

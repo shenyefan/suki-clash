@@ -484,11 +484,34 @@ impl ProxiesPage {
     fn locate_group(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
         let query = self.query.read(cx).value().trim().to_lowercase();
         let searching = !query.is_empty();
-        if searching {
-            self.search_expanded.insert(id.to_owned());
+        let opening = if searching {
+            self.search_expanded.insert(id.to_owned())
         } else {
-            self.expanded.insert(id.to_owned());
+            self.expanded.insert(id.to_owned())
+        };
+        self.locate_task = None;
+        if opening && !cx.reduce_motion() {
+            // VirtualList consumes its pending scroll in the next layout. Wait
+            // for the existing expansion transition to give rows their final sizes.
+            let timer = cx
+                .background_executor()
+                .timer(cx.theme().motion_tokens().duration_fast);
+            let id = id.to_owned();
+            self.locate_task = Some(cx.spawn_in(window, async move |owner, cx| {
+                timer.await;
+                let _ = owner.update_in(cx, |this, window, cx| {
+                    this.locate_task = None;
+                    this.center_selected_group(&id, window, cx);
+                });
+            }));
+            self.refresh_list(window, cx);
+        } else {
+            self.center_selected_group(id, window, cx);
         }
+    }
+
+    fn center_selected_group(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let searching = !self.query.read(cx).value().trim().is_empty();
         let mut row = 0;
         for group in &self.groups {
             if !self.group_filter.is_empty() && !self.group_filter.contains(&group.id()) {
@@ -515,9 +538,7 @@ impl ProxiesPage {
                     .to_owned();
                 if let Some(index) = nodes.iter().position(|node| node.name() == selected) {
                     row += 1 + index / self.columns.max(1);
-                    // 悬浮组头占据视口顶部一行，目标节点需落在其下方。
-                    self.list_scroll
-                        .scroll_to_item(row - 1, ScrollStrategy::Top);
+                    self.list_scroll.scroll_to_item(row, ScrollStrategy::Center);
                 } else {
                     self.list_scroll
                         .scroll_to_item(row, ScrollStrategy::Nearest);
@@ -727,6 +748,131 @@ mod motion_tests {
     use gpui_kit::test::TestWindowExt;
     use gpui_kit::{AppContext, Bounds, TestAppContext, WindowBounds, WindowOptions, px, size};
     use std::time::Duration;
+    #[gpui_kit::test]
+    fn locate_centers_the_selected_node_in_normal_and_compact_layouts(cx: &mut TestAppContext) {
+        let root = tempfile::tempdir().unwrap();
+        let paths = crate::storage::AppPaths::isolated(root.path());
+        let service =
+            crate::integration::Service::start(crate::storage::Repository::open(paths).unwrap())
+                .unwrap();
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            cx.set_reduce_motion(true);
+            crate::integration::init(service, None, cx);
+        });
+        let (handle, page) = cx.update(|cx| {
+            let names = (0..90).map(|i| format!("node-{i}")).collect::<Vec<_>>();
+            let mut entries = serde_json::Map::new();
+            for name in &names {
+                entries.insert(name.clone(), serde_json::json!({"name": name, "type": "Shadowsocks"}));
+            }
+            entries.insert("group".into(), serde_json::json!({"name": "group", "type": "Selector", "all": names, "now": "node-40"}));
+            let proxies = crate::proxies::runtime::Proxies::parse(
+                &serde_json::to_vec(&serde_json::json!({"proxies": entries})).unwrap(), &["group".into()]
+            ).unwrap();
+            let session = cx.new(|_| {
+                Session::fixture(
+                    crate::core::Snapshot::ready_with_providers(
+                        crate::core::ProviderKind::Proxies,
+                        br#"{"providers":{}}"#,
+                    )
+                    .unwrap(),
+                    crate::core::Runtime {
+                        connected: true,
+                        mode: Some(crate::session::ProxyMode::Rule),
+                        proxies,
+                        ..Default::default()
+                    },
+                )
+            });
+            gpui_kit::open_window(
+                WindowOptions {
+                    window_bounds: Some(WindowBounds::Windowed(Bounds::new(
+                        Default::default(),
+                        size(px(1000.), px(640.)),
+                    ))),
+                    ..Default::default()
+                },
+                cx,
+                |window, cx| cx.new(|cx| ProxiesPage::new(session, window, cx)),
+            )
+            .unwrap()
+        });
+        for compact in [false, true] {
+            cx.update_window(handle, |_, window, cx| {
+                page.update(cx, |page, cx| {
+                    page.compact = compact;
+                    page.expanded.insert("group".into());
+                    page.list_scroll.set_offset(Default::default());
+                    cx.notify();
+                });
+                window.render_frame(cx);
+                window.click("proxy-group-locate-group", cx);
+                window.render_frame(cx);
+                window.render_frame(cx);
+                let target = page.read(cx).groups[0]
+                    .visible_nodes("", false, crate::proxies::model::SortOrder::Default, false)
+                    .into_iter()
+                    .find(|node| node.name() == "node-40")
+                    .unwrap();
+                let card = window.find(format!("node-card-group-{}", target.id()));
+                assert!(card.visible());
+                let viewport = page.read(cx).list_scroll.bounds();
+                assert!(
+                    (card.bounds().center().y - viewport.center().y).abs()
+                        < card.bounds().size.height / 2.,
+                    "selected node was not centered"
+                );
+            })
+            .unwrap();
+        }
+        cx.update(|cx| cx.set_reduce_motion(false));
+        cx.update_window(handle, |_, window, cx| {
+            page.update(cx, |page, cx| {
+                page.expanded.clear();
+                page.list_scroll.set_offset(Default::default());
+                cx.notify();
+            });
+            window.render_frame(cx);
+        })
+        .unwrap();
+        cx.executor().advance_clock(Duration::from_secs(1));
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.click("proxy-group-locate-group", cx);
+            window.render_frame(cx);
+        })
+        .unwrap();
+        cx.executor().advance_clock(Duration::from_secs(1));
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.render_frame(cx);
+            let target = page.read(cx).groups[0]
+                .visible_nodes("", false, crate::proxies::model::SortOrder::Default, false)
+                .into_iter()
+                .find(|node| node.name() == "node-40")
+                .unwrap();
+            let card = window.find(format!("node-card-group-{}", target.id()));
+            let viewport = page.read(cx).list_scroll.bounds();
+            assert!(
+                (card.bounds().center().y - viewport.center().y).abs()
+                    < card.bounds().size.height / 2.
+            );
+        })
+        .unwrap();
+        cx.simulate_window_resize(handle, size(px(2600.), px(640.)));
+        cx.run_until_parked();
+        cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+            .unwrap();
+        cx.run_until_parked();
+        cx.update(|cx| {
+            assert!(
+                page.read(cx).columns > 3,
+                "wide windows must not cap node columns at three"
+            )
+        });
+        crate::integration::finish_test_services(cx);
+    }
     #[gpui_kit::test]
     fn unresolved_member_card_is_disabled_while_direct_remains_selectable(cx: &mut TestAppContext) {
         let root = tempfile::tempdir().unwrap();

@@ -100,6 +100,8 @@ impl TrafficPage {
     }
 
     pub(super) fn connection_details(&self, record: Record, cx: &mut Context<Self>) -> Div {
+        let owner = cx.weak_entity();
+        let columns = self.detail_columns;
         let target = record.connection.clone();
         let extra = |label: &str| {
             record
@@ -135,6 +137,50 @@ impl TrafficPage {
                         ))
                 }))
         };
+        let sections = [
+            section(
+                "连接",
+                vec![
+                    ("主机", record.cells[0].clone()),
+                    ("协议", record.cells[11].clone()),
+                    ("源地址", record.cells[9].clone()),
+                    ("目标地址", record.cells[10].clone()),
+                    ("远端目标", extra("远端目标")),
+                ],
+            ),
+            section(
+                "流量",
+                vec![
+                    ("下载速率", record.cells[3].clone()),
+                    ("上传速率", record.cells[4].clone()),
+                    ("下载总量", record.cells[1].clone()),
+                    ("上传总量", record.cells[2].clone()),
+                ],
+            ),
+            section(
+                "路由",
+                vec![
+                    ("规则", record.cells[6].clone()),
+                    ("代理链", record.cells[5].clone()),
+                ],
+            ),
+            section(
+                "进程与时间",
+                vec![
+                    ("进程", record.cells[7].clone()),
+                    ("进程路径", extra("进程路径")),
+                    ("开始时间", {
+                        let full = extra("完整开始时间");
+                        if full.is_empty() {
+                            record.cells[8].clone()
+                        } else {
+                            full
+                        }
+                    }),
+                    ("连接 ID", extra("连接 ID")),
+                ],
+            ),
+        ];
         ui::bottom_details(cx)
             .child(
                 h_flex()
@@ -193,6 +239,25 @@ impl TrafficPage {
             )
             .child(
                 div()
+                    .on_children_prepainted(move |bounds, window, cx| {
+                        let Some(bounds) = bounds.first() else { return };
+                        let next = ui::adaptive_columns(
+                            bounds.size.width,
+                            layout::DETAIL_MIN_WIDTH.to_pixels(window.rem_size()),
+                            space::SECTION.to_pixels(window.rem_size()),
+                        );
+                        if next != columns {
+                            let owner = owner.clone();
+                            window.defer(cx, move |_, cx| {
+                                let _ = owner.update(cx, |this, cx| {
+                                    if this.detail_columns != next {
+                                        this.detail_columns = next;
+                                        cx.notify();
+                                    }
+                                });
+                            });
+                        }
+                    })
                     .id("connection-detail-scroll")
                     .flex_1()
                     .min_h(space::NONE)
@@ -200,50 +265,9 @@ impl TrafficPage {
                     .child(
                         div()
                             .grid()
-                            .grid_cols(layout::CONNECTION_DETAILS_COLUMNS)
+                            .grid_cols(columns.min(sections.len()) as u16)
                             .gap(space::SECTION)
-                            .child(section(
-                                "连接",
-                                vec![
-                                    ("主机", record.cells[0].clone()),
-                                    ("协议", record.cells[11].clone()),
-                                    ("源地址", record.cells[9].clone()),
-                                    ("目标地址", record.cells[10].clone()),
-                                    ("远端目标", extra("远端目标")),
-                                ],
-                            ))
-                            .child(section(
-                                "流量",
-                                vec![
-                                    ("下载速率", record.cells[3].clone()),
-                                    ("上传速率", record.cells[4].clone()),
-                                    ("下载总量", record.cells[1].clone()),
-                                    ("上传总量", record.cells[2].clone()),
-                                ],
-                            ))
-                            .child(section(
-                                "路由",
-                                vec![
-                                    ("规则", record.cells[6].clone()),
-                                    ("代理链", record.cells[5].clone()),
-                                ],
-                            ))
-                            .child(section(
-                                "进程与时间",
-                                vec![
-                                    ("进程", record.cells[7].clone()),
-                                    ("进程路径", extra("进程路径")),
-                                    ("开始时间", {
-                                        let full = extra("完整开始时间");
-                                        if full.is_empty() {
-                                            record.cells[8].clone()
-                                        } else {
-                                            full
-                                        }
-                                    }),
-                                    ("连接 ID", extra("连接 ID")),
-                                ],
-                            )),
+                            .children(sections),
                     ),
             )
     }

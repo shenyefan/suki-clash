@@ -239,6 +239,11 @@ pub(crate) fn detail_dialog(
     })
 }
 
+/// Fit cards to the actual viewport; keep at least two columns without an upper cap.
+pub(crate) fn adaptive_columns(width: Pixels, minimum: Pixels, gap: Pixels) -> usize {
+    (((width + gap) / (minimum + gap)).floor() as usize).max(2)
+}
+
 /// Stack for fields, rows and auxiliary content; native Form owns field layout.
 pub(crate) fn form() -> Div {
     v_flex().w_full().flex_shrink_0().gap(space::LG)
@@ -359,7 +364,7 @@ pub(crate) fn surface(cx: &App) -> Div {
         .bg(theme::dashboard_tint(cx).opacity(opacity::DASHBOARD))
 }
 
-pub(crate) fn mode_tabs(session: &Entity<Session>, id: &'static str, cx: &App) -> impl IntoElement {
+pub(crate) fn mode_tabs(session: &Entity<Session>, id: &'static str, cx: &App) -> TabBar {
     use gpui_kit::prelude::FluentBuilder as _;
     let current = session.read(cx).mode();
     TabBar::new(id)

@@ -34,6 +34,7 @@ pub(crate) struct ProxiesPage {
     compact: bool,
     columns: usize,
     list_scroll: gpui_kit::component::VirtualListScrollHandle,
+    locate_task: Option<Task<()>>,
     card_focus: BTreeMap<(String, String), FocusHandle>,
     _subscriptions: Vec<Subscription>,
 }
@@ -226,6 +227,7 @@ impl ProxiesPage {
             compact: false,
             columns: 2,
             list_scroll: gpui_kit::component::VirtualListScrollHandle::new(),
+            locate_task: None,
             card_focus,
             _subscriptions: subscriptions,
         };
@@ -354,6 +356,7 @@ impl ProxiesPage {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.locate_task = None;
         let expanded = if searching {
             &mut self.search_expanded
         } else {
@@ -367,6 +370,7 @@ impl ProxiesPage {
     }
 
     fn expand_all(&mut self, open: bool, window: &mut Window, cx: &mut Context<Self>) {
+        self.locate_task = None;
         let expanded = if self.query.read(cx).value().trim().is_empty() {
             &mut self.expanded
         } else {
