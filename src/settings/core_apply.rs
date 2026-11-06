@@ -201,10 +201,14 @@ impl SettingsPage {
             match &mut field.control {
                 FieldControl::Toggle(checked) => *checked = value == "true",
                 FieldControl::Text(state) => {
-                    state.update(cx, |state, cx| state.set_value(value, window, cx))
+                    if state.read(cx).value().as_ref() != value {
+                        state.update(cx, |state, cx| state.set_value(value, window, cx));
+                    }
                 }
                 FieldControl::Multiline(state) => {
-                    state.update(cx, |state, cx| state.set_value(value, window, cx))
+                    if state.read(cx).value().as_ref() != value {
+                        state.update(cx, |state, cx| state.set_value(value, window, cx));
+                    }
                 }
                 FieldControl::Select(state) => {
                     let value = SharedString::from(value.to_owned());
@@ -212,7 +216,9 @@ impl SettingsPage {
                         if key == "CoreSpecificVersion" {
                             state.set_items(vec![value.clone()], window, cx);
                         }
-                        state.set_selected_value(&value, window, cx);
+                        if state.selected_value() != Some(&value) {
+                            state.set_selected_value(&value, window, cx);
+                        }
                     });
                 }
                 FieldControl::ReadOnly => {}
@@ -261,27 +267,39 @@ impl SettingsPage {
                     .update(cx, |state, cx| state.set_value(yaml, window, cx));
             }
         }
-        if self.kind == super::SettingsKind::General {
-            match values.get("ThemeIndex").map(String::as_str) {
-                Some("深色") => gpui_kit::component::Theme::change(
-                    gpui_kit::component::ThemeMode::Dark,
-                    Some(window),
-                    cx,
-                ),
-                Some("浅色") => gpui_kit::component::Theme::change(
-                    gpui_kit::component::ThemeMode::Light,
-                    Some(window),
-                    cx,
-                ),
-                _ => gpui_kit::component::Theme::sync_system_appearance(Some(window), cx),
+        let appearance_changed = |key: &str| {
+            touched.contains_key(key)
+                && (preserve_inputs || values.get(key) != self.synced_values.get(key))
+        };
+        if self.kind == super::SettingsKind::General
+            && ["ThemeIndex", "BackdropIndex", "NoticePosition"]
+                .into_iter()
+                .any(appearance_changed)
+        {
+            if appearance_changed("ThemeIndex") {
+                match values.get("ThemeIndex").map(String::as_str) {
+                    Some("深色") => gpui_kit::component::Theme::change(
+                        gpui_kit::component::ThemeMode::Dark,
+                        Some(window),
+                        cx,
+                    ),
+                    Some("浅色") => gpui_kit::component::Theme::change(
+                        gpui_kit::component::ThemeMode::Light,
+                        Some(window),
+                        cx,
+                    ),
+                    _ => gpui_kit::component::Theme::sync_system_appearance(Some(window), cx),
+                }
             }
             ui::configure_theme(cx);
-            cx.emit(super::SettingsSaved {
-                backdrop: values
-                    .get("BackdropIndex")
-                    .cloned()
-                    .unwrap_or_else(|| "原生磨砂".into()),
-            });
+            if appearance_changed("BackdropIndex") {
+                cx.emit(super::SettingsSaved {
+                    backdrop: values
+                        .get("BackdropIndex")
+                        .cloned()
+                        .unwrap_or_else(|| "原生磨砂".into()),
+                });
+            }
         }
         for key in touched.keys() {
             if let Some(value) = values.get(key) {
@@ -313,6 +331,55 @@ mod tests {
     use super::{FieldControl, SettingsPage};
     use crate::{preferences::SettingsKind, storage::Values};
     use gpui_kit::{AppContext, SharedString, TestAppContext, WindowOptions};
+
+    #[gpui_kit::test]
+    fn reopening_unchanged_settings_does_not_disable_controls_or_reset_the_backdrop(
+        cx: &mut TestAppContext,
+    ) {
+        use gpui_kit::test::TestWindowExt;
+        let root = tempfile::tempdir().unwrap();
+        let service = crate::integration::Service::start(
+            crate::storage::Repository::open(crate::storage::AppPaths::isolated(root.path()))
+                .unwrap(),
+        )
+        .unwrap();
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            crate::integration::init(service, None, cx);
+        });
+        let (window, page) = cx.update(|cx| {
+            gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
+                let session = cx.new(crate::session::Session::new);
+                cx.new(|cx| SettingsPage::new(SettingsKind::General, session, window, cx))
+            })
+            .unwrap()
+        });
+        let resets = std::rc::Rc::new(std::cell::Cell::new(0));
+        let recorded = resets.clone();
+        let _subscription = cx.update(|cx| {
+            cx.subscribe(&page, move |_, _: &super::super::SettingsSaved, _| {
+                recorded.set(recorded.get() + 1)
+            })
+        });
+        cx.run_until_parked();
+        for _ in 0..3 {
+            window
+                .update(cx, |_, window, cx| {
+                    page.update(cx, |page, cx| page.reopen(window, cx))
+                })
+                .unwrap();
+            cx.run_until_parked();
+            window
+                .update(cx, |_, window, cx| {
+                    window.render_frame(cx);
+                    assert_ne!(window.find("setting-SilentStart").disabled(), Some(true));
+                    assert!(!crate::core::controller(cx).read(cx).is_busy());
+                })
+                .unwrap();
+        }
+        assert_eq!(resets.get(), 0);
+        crate::integration::finish_test_services(cx);
+    }
 
     #[gpui_kit::test]
     fn rejected_settings_restore_choices_but_keep_text_for_correction(cx: &mut TestAppContext) {

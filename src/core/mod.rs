@@ -40,8 +40,9 @@ pub(crate) use profiles::ProfileCommand;
 mod service;
 
 pub(crate) use bridge::{
-    apply_app_update, attach_window, controller, execute, init, init_unavailable, quit, refresh_ip,
-    request, reset_program, restart_program, submit, try_controller,
+    TunServiceRequired, apply_app_update, attach_window, controller, execute, init,
+    init_unavailable, quit, refresh_autostart, refresh_ip, request, reset_program, restart_program,
+    submit, try_controller,
 };
 pub(crate) use privileged::{Action as ServiceAction, State as ServiceState};
 pub(crate) use service::{Command, Service, ServiceError};
@@ -55,6 +56,11 @@ pub(crate) enum Phase {
     Ready,
     Stopping,
     Failed,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Recovery {
+    TunService,
 }
 
 #[cfg(test)]
@@ -129,6 +135,7 @@ pub(crate) struct Snapshot {
     uwp_apps: Vec<suki_service::windows_network::UwpApp>,
     error: Option<String>,
     error_logged: bool,
+    recovery: Option<Recovery>,
     notice: Option<String>,
     profile: Option<crate::configuration::ProfileIdentity>,
     preferences: Option<Preferences>,

@@ -14,7 +14,6 @@ use tokio::{process::Child, sync::watch};
 #[derive(Clone)]
 pub(crate) enum Command {
     ToggleSystemProxy,
-    AutostartStatus,
     Gist(super::gist::Command),
     LocalBackup(super::local_backup::Command),
     AppUpdate(super::app_update::Command),
@@ -72,7 +71,6 @@ impl Command {
         match self {
             Self::ToggleSystemProxy => "切换系统代理",
             Self::ToggleTun => "切换虚拟网卡",
-            Self::AutostartStatus => "读取自启动状态",
             Self::WindowsNetwork(suki_service::windows_network::Request::List) => "读取 UWP 应用",
             Self::WindowsNetwork(suki_service::windows_network::Request::SetLoopback {
                 ..
@@ -157,6 +155,7 @@ pub(crate) struct Service {
     worker: Option<JoinHandle<Result<(), String>>>,
     runtime_events: async_channel::Receiver<std::sync::Arc<super::Runtime>>,
     probe_refresh: watch::Sender<super::monitor::ProbeControl>,
+    autostart_queries: watch::Sender<u64>,
 }
 impl Service {
     #[cfg(test)]
@@ -176,14 +175,17 @@ impl Service {
         let (monitor_target, monitor_receiver) = watch::channel(None);
         let (probe_refresh, probe_receiver) =
             watch::channel(super::monitor::ProbeControl::default());
+        let (autostart_queries, autostart_receiver) = watch::channel(0);
         let (runtime_updates, runtime_events) = async_channel::bounded(1);
         let runtime_observer = runtime_events.clone();
+        let control_refresh = probe_refresh.clone();
         let worker = std::thread::Builder::new()
             .name("suki-core".into())
             .spawn(move || {
                 let mut actor = Actor::new(paths.clone(), updates, observer);
                 actor.logs = logs;
                 actor.monitor = monitor_target;
+                actor.control_refresh = control_refresh;
                 let terminal_updates = actor.updates.clone();
                 let terminal_observer = actor.observer.clone();
                 runtime.block_on(async move {
@@ -202,7 +204,7 @@ impl Service {
                         Some(test_requests),
                         Some(probe_receiver),
                     ));
-                    let result = actor.run(receiver, cancellation).await;
+                    let result = actor.run(receiver, cancellation, autostart_receiver).await;
                     if let Err(error) = &result {
                         Actor::send_snapshot(
                             &Snapshot {
@@ -235,6 +237,7 @@ impl Service {
             worker: Some(worker),
             runtime_events,
             probe_refresh,
+            autostart_queries,
         })
     }
 
@@ -250,6 +253,10 @@ impl Service {
             })
             .map_err(|error| crate::logging::diagnostic_error("测速队列不可用", error))?;
         Ok(self.next_id)
+    }
+    pub(crate) fn refresh_autostart(&self) {
+        self.autostart_queries
+            .send_modify(|revision| *revision = revision.wrapping_add(1));
     }
     pub(crate) fn refresh_ip(&self) {
         log::debug!("开始刷新出口 IP");
@@ -375,6 +382,10 @@ struct ProviderSyncPlan {
     remaining: u8,
     next: std::time::Instant,
 }
+struct AutostartQuery {
+    request: Option<u64>,
+    task: tokio::task::JoinHandle<Result<bool, String>>,
+}
 pub(super) struct Actor {
     logs: crate::logging::Feed,
     pub(super) paths: AppPaths,
@@ -398,6 +409,7 @@ pub(super) struct Actor {
     pub(super) profile_attempts: std::collections::BTreeMap<u64, i64>,
     pub(super) profile_schedule_started: i64,
     pub(super) monitor: watch::Sender<Option<super::monitor::Target>>,
+    pub(super) control_refresh: watch::Sender<super::monitor::ProbeControl>,
     pub(super) runtime_warning: Option<String>,
     pub(super) deleted_overrides: std::collections::BTreeMap<u64, super::overrides::Deleted>,
     pub(super) deleted_profiles: std::collections::BTreeMap<u64, super::profiles::DeletedProfile>,
@@ -444,6 +456,7 @@ impl Actor {
             deleted_profiles: Default::default(),
             deleted_overrides: Default::default(),
             monitor: watch::channel(None).0,
+            control_refresh: watch::channel(super::monitor::ProbeControl::default()).0,
             runtime_warning: None,
             system_proxy: crate::system_proxy::Controller::new(paths),
             exit_prepared: false,
@@ -536,6 +549,7 @@ impl Actor {
         mut self,
         receiver: async_channel::Receiver<Request>,
         mut shutdown: watch::Receiver<bool>,
+        mut autostart_queries: watch::Receiver<u64>,
     ) -> Result<(), String> {
         let ownership = std::fs::OpenOptions::new()
             .create(true)
@@ -609,6 +623,7 @@ impl Actor {
         }
         self.snapshot.progress = None;
         self.publish(self.snapshot.phase, self.snapshot.error.clone());
+        let mut autostart_query: Option<AutostartQuery> = None;
         loop {
             if *shutdown.borrow() {
                 break;
@@ -616,6 +631,24 @@ impl Actor {
             tokio::select! {
                 biased;
                 _ = shutdown.changed() => break,
+                changed = autostart_queries.changed(), if !self.exit_prepared => {
+                    if changed.is_err() { break; }
+                    autostart_queries.borrow_and_update();
+                    if autostart_query.is_none() {
+                        autostart_query = Some(AutostartQuery {
+                            request: self.snapshot.request_id,
+                            task: tokio::task::spawn_blocking(crate::desktop::autostart::enabled),
+                        });
+                    }
+                }
+                result = async { match autostart_query.as_mut() { Some(query) => (&mut query.task).await, None => std::future::pending().await } }, if autostart_query.is_some() => {
+                    let Some(query) = autostart_query.take() else { continue; };
+                    if query.request == self.snapshot.request_id {
+                        let actual = result.unwrap_or_else(|error| Err(format!("读取自启动状态的任务异常：{error}")));
+                        self.snapshot.autostart = Some(actual);
+                        self.publish_snapshot(self.snapshot.phase, self.snapshot.error.clone(), self.snapshot.error_logged);
+                    }
+                }
                 request = receiver.recv() => {
                     let Ok(request) = request else { break; };
                     if !matches!(&request.command, Command::PrepareExit(_)) {
@@ -626,14 +659,15 @@ impl Actor {
                     }
                     self.snapshot.request_id = Some(request.id);
                     let operation_name = request.command.operation();
-                    log::debug!("开始{}，请求编号 {}，内核代次 {}，配置修订 {}", operation_name, request.id, self.snapshot.generation, self.snapshot.monitor_epoch);
+                    log::debug!("开始{}，内核代次 {}，配置修订 {}", operation_name, self.snapshot.generation, self.snapshot.monitor_epoch);
                     if let Command::Settings { kind, patch } = &request.command {
-                        log::debug!("请求 {} 修改 {} 设置，涉及字段 {}", request.id, kind.id(), patch.keys().cloned().collect::<Vec<_>>().join("、"));
+                        log::debug!("修改 {} 设置，涉及字段 {}", kind.id(), patch.keys().cloned().collect::<Vec<_>>().join("、"));
                     }
                     self.snapshot.operation_active=true;
                     self.snapshot.operation_committed=false;
                     self.snapshot.operation_module=Some(if matches!(&request.command,Command::Profiles(_)) {"profiles"} else if matches!(&request.command,Command::Overrides(_)|Command::ScriptLogs(_)){"overrides"}else {"core"});
                     self.snapshot.information=None;
+                    self.snapshot.recovery=None;
                     self.runtime_warning=None;
                     let chain_candidates=matches!(&request.command,Command::ChainCandidates);
                     let update_shutdown = shutdown.clone();
@@ -665,7 +699,6 @@ impl Actor {
                                 }
                                 #[cfg(not(windows))] {let _=request;Err("UWP／防火墙仅支持 Windows".into())}
                             },
-                            Command::AutostartStatus => { let actual = crate::desktop::autostart::enabled(); self.snapshot.autostart = Some(actual.clone()); actual.map(|_| ()) },
                             Command::Gist(command) => self.gist(command).await,
                             Command::LocalBackup(command) => self.local_backup(command).await,
                             Command::AppUpdate(command) => self.app_update(command, update_shutdown).await,
@@ -748,15 +781,18 @@ impl Actor {
                         Ok(())=>Ok(()),
                         Err(error) => Err(error),
                     };
+                    if matches!(&request.command, Command::Proxy(_)) {
+                        self.control_refresh.send_modify(|control| control.proxies = control.proxies.wrapping_add(1));
+                    }
                     self.snapshot.operation_active=false;
                     self.snapshot.progress=None;
                     if let Err(error) = result {
-                        log::error!("{}失败，请求编号 {}，{}（{}）", operation_name, request.id, if self.snapshot.operation_committed { "部分更改已提交" } else { "未提交任何更改" }, error);
+                        log::error!("{}失败，{}（{}）", operation_name, if self.snapshot.operation_committed { "部分更改已提交" } else { "未提交任何更改" }, error);
                         // Preparation failure must preserve an existing ready child.
                         let phase = if matches!(&request.command, Command::Gist(_) | Command::LocalBackup(_) | Command::AppUpdate(_)) { self.snapshot.phase } else if self.running.is_some() && self.snapshot.phase == Phase::Ready { Phase::Ready } else { Phase::Failed };
                         self.publish_snapshot(phase, Some(error), true);
                     } else {
-                        log::debug!("{}已完成，请求编号 {}", operation_name, request.id);
+                        log::debug!("{}已完成", operation_name);
                         self.publish(self.snapshot.phase,None);
                     }
                     drop(request);
@@ -838,6 +874,9 @@ impl Actor {
         if let Err(error) = &result {
             self.publish(Phase::Failed, Some(format!("退出清理失败：{error}")));
             log::error!("退出时无法确认应用内核进程已结束（{error}）");
+        }
+        if let Some(query) = autostart_query {
+            let _ = query.task.await;
         }
         self.updates.close();
         result
@@ -2011,7 +2050,15 @@ impl Actor {
                     .is_some_and(|port| port > 0));
         let use_service = if enabling && self.running.is_some() {
             crate::bootstrap::require_core(&self.paths)?;
-            super::privileged::tun_service_required().await?
+            match super::privileged::tun_service_required().await {
+                Ok(required) => required,
+                Err(error) => {
+                    self.snapshot.service_state =
+                        super::privileged::State::Unavailable(error.clone());
+                    self.snapshot.recovery = Some(super::Recovery::TunService);
+                    return Err(error);
+                }
+            }
         } else {
             false
         };

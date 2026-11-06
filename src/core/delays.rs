@@ -322,19 +322,19 @@ pub(super) async fn run(
             },
             request=async { if let Some(request) = automatic_request.take() { Ok(request) } else { requests.recv().await } },if tasks.len()<32=>{
                 let Ok(request)=request else{break;};
-                log::debug!("开始测速，请求编号 {}，内核代次 {}，配置修订 {}", request.id, scope.0, scope.1);
+                log::debug!("开始测速，内核代次 {}，配置修订 {}", scope.0, scope.1);
                 let result=if let Some(target)=&target {
                     tokio::select! {biased;_=shutdown.changed()=>break,changed=targets.changed()=>{if changed.is_err(){break;}continue;},result=prepare(&paths,target,&request.test)=>result}
                 }else{Err("内核尚未就绪".into())};
                 match result {
                     Ok(mut plan)=>{
                         plan.requests.retain(|request|!reserved.contains_key(&(request.group.clone(),request.key.clone())));
-                        if plan.requests.is_empty(){log::debug!("测速请求 {} 的节点已在测速队列中，已合并", request.id);continue;}
+                        if plan.requests.is_empty(){log::debug!("节点已在测速队列中，已合并");continue;}
                         let keys=plan.requests.iter().map(|request|(request.group.clone(),request.key.clone())).collect::<Vec<_>>();
                         state.testing.extend(keys.iter().cloned());state.batches.extend(keys.iter().cloned());reserved.extend(keys.iter().cloned().map(|key|(key,request.id)));state.error=None;updates.send_replace(state.clone());
                         if let Some(target)=target {let limit=limit.clone();let progress=progress.clone();tasks.spawn(async move {Batch{scope,request_id:request.id,keys,results:measure(target,plan,limit,request.id,progress).await}});}
                     },
-                    Err(error)=>{log::debug!("测速请求 {} 被拒绝（{error}）", request.id);state.error=Some((request.id,error));updates.send_replace(state.clone());}
+                    Err(error)=>{log::debug!("测速请求被拒绝（{error}）");state.error=Some((request.id,error));updates.send_replace(state.clone());}
                 }
             }
         }

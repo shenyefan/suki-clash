@@ -35,40 +35,38 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> Ipc for T {}
 pub(super) type Socket = tokio_tungstenite::WebSocketStream<Box<dyn Ipc>>;
 impl Client {
     async fn connect(&self) -> Result<Box<dyn Ipc>, String> {
-        match &self.endpoint {
-            #[cfg(unix)]
-            Endpoint::Unix(path) => tokio::net::UnixStream::connect(path)
-                .await
-                .map(|stream| Box::new(stream) as Box<dyn Ipc>)
-                .map_err(|error| {
-                    log::error!(
-                        "连接内核本地通道失败（{}）",
-                        crate::logging::error_chain(&error)
-                    );
-                    format!("连接内核本地通道失败：{}", error.kind())
-                }),
-            #[cfg(windows)]
-            Endpoint::Pipe(path) => {
-                use windows_sys::Win32::Foundation::ERROR_PIPE_BUSY;
-                let connect = async {
-                    loop {
-                        match tokio::net::windows::named_pipe::ClientOptions::new().open(path) {
-                            Ok(stream) => return Ok(Box::new(stream) as Box<dyn Ipc>),
-                            Err(error) if error.raw_os_error() == Some(ERROR_PIPE_BUSY as i32) => {
-                                tokio::time::sleep(Duration::from_millis(50)).await;
-                            }
-                            Err(error) => return Err(format!("连接内核命名管道失败：{error}")),
-                        }
-                    }
-                };
-                tokio::time::timeout(Duration::from_secs(2), connect)
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+        loop {
+            let result: io::Result<Box<dyn Ipc>> = match &self.endpoint {
+                #[cfg(unix)]
+                Endpoint::Unix(path) => tokio::net::UnixStream::connect(path)
                     .await
-                    .map_err(|error| {
-                        crate::logging::diagnostic_error(
-                            "内核命名管道繁忙，连接超时".to_owned(),
-                            error,
-                        )
-                    })?
+                    .map(|stream| Box::new(stream) as Box<dyn Ipc>),
+                #[cfg(windows)]
+                Endpoint::Pipe(path) => tokio::net::windows::named_pipe::ClientOptions::new()
+                    .open(path)
+                    .map(|stream| Box::new(stream) as Box<dyn Ipc>),
+            };
+            match result {
+                Ok(stream) => return Ok(stream),
+                Err(error) => {
+                    let transient = matches!(
+                        error.kind(),
+                        io::ErrorKind::NotFound
+                            | io::ErrorKind::ConnectionRefused
+                            | io::ErrorKind::ConnectionAborted
+                    );
+                    #[cfg(windows)]
+                    let transient = transient
+                        || error.raw_os_error()
+                            == Some(windows_sys::Win32::Foundation::ERROR_PIPE_BUSY as i32);
+                    if !transient || tokio::time::Instant::now() >= deadline {
+                        return Err(format!("连接内核本地通道失败：{error}"));
+                    }
+                    // Retry only opening the channel. No request has been sent,
+                    // so writes cannot be repeated after a lost acknowledgement.
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
             }
         }
     }
@@ -94,7 +92,7 @@ impl Client {
                 tokio_tungstenite::client_async_with_config(request, stream, Some(config))
                     .await
                     .map_err(|error| {
-                        log::error!(
+                        log::debug!(
                             "内核 WebSocket 握手失败（{}）",
                             crate::logging::error_chain(&error)
                         );
@@ -493,17 +491,10 @@ impl Client {
         timeout: Duration,
         payload: Vec<u8>,
     ) -> Result<Vec<u8>, String> {
-        tokio::time::timeout(timeout, async {
-            self.exchange(self.connect().await?, method, path, payload)
-                .await
-        })
-        .await
-        .map_err(|error| {
-            crate::logging::diagnostic_error(
-                "内核本地 API 请求超时；服务端操作可能仍在执行，请勿重复提交".to_owned(),
-                error,
-            )
-        })?
+        let stream = self.connect().await?;
+        tokio::time::timeout(timeout, self.exchange(stream, method, path, payload))
+            .await
+            .map_err(|_| "内核本地 API 请求超时；服务端操作可能仍在执行，请勿重复提交".to_owned())?
     }
 
     async fn exchange<S>(
@@ -538,9 +529,9 @@ impl Client {
             http1::handshake(TokioIo::new(stream))
                 .await
                 .map_err(|error| {
-                    crate::logging::diagnostic_error(
-                        "内核本地 HTTP 握手失败".to_owned(),
-                        crate::logging::error_chain(&error),
+                    format!(
+                        "内核本地 HTTP 握手失败：{}",
+                        crate::logging::error_chain(&error)
                     )
                 })?;
         // Drive the connection in the same future. Timeout/cancellation drops both
@@ -557,9 +548,9 @@ impl Client {
                     crate::logging::diagnostic_error("无法构造内核请求".to_owned(), error)
                 })?;
             let response = sender.send_request(request).await.map_err(|error| {
-                crate::logging::diagnostic_error(
-                    "内核本地 API 传输失败".to_owned(),
-                    crate::logging::error_chain(&error),
+                format!(
+                    "内核本地 API 传输失败：{}",
+                    crate::logging::error_chain(&error)
                 )
             })?;
             let status = response.status();
@@ -567,10 +558,7 @@ impl Client {
             let mut bytes = Vec::new();
             while let Some(frame) = body.frame().await {
                 let frame = frame.map_err(|error| {
-                    crate::logging::diagnostic_error(
-                        "内核响应读取失败".to_owned(),
-                        crate::logging::error_chain(&error),
-                    )
+                    format!("内核响应读取失败：{}", crate::logging::error_chain(&error))
                 })?;
                 if let Ok(data) = frame.into_data() {
                     if bytes.len().saturating_add(data.len()) > RESPONSE_LIMIT {
@@ -587,7 +575,7 @@ impl Client {
             biased;
             result = &mut request => result,
             result = &mut connection => {
-                result.map_err(|error| crate::logging::diagnostic_error("内核本地连接中断".to_owned(), error))?;
+                result.map_err(|error| format!("内核本地连接中断：{error}"))?;
                 request.await
             }
         }
@@ -605,6 +593,40 @@ mod tests {
     use super::{Client, Endpoint};
     use std::time::Duration;
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+    #[tokio::test]
+    async fn delayed_channel_waits_before_sending_and_never_replays_a_write() {
+        let root = tempfile::tempdir().unwrap();
+        let socket = root.path().join("delayed.sock");
+        let server_path = socket.clone();
+        let server = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            let listener = tokio::net::UnixListener::bind(server_path).unwrap();
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = [0; 4096];
+            let read = stream.read(&mut request).await.unwrap();
+            assert!(request[..read].starts_with(b"PATCH /configs "));
+            // The write reached the core, but its acknowledgement was lost.
+            drop(stream);
+            assert!(
+                tokio::time::timeout(Duration::from_millis(200), listener.accept())
+                    .await
+                    .is_err()
+            );
+        });
+        let client = Client::new(Endpoint::Unix(socket), String::new());
+        assert!(
+            client
+                .patch_mode(crate::session::ProxyMode::Direct)
+                .await
+                .is_err()
+        );
+        server.await.unwrap();
+        let result = tokio::time::timeout(Duration::from_secs(4), client.version())
+            .await
+            .unwrap();
+        assert!(result.unwrap_err().contains("连接内核本地通道失败"));
+    }
 
     #[tokio::test]
     async fn measurement_classification_uses_status_and_deadline_not_error_text() {
