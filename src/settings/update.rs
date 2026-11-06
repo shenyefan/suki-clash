@@ -1,79 +1,136 @@
 //! The update dialog projects actor-owned results; no network work starts during rendering.
 use crate::core::app_update::Command;
-use crate::ui::theme::{control, layout, space};
+use crate::ui::theme::{control, layout, space, text};
 use crate::{core, ui, updates::State};
 use gpui_kit::{
     assets::IconName,
     component::{
-        Disableable, Sizable, WindowExt,
+        ActiveTheme, Icon, Sizable, WindowExt,
         button::{Button, ButtonVariants},
-        spinner::Spinner,
+        h_flex,
+        link::Link,
+        notification::Notification,
+        text::TextView,
+        v_flex,
     },
     prelude::FluentBuilder as _,
     *,
 };
 
 pub(super) fn open(window: &mut Window, cx: &mut App) {
+    let checking = ui::DownloadToast::show("检查更新", 0, None, window, cx);
+    let on_error = checking.clone();
     if let Err(error) = core::execute(
         core::Command::AppUpdate(Command::Check),
         window,
         cx,
-        |result, window, cx| {
-            window.close_dialog(cx);
+        move |result, window, cx| {
+            ui::DownloadToast::dismiss(&checking, window, cx);
             if result.is_ok() {
                 let state = core::controller(cx).read(cx).snapshot().app_update.clone();
-                if let Some(url) = &state.manual_url {
-                    cx.open_url(url);
-                } else if state.downloaded.is_some() {
-                    prompt_install(state, window, cx);
-                } else if state.available.is_some() {
-                    show(state, window, cx);
-                }
+                checked(state, window, cx);
             }
         },
     ) {
+        ui::DownloadToast::dismiss(&on_error, window, cx);
         ui::show_error(error, window, cx);
-    } else {
-        show_checking(window, cx);
     }
 }
 
-fn show_checking(window: &mut Window, cx: &mut App) {
-    window.open_dialog(cx, |dialog, window, cx| {
-        ui::modal(dialog, "检查更新", layout::DIALOG_WIDTH, window, cx)
-            .close_button(false)
-            .keyboard(false)
-            .content(ui::modal_content(
-                "app-update-checking",
-                layout::FORM_MAX_HEIGHT,
-                |_, cx| {
-                    gpui_kit::component::h_flex()
-                        .gap(space::MD)
-                        .child(Spinner::new())
-                        .child(ui::muted("检查中", cx))
-                        .into_any_element()
-                },
-            ))
-    });
+fn checked(state: State, window: &mut Window, cx: &mut App) {
+    if let Some(url) = state.manual_url {
+        ui::notifications::push(
+            window,
+            Notification::info("当前安装方式需前往发布页检查更新").action(move |_, _, _| {
+                let url = url.clone();
+                Button::new("app-update-release-page")
+                    .outline()
+                    .label("查看发布页")
+                    .on_click(move |_, _, cx| cx.open_url(&url))
+            }),
+            cx,
+        );
+    } else if state.downloaded.is_some() {
+        prompt_install(state, window, cx);
+    } else if state.available.is_some() {
+        show(state, window, cx);
+    } else {
+        ui::notifications::push(window, Notification::info("当前已是最新版本"), cx);
+    }
 }
 
-fn show(state: State, window: &mut Window, cx: &mut App) -> Entity<UpdateStatus> {
-    let status = cx.new(|_| UpdateStatus { state, busy: false });
-    let footer = cx.new(|cx| UpdateFooter::new(status.clone(), cx));
-    let body = status.clone();
+fn show(state: State, window: &mut Window, cx: &mut App) {
     window.open_dialog(cx, move |dialog, window, cx| {
-        ui::modal(dialog, "应用更新", layout::DIALOG_WIDTH, window, cx)
-            .content(ui::modal_content(
-                "app-update-content",
-                layout::FORM_MAX_HEIGHT,
-                {
-                    let body = body.clone();
-                    move |_, _| body.clone().into_any_element()
-                },
-            ))
-            .footer(footer.clone())
+        let expected = state.available.clone();
+        ui::modal(
+            dialog,
+            "发现新版本",
+            layout::EDITOR_DIALOG_WIDTH,
+            window,
+            cx,
+        )
+        .content(ui::modal_content(
+            "app-update-content",
+            layout::FORM_MAX_HEIGHT,
+            {
+                let state = state.clone();
+                move |_, _| {
+                    UpdateStatus {
+                        state: state.clone(),
+                    }
+                    .into_any_element()
+                }
+            },
+        ))
+        .footer(
+            ui::modal_footer()
+                .when_some(state.comparison_url.clone(), |footer, url| {
+                    footer.child(
+                        Link::new("app-update-comparison")
+                            .href(url)
+                            .child("在 GitHub 查看完整变更"),
+                    )
+                })
+                .child(div().flex_1())
+                .child(
+                    Button::new("app-update-close")
+                        .label("关闭")
+                        .with_size(control::STANDARD)
+                        .on_click(|_, window, cx| window.close_dialog(cx)),
+                )
+                .when_some(expected, |footer, expected| {
+                    footer.child(
+                        Button::new("app-update-primary")
+                            .primary()
+                            .label("下载更新")
+                            .icon(IconName::Download)
+                            .with_size(control::STANDARD)
+                            .on_click(move |_, window, cx| {
+                                match core::execute(
+                                    core::Command::AppUpdate(Command::Download {
+                                        expected: expected.clone(),
+                                    }),
+                                    window,
+                                    cx,
+                                    |result, window, cx| {
+                                        if result.is_ok() {
+                                            let state = core::controller(cx)
+                                                .read(cx)
+                                                .snapshot()
+                                                .app_update
+                                                .clone();
+                                            prompt_install(state, window, cx);
+                                        }
+                                    },
+                                ) {
+                                    Ok(()) => window.close_dialog(cx),
+                                    Err(error) => ui::show_error(error, window, cx),
+                                }
+                            }),
+                    )
+                }),
+        )
     });
-    status
 }
 
 fn prompt_install(state: State, window: &mut Window, cx: &mut App) {
@@ -84,7 +141,7 @@ fn prompt_install(state: State, window: &mut Window, cx: &mut App) {
         let expected = expected.clone();
         ui::modal_alert(dialog, window, cx)
             .title(format!("安装 {expected} 并重启？"))
-            .description("更新已下载。安装前会关闭内核并清理系统代理，随后重新启动应用。")
+            .description("更新已下载。")
             .footer(ui::dialog_footer("安装并重启"))
             .on_ok(move |_, window, cx| {
                 let state = &core::controller(cx).read(cx).snapshot().app_update;
@@ -98,138 +155,58 @@ fn prompt_install(state: State, window: &mut Window, cx: &mut App) {
     });
 }
 
+#[derive(IntoElement)]
 struct UpdateStatus {
     state: State,
-    busy: bool,
 }
-impl UpdateStatus {
-    fn installable_version(&self) -> Option<&str> {
-        self.state.downloaded.as_deref().filter(|version| {
-            self.state
-                .available
-                .as_deref()
-                .is_none_or(|available| available == *version)
-        })
-    }
-
-    fn download(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.busy {
-            return;
-        }
-        let Some(expected) = self.state.available.clone() else {
-            return;
-        };
-        match core::execute(
-            core::Command::AppUpdate(Command::Download { expected }),
-            window,
-            cx,
-            move |result, window, cx| {
-                if result.is_ok() {
-                    let state = core::controller(cx).read(cx).snapshot().app_update.clone();
-                    prompt_install(state, window, cx);
-                }
-            },
-        ) {
-            Ok(_) => {
-                self.busy = true;
-                window.close_dialog(cx);
-            }
-            Err(error) => ui::show_error(error, window, cx),
-        }
-        cx.notify();
-    }
-
-    fn confirm_install(&self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.busy {
-            return;
-        }
-        let Some(_) = self.installable_version() else {
-            return;
-        };
-        window.close_dialog(cx);
-        prompt_install(self.state.clone(), window, cx);
-    }
-}
-
-impl Render for UpdateStatus {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+impl RenderOnce for UpdateStatus {
+    fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
         ui::form()
-            .gap(space::MD)
-            .child(ui::muted(
-                format!("当前版本 {}", env!("CARGO_PKG_VERSION")),
-                cx,
-            ))
-            .when_some(self.state.available.clone(), |view, version| {
-                view.child(format!("新版本 {version}"))
-            })
-            .child(ui::muted(
-                if self.busy {
-                    "正在下载更新"
-                } else if self.installable_version().is_some() {
-                    "更新已下载，等待安装"
-                } else if self.state.available.is_some() {
-                    "发现新版本"
-                } else {
-                    "当前已是最新版本"
-                },
-                cx,
-            ))
-    }
-}
-
-struct UpdateFooter {
-    status: Entity<UpdateStatus>,
-    _subscription: Subscription,
-}
-impl UpdateFooter {
-    fn new(status: Entity<UpdateStatus>, cx: &mut Context<Self>) -> Self {
-        let subscription = cx.observe(&status, |_, _, cx| cx.notify());
-        Self {
-            status,
-            _subscription: subscription,
-        }
-    }
-}
-impl Render for UpdateFooter {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let status = self.status.read(cx);
-        let busy = status.busy;
-        let available = status.state.available.is_some();
-        let installable = status.installable_version().is_some();
-        let owner = self.status.clone();
-        ui::modal_footer()
+            .gap(space::SECTION)
             .child(
-                Button::new("app-update-close")
-                    .label("关闭")
-                    .with_size(control::STANDARD)
-                    .on_click(|_, window, cx| window.close_dialog(cx)),
+                h_flex()
+                    .gap(space::LG)
+                    .child(
+                        v_flex()
+                            .flex_1()
+                            .min_w_0()
+                            .gap(space::SM)
+                            .child(ui::muted("当前版本", cx))
+                            .child(
+                                div()
+                                    .text_size(text::TITLE)
+                                    .font_weight(text::EMPHASIS)
+                                    .child(env!("CARGO_PKG_VERSION")),
+                            ),
+                    )
+                    .child(Icon::new(IconName::ArrowRight).text_color(cx.theme().muted_foreground))
+                    .child(
+                        v_flex()
+                            .flex_1()
+                            .min_w_0()
+                            .gap(space::SM)
+                            .child(ui::muted("新版本", cx))
+                            .child(
+                                div()
+                                    .text_size(text::TITLE)
+                                    .font_weight(text::EMPHASIS)
+                                    .child(self.state.available.clone().unwrap_or_default()),
+                            ),
+                    ),
             )
-            .when(installable || available, |footer| {
-                footer.child(
-                    Button::new("app-update-primary")
-                        .primary()
-                        .label(if installable {
-                            "安装并重启"
-                        } else {
-                            "下载更新"
-                        })
-                        .icon(if installable {
-                            IconName::RefreshCw
-                        } else {
-                            IconName::Download
-                        })
-                        .with_size(control::STANDARD)
-                        .loading(busy)
-                        .disabled(busy)
-                        .on_click(move |_, window, cx| {
-                            owner.update(cx, |this, cx| {
-                                if installable {
-                                    this.confirm_install(window, cx);
-                                } else {
-                                    this.download(window, cx);
-                                }
-                            });
-                        }),
+            .when(!self.state.changelog.is_empty(), |body| {
+                body.child(
+                    v_flex()
+                        .gap(space::MD)
+                        .child(ui::muted("完整变更", cx))
+                        .child(
+                            TextView::markdown(
+                                "app-update-changelog",
+                                self.state.changelog.clone(),
+                            )
+                            .selectable(true)
+                            .scrollable(false),
+                        ),
                 )
             })
     }
@@ -237,7 +214,7 @@ impl Render for UpdateFooter {
 
 #[cfg(test)]
 mod tests {
-    use super::{show, show_checking};
+    use super::{checked, show};
     use crate::updates::State;
     use gpui_kit::test::TestWindowExt;
     use gpui_kit::{
@@ -252,30 +229,91 @@ mod tests {
     }
 
     #[gpui_kit::test]
-    fn checking_dialog_remains_until_the_request_finishes(cx: &mut TestAppContext) {
+    fn no_update_uses_a_toast_and_keeps_an_existing_dialog(cx: &mut TestAppContext) {
         cx.update(|cx| {
             gpui_kit::init(cx);
+            crate::ui::notifications::init(cx);
             cx.set_reduce_motion(true);
         });
         let (handle, _) = cx.update(|cx| {
             gpui_kit::open_window(WindowOptions::default(), cx, |_, cx| cx.new(|_| Host)).unwrap()
         });
         cx.update_window(handle, |_, window, cx| {
-            show_checking(window, cx);
-            window.render_frame(cx);
-            assert!(window.find_all("app-update-primary").is_empty());
-            window.press("escape", cx);
+            use gpui_kit::component::WindowExt;
+            window.open_dialog(cx, |dialog, window, cx| {
+                crate::ui::modal(
+                    dialog,
+                    "其他设置",
+                    crate::ui::theme::layout::DIALOG_WIDTH,
+                    window,
+                    cx,
+                )
+            });
+            checked(
+                State {
+                    checked: true,
+                    ..Default::default()
+                },
+                window,
+                cx,
+            );
             window.render_frame(cx);
             assert_eq!(window.find_all("dialog").len(), 1);
-            gpui_kit::component::WindowExt::close_dialog(window, cx);
-            window.render_frame(cx);
-            assert!(window.find_all("dialog").is_empty());
+            assert!(window.find_all("app-update-primary").is_empty());
+            assert_eq!(crate::ui::notifications::current(window, cx).len(), 1);
         })
         .unwrap();
     }
 
     #[gpui_kit::test]
-    fn downloaded_update_asks_before_install_and_cancel_keeps_package_ready(
+    fn update_details_fit_short_and_long_notes_with_actions_visible(cx: &mut TestAppContext) {
+        use gpui_kit::{px, size};
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            cx.set_reduce_motion(true);
+        });
+        let handle = cx.open_window(size(px(960.), px(640.)), |window, cx| {
+            let host = cx.new(|_| Host);
+            gpui_kit::base::Root::new(host, window, cx)
+        });
+        let mut short_height = px(0.);
+        for count in [2, 80] {
+            cx.update_window(handle.into(), |_, window, cx| {
+                use gpui_kit::component::WindowExt;
+                show(
+                    State {
+                        available: Some("99.0.0".into()),
+                        checked: true,
+                        changelog: (0..count)
+                            .map(|index| format!("- 修复第 {index} 项，保留完整变更链接\n"))
+                            .collect(),
+                        comparison_url: Some(
+                            "https://github.com/owner/repo/compare/v1...v99".into(),
+                        ),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                );
+                window.render_frame(cx);
+                let surface = window.find("surface").bounds();
+                let action = window.find("app-update-primary").bounds();
+                assert!(action.bottom() <= window.viewport_size().height);
+                assert!(surface.bottom() <= window.viewport_size().height);
+                assert!(window.find("app-update-close").visible());
+                if count == 2 {
+                    short_height = surface.size.height;
+                } else {
+                    assert!(surface.size.height > short_height);
+                }
+                window.close_dialog(cx);
+            })
+            .unwrap();
+        }
+    }
+
+    #[gpui_kit::test]
+    fn downloaded_update_opens_one_restart_confirmation_and_can_be_cancelled(
         cx: &mut TestAppContext,
     ) {
         cx.update(|cx| {
@@ -286,24 +324,23 @@ mod tests {
             gpui_kit::open_window(WindowOptions::default(), cx, |_, cx| cx.new(|_| Host)).unwrap()
         });
         cx.update_window(handle, |_, window, cx| {
-            let status = show(
+            checked(
                 State {
                     available: Some("0.2.0".into()),
                     downloaded: Some("0.2.0".into()),
                     checked: true,
-                    manual_url: None,
+                    ..Default::default()
                 },
                 window,
                 cx,
             );
             window.render_frame(cx);
-            window.click("app-update-primary", cx);
-            window.render_frame(cx);
+            assert_eq!(window.find_all("dialog").len(), 1);
             assert!(window.find("dialog-commit").visible());
             assert!(window.find_all("app-update-primary").is_empty());
             window.click("dialog-cancel", cx);
-            assert_eq!(status.read(cx).installable_version(), Some("0.2.0"));
-            assert!(!status.read(cx).busy);
+            window.render_frame(cx);
+            assert!(window.find_all("dialog").is_empty());
         })
         .unwrap();
     }
