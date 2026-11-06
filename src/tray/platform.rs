@@ -9,6 +9,7 @@ pub(super) struct Platform {
     icon_attempt: Attempt<IconState>,
     tooltip_attempt: Attempt<String>,
     title: Option<String>,
+    dark: Option<bool>,
 }
 impl Platform {
     pub(super) fn new() -> Result<Self, String> {
@@ -40,7 +41,20 @@ impl Platform {
             icon_attempt: Attempt::default(),
             tooltip_attempt: Attempt::default(),
             title: None,
+            dark: None,
         })
+    }
+    pub(super) fn theme(&mut self, dark: bool) {
+        if self.dark == Some(dark) {
+            return;
+        }
+        self.dark = Some(dark);
+        #[cfg(target_os = "macos")]
+        super::macos::theme(dark);
+        #[cfg(windows)]
+        super::windows::theme(self.icon.window_handle(), dark);
+        // StatusNotifier/DBusMenu exports semantics, not colors. The Linux host
+        // owns menu appearance; changing desktop-wide settings here is incorrect.
     }
     pub(super) fn events(sender: async_channel::Sender<TrayIconEvent>) {
         TrayIconEvent::set_event_handler(Some(move |event| {

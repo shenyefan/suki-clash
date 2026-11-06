@@ -4,7 +4,10 @@ mod macos;
 mod menu;
 mod model;
 mod platform;
+#[cfg(windows)]
+mod windows;
 use crate::{core, integration, ui};
+use gpui_kit::component::ActiveTheme as _;
 use gpui_kit::*;
 
 struct Handle {
@@ -86,7 +89,12 @@ pub(crate) fn init(main: AnyWindowHandle, cx: &mut App) {
         _tray: owner.clone(),
     });
     owner.update(cx, |this, cx| {
+        this.platform.theme(cx.theme().is_dark());
         this.sync(cx);
+        this._observations
+            .push(cx.observe_global::<gpui_kit::component::Theme>(|this, cx| {
+                this.platform.theme(cx.theme().is_dark());
+            }));
         let controller = core::controller(cx);
         this._observations
             .push(cx.observe(&controller, |this, _, cx| this.sync(cx)));
