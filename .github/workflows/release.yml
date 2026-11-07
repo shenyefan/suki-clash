@@ -44,7 +44,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: python packaging/runtime.py --resolve runtime-lock.json
-      - uses: actions/upload-artifact@v6
+      - uses: actions/upload-artifact@v7
         with:
           name: runtime-lock
           path: runtime-lock.json
@@ -145,7 +145,7 @@ jobs:
         run: |
           python packaging/velopack.py --target "$BUILD_TARGET" --app-dir "target/$BUILD_TARGET/release" --service-dir "platform-service/target/$BUILD_TARGET/release" --work "$RUNNER_TEMP/package" --runtime-dir "$RUNNER_TEMP/runtime" --vpk "$GITHUB_WORKSPACE/.tools/vpk"
       - name: Upload packages and isolated release feed
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: packages-${{ matrix.channel }}
           path: ${{ runner.temp }}/package/Releases/*
