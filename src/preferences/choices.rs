@@ -32,7 +32,6 @@ fn options(key: &str) -> &'static [(&'static str, &'static str)] {
             ("左下角", "bottom_left"),
             ("左上角", "top_left"),
         ],
-        "TrayProxyGroups" => &[("默认", "default"), ("内联", "inline"), ("隐藏", "hidden")],
         "AutoLogClean" => &[
             ("不清理", "never"),
             ("保留 1 天", "1d"),

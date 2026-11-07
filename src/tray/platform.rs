@@ -1,6 +1,15 @@
-//! Native status icon and attached menu; the OS owns popup tracking and material.
-use tray_icon::{Icon, TrayIcon, TrayIconBuilder, TrayIconEvent};
+//! Native status icon. GPUI owns the popup; no OS menu is attached.
+#[cfg(target_os = "linux")]
+use super::linux::{Icon, Native as TrayIcon};
+use tray_icon::TrayIconEvent;
+#[cfg(not(target_os = "linux"))]
+use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
 
+pub(super) enum Event {
+    Icon(TrayIconEvent),
+    #[cfg(target_os = "linux")]
+    Error(String),
+}
 pub(super) struct Platform {
     icon: TrayIcon,
     common: Icon,
@@ -9,12 +18,12 @@ pub(super) struct Platform {
     icon_attempt: Attempt<IconState>,
     tooltip_attempt: Attempt<String>,
     title: Option<String>,
-    dark: Option<bool>,
-    #[cfg(windows)]
-    appearance: super::windows::Appearance,
 }
 impl Platform {
-    pub(super) fn new() -> Result<Self, String> {
+    pub(super) fn new(
+        cx: &gpui_kit::App,
+        sender: async_channel::Sender<Event>,
+    ) -> Result<Self, String> {
         let image = image::load_from_memory(include_bytes!("../../assets/logo.png"))
             .map_err(crate::logging::error_message)?
             .resize(32, 32, image::imageops::FilterType::Lanczos3)
@@ -26,15 +35,24 @@ impl Platform {
         let common = make(IconState::Common)?;
         let system = make(IconState::System)?;
         let tun = make(IconState::Tun)?;
+        #[cfg(not(target_os = "linux"))]
         let builder = TrayIconBuilder::new()
             .with_id("suki-clash")
             .with_tooltip("Suki Clash");
+        #[cfg(not(target_os = "linux"))]
         let icon = builder
             .with_icon(common.clone())
             .with_menu_on_left_click(false)
-            .with_menu_on_right_click(true)
+            .with_menu_on_right_click(false)
             .build()
             .map_err(crate::logging::error_message)?;
+        #[cfg(not(target_os = "linux"))]
+        {
+            Self::events(sender);
+            let _ = cx;
+        }
+        #[cfg(target_os = "linux")]
+        let icon = TrayIcon::new(common.clone(), sender, cx);
         Ok(Self {
             icon,
             common,
@@ -43,26 +61,12 @@ impl Platform {
             icon_attempt: Attempt::default(),
             tooltip_attempt: Attempt::default(),
             title: None,
-            dark: None,
-            #[cfg(windows)]
-            appearance: super::windows::Appearance::new(),
         })
     }
-    pub(super) fn theme(&mut self, dark: bool) {
-        if self.dark == Some(dark) {
-            return;
-        }
-        self.dark = Some(dark);
-        #[cfg(target_os = "macos")]
-        super::macos::theme(dark);
-        #[cfg(windows)]
-        self.appearance.theme(self.icon.window_handle(), dark);
-        // StatusNotifier/DBusMenu exports semantics, not colors. The Linux host
-        // owns menu appearance; changing desktop-wide settings here is incorrect.
-    }
-    pub(super) fn events(sender: async_channel::Sender<TrayIconEvent>) {
+    #[cfg(not(target_os = "linux"))]
+    fn events(sender: async_channel::Sender<Event>) {
         TrayIconEvent::set_event_handler(Some(move |event| {
-            let _ = sender.try_send(event);
+            let _ = sender.try_send(Event::Icon(event));
         }));
     }
     pub(super) fn update(
@@ -103,12 +107,6 @@ impl Platform {
     pub(super) fn retry(&mut self) {
         self.icon_attempt.clear();
         self.tooltip_attempt.clear();
-    }
-
-    pub(super) fn menu(&self, menu: tray_icon::menu::Menu, left: bool) {
-        self.icon.set_menu(Some(Box::new(menu)));
-        self.icon.set_show_menu_on_left_click(left);
-        self.icon.set_show_menu_on_right_click(true);
     }
 }
 

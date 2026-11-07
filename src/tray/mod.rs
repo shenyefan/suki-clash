@@ -1,13 +1,12 @@
-//! Application-owned native status icon and OS menu.
-#[cfg(target_os = "macos")]
-mod macos;
+//! Application-owned native status icon and GPUI popup.
+#[cfg(target_os = "linux")]
+mod linux;
 mod menu;
 mod model;
+mod placement;
 mod platform;
-#[cfg(windows)]
-mod windows;
+mod popup;
 use crate::{core, integration, ui};
-use gpui_kit::component::ActiveTheme as _;
 use gpui_kit::*;
 
 struct Handle {
@@ -17,46 +16,16 @@ impl Global for Handle {}
 struct Tray {
     platform: platform::Platform,
     main: AnyWindowHandle,
-    commands: std::collections::BTreeMap<String, Command>,
+    popup: Option<(AnyWindowHandle, WeakEntity<popup::Panel>)>,
     menu_attempt: Option<u64>,
     _events: Option<Task<()>>,
     _observations: Vec<Subscription>,
-    group_task: Option<Task<()>>,
-    group_key: Option<GroupIconsKey>,
-    group_icons: std::collections::BTreeMap<String, tray_icon::menu::Icon>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct GroupIconsKey {
-    generation: u64,
-    epoch: u64,
-    groups: std::collections::BTreeMap<String, (String, std::path::PathBuf)>,
-}
-impl GroupIconsKey {
-    fn new(runtime: &core::Runtime) -> Self {
-        Self {
-            generation: runtime.generation,
-            epoch: runtime.epoch,
-            groups: runtime
-                .proxies
-                .entries
-                .iter()
-                .filter(|(_, proxy)| proxy.all.is_some())
-                .filter_map(|(name, proxy)| {
-                    let source = proxy.icon.trim();
-                    runtime
-                        .icons
-                        .files
-                        .get(source)
-                        .map(|path| (name.clone(), (source.to_owned(), path.clone())))
-                })
-                .collect(),
-        }
-    }
 }
 
 pub(crate) fn init(main: AnyWindowHandle, cx: &mut App) {
-    let platform = match platform::Platform::new() {
+    popup::init(cx);
+    let (sender, receiver) = async_channel::bounded(32);
+    let platform = match platform::Platform::new(cx, sender) {
         Ok(platform) => platform,
         Err(error) => {
             integration::announce_module("ERROR", "tray", format!("无法创建托盘：{error}"), cx);
@@ -66,71 +35,35 @@ pub(crate) fn init(main: AnyWindowHandle, cx: &mut App) {
             return;
         }
     };
-    let (sender, receiver) = async_channel::bounded(32);
-    platform::Platform::events(sender);
-    let (menu_sender, menu_receiver) = async_channel::bounded(32);
-    tray_icon::menu::MenuEvent::set_event_handler(Some(
-        move |event: tray_icon::menu::MenuEvent| {
-            let _ = menu_sender.try_send(event.id.0);
-        },
-    ));
     let owner = cx.new(|_| Tray {
         platform,
         main,
-        commands: Default::default(),
+        popup: None,
         menu_attempt: None,
         _events: None,
         _observations: vec![],
-        group_task: None,
-        group_key: None,
-        group_icons: Default::default(),
     });
     cx.set_global(Handle {
         _tray: owner.clone(),
     });
     owner.update(cx, |this, cx| {
-        this.platform.theme(cx.theme().is_dark());
         this.sync(cx);
-        this._observations
-            .push(cx.observe_global::<gpui_kit::component::Theme>(|this, cx| {
-                this.platform.theme(cx.theme().is_dark());
-            }));
         let controller = core::controller(cx);
         this._observations
             .push(cx.observe(&controller, |this, _, cx| this.sync(cx)));
         this._events = Some(cx.spawn(async move |owner, cx| {
-            loop {
-                let event = futures_util::future::select(
-                    Box::pin(receiver.recv()),
-                    Box::pin(menu_receiver.recv()),
-                )
-                .await;
-                match event {
-                    futures_util::future::Either::Left((
-                        Ok(tray_icon::TrayIconEvent::Click {
-                            button,
+            while let Ok(event) = receiver.recv().await {
+                let _ = owner.update(cx, |this, cx| match event {
+                    platform::Event::Icon(
+                        event @ tray_icon::TrayIconEvent::Click {
                             button_state: tray_icon::MouseButtonState::Up,
                             ..
-                        }),
-                        _,
-                    )) => {
-                        let _ = owner.update(cx, |this, cx| this.click(button, cx));
-                    }
-                    futures_util::future::Either::Right((Ok(id), _)) => {
-                        let action = owner.update(cx, |this, _| {
-                            this.commands
-                                .get(&id)
-                                .cloned()
-                                .map(|command| (this.main, command))
-                        });
-                        if let Ok(Some((main, command))) = action {
-                            cx.update(|cx| dispatch(&command, main, cx));
-                        }
-                    }
-                    futures_util::future::Either::Left((Err(_), _))
-                    | futures_util::future::Either::Right((Err(_), _)) => break,
+                        },
+                    ) => this.click(event, cx),
+                    #[cfg(target_os = "linux")]
+                    platform::Event::Error(error) => this.error(error, cx),
                     _ => {}
-                }
+                });
             }
         }));
     });
@@ -155,77 +88,6 @@ impl Tray {
         let controller = core::controller(cx);
         let state = controller.read(cx);
         let runtime = state.runtime();
-        let key = GroupIconsKey::new(&runtime);
-        if self.group_key.as_ref() != Some(&key) {
-            self.group_key = Some(key.clone());
-            // A new binding cannot reuse icons attached to old group names.
-            self.group_task = None;
-            self.group_icons.clear();
-            self.menu_attempt = None;
-            let groups = key.groups.clone();
-            self.group_task = Some(cx.spawn(async move |owner, cx| {
-                let result = cx
-                    .background_spawn(async move {
-                        groups
-                            .into_iter()
-                            .filter_map(|(name, (_, path))| {
-                                let bytes = std::fs::read(path).ok()?;
-                                let rgba = match image::load_from_memory(&bytes) {
-                                    Ok(image) => image
-                                        .resize_exact(18, 18, image::imageops::FilterType::Lanczos3)
-                                        .into_rgba8()
-                                        .into_raw(),
-                                    Err(_) => {
-                                        let tree = resvg::usvg::Tree::from_data(
-                                            &bytes,
-                                            &Default::default(),
-                                        )
-                                        .ok()?;
-                                        let mut pixmap = resvg::tiny_skia::Pixmap::new(18, 18)?;
-                                        let size = tree.size();
-                                        let scale = (18.0 / size.width()).min(18.0 / size.height());
-                                        let transform =
-                                            resvg::tiny_skia::Transform::from_translate(
-                                                (18.0 - size.width() * scale) / 2.0,
-                                                (18.0 - size.height() * scale) / 2.0,
-                                            )
-                                            .pre_scale(scale, scale);
-                                        resvg::render(&tree, transform, &mut pixmap.as_mut());
-                                        pixmap
-                                            .pixels()
-                                            .iter()
-                                            .flat_map(|pixel| {
-                                                let pixel = pixel.demultiply();
-                                                [
-                                                    pixel.red(),
-                                                    pixel.green(),
-                                                    pixel.blue(),
-                                                    pixel.alpha(),
-                                                ]
-                                            })
-                                            .collect()
-                                    }
-                                };
-                                tray_icon::menu::Icon::from_rgba(rgba, 18, 18)
-                                    .ok()
-                                    .map(|icon| (name, icon))
-                            })
-                            .collect()
-                    })
-                    .await;
-                let _ = owner.update(cx, |this, cx| {
-                    if this.group_key.as_ref() != Some(&key) {
-                        return;
-                    }
-                    if let Some(task) = this.group_task.take() {
-                        task.detach();
-                    }
-                    this.group_icons = result;
-                    this.menu_attempt = None;
-                    this.sync(cx);
-                });
-            }));
-        }
         let general = integration::read("settings", cx);
         let mut errors = Vec::new();
         let system = state.snapshot().system_proxy().enabled() == Some(true);
@@ -258,25 +120,11 @@ impl Tray {
         let key = menu::revision(&runtime, &general, context);
         if self.menu_attempt != Some(key) {
             self.menu_attempt = Some(key);
-            match menu::build(
-                &runtime,
-                state.snapshot(),
-                state.is_busy(),
-                &general,
-                cx,
-                self.group_icons.clone(),
-                key,
-            ) {
-                Ok((menu, commands)) => {
-                    self.platform.menu(
-                        menu,
-                        general
-                            .get("TrayEvent")
-                            .is_none_or(|value| value == "显示托盘菜单"),
-                    );
-                    self.commands = commands;
-                }
-                Err(error) => errors.push(format!("托盘菜单：{error}")),
+            if let Some((handle, panel)) = &self.popup {
+                let panel = panel.clone();
+                let _ = handle.update(cx, |_, window, cx| {
+                    let _ = panel.update(cx, |panel, cx| panel.sync(window, cx));
+                });
             }
         }
         let speed = if cfg!(target_os = "macos")
@@ -318,25 +166,75 @@ impl Tray {
                 .update(cx, |_, window, cx| ui::show_error(error, window, cx));
         }
     }
-    fn click(&mut self, button: tray_icon::MouseButton, cx: &mut Context<Self>) {
-        // The OS has already begun tracking the attached menu. Replacing it
-        // here destroys the popup on Windows and interrupts native tracking.
-        if button != tray_icon::MouseButton::Left {
+    fn error(&self, error: String, cx: &mut Context<Self>) {
+        integration::announce_module("ERROR", "tray", error.clone(), cx);
+        let _ = self
+            .main
+            .update(cx, |_, window, cx| ui::show_error(error, window, cx));
+    }
+    fn click(&mut self, event: tray_icon::TrayIconEvent, cx: &mut Context<Self>) {
+        let tray_icon::TrayIconEvent::Click { button, .. } = &event else {
+            return;
+        };
+        if *button == tray_icon::MouseButton::Middle {
             return;
         }
         let behavior = integration::read("settings", cx)
             .get("TrayEvent")
             .cloned()
             .unwrap_or_else(|| "显示托盘菜单".into());
-        let command = match behavior.as_str() {
-            "显示主窗口" => Command::ShowWindow,
-            "切换系统代理" => Command::SystemProxy,
-            "切换虚拟网卡" => Command::Tun,
-            _ => return,
+        let command = if *button == tray_icon::MouseButton::Left {
+            match behavior.as_str() {
+                "显示主窗口" => Some(Command::ShowWindow),
+                "切换系统代理" => Some(Command::SystemProxy),
+                "切换虚拟网卡" => Some(Command::Tun),
+                _ => None,
+            }
+        } else {
+            None
         };
         self.platform.retry();
+        if let Some(command) = command {
+            if let Some((handle, _)) = self.popup.take() {
+                let _ = handle.update(cx, |_, window, _| window.remove_window());
+            }
+            let main = self.main;
+            cx.defer(move |cx| dispatch(&command, main, cx));
+            return;
+        }
+        if let Some((handle, _)) = self.popup.take()
+            && handle
+                .update(cx, |_, window, _| window.remove_window())
+                .is_ok()
+        {
+            return;
+        }
+        let options = placement::anchor(&event, cx)
+            .and_then(|anchor| placement::options(anchor, cx).map(|options| (options, anchor)));
         let main = self.main;
-        cx.defer(move |cx| dispatch(&command, main, cx));
+        match options.and_then(|(options, anchor)| {
+            let mut panel = None;
+            let handle = cx
+                .open_window(options, |window, cx| {
+                    window.set_window_title("Suki Clash · 托盘");
+                    let view = cx.new(|cx| popup::Panel::new(main, anchor, window, cx));
+                    panel = Some(view.downgrade());
+                    use gpui_kit::component::ActiveTheme;
+                    let transparent = cx
+                        .theme()
+                        .popover
+                        .opacity(crate::ui::theme::opacity::TRANSPARENT);
+                    cx.new(|cx| gpui_kit::base::Root::new(view, window, cx).bg(transparent))
+                })
+                .map_err(crate::logging::error_message)?;
+            Ok((handle.into(), panel))
+        }) {
+            Ok((handle, Some(panel))) => self.popup = Some((handle, panel)),
+            Ok(_) => {}
+            Err(error) => {
+                self.error(format!("无法打开托盘菜单：{error}"), cx);
+            }
+        }
     }
 }
 
@@ -359,8 +257,6 @@ pub(super) enum Command {
         epoch: u64,
     },
     CopyEnvironment,
-    OpenDirectory(String),
-    OpenLog(bool),
     RestartCore,
     RestartProgram,
     ShowWindow,
@@ -403,8 +299,8 @@ pub(super) fn dispatch(command: &Command, main: AnyWindowHandle, cx: &mut App) {
                 window,
                 cx,
             ),
-            Command::Tun => core::request(core::Command::ToggleTun, window, cx),
-            Command::SystemProxy => core::request(core::Command::ToggleSystemProxy, window, cx),
+            Command::Tun => ui::request_command("切换虚拟网卡", window, cx),
+            Command::SystemProxy => ui::request_command("切换系统代理", window, cx),
             Command::CloseConnections { generation, epoch } => core::request(
                 core::Command::Connections(crate::traffic::ConnectionAction::CloseAll {
                     generation,
@@ -414,90 +310,8 @@ pub(super) fn dispatch(command: &Command, main: AnyWindowHandle, cx: &mut App) {
                 cx,
             ),
             Command::RestartCore => core::request(core::Command::Restart, window, cx),
-            Command::OpenDirectory(kind) => {
-                let kind = match kind.as_str() {
-                    "core" => integration::DirectoryKind::Core,
-                    "logs" => integration::DirectoryKind::Logs,
-                    _ => integration::DirectoryKind::Config,
-                };
-                integration::execute(
-                    integration::Command::OpenDirectory(kind),
-                    window,
-                    cx,
-                    |result, window, cx| match result {
-                        Ok(integration::Outcome::Directory(path)) => cx.open_with_system(&path),
-                        Err(error) => ui::show_error(error.to_string(), window, cx),
-                        _ => {}
-                    },
-                );
-            }
-            Command::OpenLog(core) => open_log(core, window, cx),
             Command::CopyEnvironment => crate::settings::copy_environment(window, cx),
             _ => {}
         }
     });
-}
-
-fn open_log(core: bool, window: &mut Window, cx: &mut App) {
-    let Some(paths) = integration::paths(cx) else {
-        return;
-    };
-    let directory = paths.directory(integration::DirectoryKind::Logs);
-    let handle = window.window_handle();
-    cx.spawn(async move |cx| {
-        let found = cx
-            .background_spawn(async move {
-                let prefix = if core { "core-" } else { "program-" };
-                std::fs::read_dir(directory)
-                    .map_err(crate::logging::error_message)?
-                    .filter_map(Result::ok)
-                    .filter(|entry| entry.file_name().to_string_lossy().starts_with(prefix))
-                    .max_by_key(|entry| entry.metadata().and_then(|m| m.modified()).ok())
-                    .map(|entry| entry.path())
-                    .ok_or_else(|| "暂无日志文件".to_string())
-            })
-            .await;
-        let _ = handle.update(cx, |_, window, cx| match found {
-            Ok(path) => cx.open_with_system(&path),
-            Err(error) => ui::show_error(error, window, cx),
-        });
-    })
-    .detach();
-}
-
-#[cfg(test)]
-mod tests {
-    use super::GroupIconsKey;
-    use crate::core;
-    #[test]
-    fn icon_binding_identity_tracks_names_sources_and_runtime_scope() {
-        let mut runtime = core::Runtime {
-            generation: 1,
-            epoch: 1,
-            ..Default::default()
-        };
-        runtime.proxies = crate::proxies::runtime::Proxies::parse(br#"{"proxies":{"a":{"name":"a","type":"Selector","all":[],"icon":"https://example.test/x"},"b":{"name":"b","type":"Selector","all":[],"icon":"https://example.test/y"}}}"#, &[]).unwrap();
-        runtime
-            .icons
-            .files
-            .insert("https://example.test/x".into(), "/tmp/x".into());
-        runtime
-            .icons
-            .files
-            .insert("https://example.test/y".into(), "/tmp/y".into());
-        let initial = GroupIconsKey::new(&runtime);
-        runtime.proxies.entries.get_mut("a").unwrap().icon = "https://example.test/y".into();
-        runtime.proxies.entries.get_mut("b").unwrap().icon = "https://example.test/x".into();
-        assert_ne!(initial, GroupIconsKey::new(&runtime));
-        let swapped = GroupIconsKey::new(&runtime);
-        let proxy = runtime.proxies.entries.remove("a").unwrap();
-        runtime.proxies.entries.insert("renamed".into(), proxy);
-        assert_ne!(swapped, GroupIconsKey::new(&runtime));
-        let renamed = GroupIconsKey::new(&runtime);
-        runtime.epoch += 1;
-        assert_ne!(renamed, GroupIconsKey::new(&runtime));
-        let revised = GroupIconsKey::new(&runtime);
-        runtime.generation += 1;
-        assert_ne!(revised, GroupIconsKey::new(&runtime));
-    }
 }

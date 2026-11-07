@@ -1,9 +1,7 @@
 //! Explicit diagnostic export, including redacted logs from this application run.
 mod configuration;
-use crate::{
-    preferences::{self, SettingsKind},
-    storage::{AppPaths, DirectoryKind, Repository},
-};
+mod environment;
+use crate::storage::{AppPaths, DirectoryKind, Repository};
 use std::{
     io::{Read as _, Write as _},
     path::PathBuf,
@@ -14,94 +12,24 @@ pub(crate) fn export(
     logs: &crate::logging::Feed,
 ) -> Result<PathBuf, String> {
     let paths = repository.paths();
-    let mut failures = Vec::new();
-    // Check the native files independently: a damaged settings.json must not mask YAML errors.
-    for name in ["mihomo.yaml", "dns.yaml", "sniffer.yaml"] {
-        let path = paths.settings().join(name);
-        match std::fs::read(&path) {
-            Ok(bytes) => {
-                if let Err(error) = serde_yaml_ng::from_slice::<serde_yaml_ng::Mapping>(&bytes) {
-                    let location = error
-                        .location()
-                        .map(|location| {
-                            format!("，第 {} 行第 {} 列", location.line(), location.column())
-                        })
-                        .unwrap_or_default();
-                    failures.push(format!("{name}：YAML 格式无效{location}"));
-                }
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => failures.push(format!("{name}：{:?}", error.kind())),
-        }
-    }
-    if let Err(error) = crate::configuration::Preferences::load(paths) {
-        failures.push(error);
-    }
-    for kind in SettingsKind::ALL
-        .into_iter()
-        .filter(|kind| !matches!(kind, SettingsKind::Core | SettingsKind::Resources))
-    {
-        match preferences::values(repository, kind) {
-            Ok(values) => {
-                if let Err(error) = preferences::validate(kind, &values) {
-                    failures.push(format!("{}：{error}", kind.id()));
-                }
-            }
-            Err(error) => failures.push(error.to_string()),
-        }
-    }
-    if let Err(error) = crate::configuration::selected_profile(paths) {
-        failures.push(error);
-    }
-    if let Err(error) = crate::proxies::chain_config::Config::load(paths) {
-        failures.push(error);
-    }
-    let environment = format!(
-        "Suki Clash {}\nOS: {}\nArchitecture: {}\nTime: {}\nCore installed: {}\n",
-        env!("CARGO_PKG_VERSION"),
-        std::env::consts::OS,
-        std::env::consts::ARCH,
-        chrono::Utc::now().to_rfc3339(),
-        crate::bootstrap::require_core(paths).is_ok()
-    );
-    let mut files = String::new();
-    for name in ["settings.json", "mihomo.yaml", "dns.yaml", "sniffer.yaml"] {
-        let path = paths.settings().join(name);
-        let status = match std::fs::symlink_metadata(&path) {
-            Ok(meta) => {
-                if meta.is_file() {
-                    format!("{} bytes", meta.len())
-                } else {
-                    "not a regular file".into()
-                }
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => "missing".into(),
-            Err(error) => format!("{:?}", error.kind()),
-        };
-        files.push_str(&format!("{name}: {status}\n"));
-    }
-    let report = if failures.is_empty() {
-        "配置检查通过".into()
-    } else {
-        redact(&crate::failure::join(&failures), paths)
-    };
     let directory = paths.directory(DirectoryKind::Backups);
     let mut temporary = tempfile::NamedTempFile::new_in(&directory)
         .map_err(|error| crate::logging::diagnostic_error("无法创建诊断文件", error))?;
     {
         let mut zip = zip::ZipWriter::new(temporary.as_file_mut());
-        for (name, content) in [
-            ("environment.txt", environment),
-            ("settings-check.txt", report),
-            ("files.txt", files),
-        ] {
-            zip.start_file(name, zip::write::SimpleFileOptions::default())
-                .map_err(|error| crate::logging::diagnostic_error("无法写入诊断包", error))?;
-            zip.write_all(content.as_bytes())
-                .map_err(|error| crate::logging::diagnostic_error("无法写入诊断信息", error))?;
-        }
-        configuration::export(&mut zip, paths)?;
-        export_logs(&mut zip, paths, logs)?;
+        let configuration = configuration::export(&mut zip, paths)?;
+        let log_status = export_logs(&mut zip, paths, logs)?;
+        let report = environment::collect(paths, configuration, log_status);
+        let (environment, _) = configuration::sanitize(
+            "environment.json",
+            &serde_json::to_vec(&report)
+                .map_err(|error| crate::logging::diagnostic_error("无法编码诊断环境", error))?,
+            paths,
+        )?;
+        zip.start_file("environment.txt", zip::write::SimpleFileOptions::default())
+            .map_err(|error| crate::logging::diagnostic_error("无法写入诊断环境", error))?;
+        zip.write_all(environment.as_bytes())
+            .map_err(|error| crate::logging::diagnostic_error("无法写入诊断环境", error))?;
         zip.finish()
             .map_err(|error| crate::logging::diagnostic_error("无法完成诊断包", error))?;
     }
@@ -122,7 +50,7 @@ fn export_logs(
     zip: &mut zip::ZipWriter<&mut std::fs::File>,
     paths: &AppPaths,
     logs: &crate::logging::Feed,
-) -> Result<(), String> {
+) -> Result<Vec<String>, String> {
     // Only registered writers belong to this run, including earlier core
     // generations and rotated parts. Never collect older runs by modification time.
     const LIMIT: usize = 64 * 1024 * 1024;
@@ -152,7 +80,7 @@ fn export_logs(
         Ok(entries) => entries,
         Err(error) => {
             status.push(format!("日志目录不可读：{}；已保留内存日志", error.kind()));
-            return write("logs/export-status.txt", &status.join("\n"));
+            return Ok(status);
         }
     };
     let mut files = Vec::new();
@@ -207,7 +135,7 @@ fn export_logs(
         "本次登记 {} 个日志写入批次，已读取 {bytes} 字节磁盘日志",
         prefixes.len()
     ));
-    write("logs/export-status.txt", &status.join("\n"))
+    Ok(status)
 }
 fn redact(message: &str, paths: &AppPaths) -> String {
     let mut text = crate::logging::redact(message);
@@ -288,6 +216,27 @@ mod tests {
             file.read_to_string(&mut text).unwrap();
             files.insert(name, text);
         }
+        assert_eq!(
+            files
+                .keys()
+                .filter(|name| !name.contains('/'))
+                .collect::<Vec<_>>(),
+            vec!["environment.txt"]
+        );
+        assert!(
+            files
+                .keys()
+                .all(|name| !name.ends_with("export-status.txt"))
+        );
+        let environment: serde_json::Value =
+            serde_json::from_str(&files["environment.txt"]).unwrap();
+        assert_eq!(
+            environment["application"]["version"],
+            env!("CARGO_PKG_VERSION")
+        );
+        assert!(environment["system"]["architecture"].is_string());
+        assert!(environment["system"]["network_interfaces"].is_array());
+        assert!(environment["environment_variables"].is_object());
         let app: serde_json::Value =
             serde_json::from_str(&files["configuration/settings/settings.json"]).unwrap();
         assert_eq!(app["general"]["auto_run"], true);
@@ -355,7 +304,7 @@ mod tests {
         let mut zip = zip::ZipArchive::new(std::fs::File::open(output).unwrap()).unwrap();
         assert!(zip.by_name("configuration/settings/dns.yaml").is_err());
         let mut status = String::new();
-        zip.by_name("configuration/export-status.txt")
+        zip.by_name("environment.txt")
             .unwrap()
             .read_to_string(&mut status)
             .unwrap();
@@ -376,7 +325,7 @@ mod tests {
         let mut zip = zip::ZipArchive::new(std::fs::File::open(path).unwrap()).unwrap();
         use std::io::Read as _;
         let mut check = String::new();
-        zip.by_name("settings-check.txt")
+        zip.by_name("environment.txt")
             .unwrap()
             .read_to_string(&mut check)
             .unwrap();

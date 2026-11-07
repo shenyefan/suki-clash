@@ -398,15 +398,6 @@ fn general_extensions() -> Vec<SectionSpec> {
                     actions: &[],
                 },
                 FieldSpec {
-                    key: "TrayProxyGroups",
-                    label: "托盘代理组布局",
-                    description: "",
-                    kind: FieldKind::Select,
-                    default: "内联",
-                    options: &["默认", "内联", "隐藏"],
-                    actions: &[],
-                },
-                FieldSpec {
                     key: "TrayInlineModes",
                     label: "托盘内联显示出站模式",
                     description: "",
@@ -1924,12 +1915,7 @@ mod tests {
             );
         }
         assert!(!fields.iter().any(|field| field.key.starts_with("Hotkey")));
-        for key in [
-            "TrayEvent",
-            "TrayProxyGroups",
-            "EnableTraySpeed",
-            "GistBackup",
-        ] {
+        for key in ["TrayEvent", "EnableTraySpeed", "GistBackup"] {
             assert!(
                 fields.iter().any(|field| field.key == key),
                 "retained setting missing: {key}"

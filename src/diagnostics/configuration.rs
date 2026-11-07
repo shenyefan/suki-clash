@@ -9,7 +9,7 @@ use std::{
 pub(super) fn export(
     zip: &mut zip::ZipWriter<&mut std::fs::File>,
     paths: &AppPaths,
-) -> Result<(), String> {
+) -> Result<Vec<String>, String> {
     let mut status = vec!["设置、索引、订阅 YAML、YAML 覆写和本地候选配置为脱敏副本，不可用于恢复。配置总读取上限 32 MiB，单文件 8 MiB。脚本正文及安全凭据文件不导出。格式损坏的配置只保留空白和结构标点，文件名追加 .redacted.txt。".to_owned()];
     let mut files = vec![(
         "runtime-source.yaml".to_owned(),
@@ -105,11 +105,7 @@ pub(super) fn export(
             Err(error) => status.push(format!("{name}：未导出，{error}")),
         }
     }
-    write(
-        zip,
-        "configuration/export-status.txt",
-        &super::redact(&status.join("\n"), paths),
-    )
+    Ok(status)
 }
 
 fn numeric_id(name: &str) -> bool {
@@ -173,7 +169,7 @@ fn read(path: &Path, total: &mut usize) -> Result<Vec<u8>, String> {
     Ok(bytes)
 }
 
-fn sanitize(
+pub(super) fn sanitize(
     name: &str,
     bytes: &[u8],
     paths: &AppPaths,

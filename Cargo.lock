@@ -5519,6 +5519,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "objc2-io-kit"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "33fafba39597d6dc1fb709123dfa8289d39406734be322956a69f0931c73bb15"
+dependencies = [
+ "libc",
+ "objc2-core-foundation",
+]
+
+[[package]]
 name = "objc2-io-surface"
 version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7901,7 +7911,7 @@ checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
 
 [[package]]
 name = "suki-clash"
-version = "0.3.8"
+version = "0.4.0"
 dependencies = [
  "age",
  "anyhow",
@@ -7941,6 +7951,7 @@ dependencies = [
  "serde_yaml_ng",
  "sha2 0.11.1",
  "suki-clash-service",
+ "sysinfo 0.40.0",
  "system-configuration 0.8.0",
  "tempfile",
  "thiserror 2.0.21",
@@ -8083,6 +8094,20 @@ dependencies = [
  "ntapi",
  "rayon",
  "windows 0.57.0",
+]
+
+[[package]]
+name = "sysinfo"
+version = "0.40.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "110e37d98880fd804cd47509b90a8444f7aaaab655ae625e83cd442a8bc2ebf2"
+dependencies = [
+ "libc",
+ "memchr",
+ "ntapi",
+ "objc2-core-foundation",
+ "objc2-io-kit",
+ "windows 0.62.2",
 ]
 
 [[package]]
@@ -10666,7 +10691,7 @@ dependencies = [
  "rand 0.8.8",
  "screencapturekit",
  "screencapturekit-sys",
- "sysinfo",
+ "sysinfo 0.31.4",
  "tao-core-video-sys",
  "windows 0.61.3",
  "windows-capture",

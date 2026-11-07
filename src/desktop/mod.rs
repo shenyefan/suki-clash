@@ -95,7 +95,19 @@ pub(crate) fn close_main(window: &mut Window, cx: &mut App) {
         return;
     }
     #[cfg(target_os = "macos")]
-    cx.hide();
+    {
+        use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+        if let Ok(RawWindowHandle::AppKit(handle)) =
+            HasWindowHandle::window_handle(window).map(|handle| handle.as_raw())
+        {
+            // Hide this window, not NSApplication: unhiding the application for
+            // a tray panel would otherwise restore every application window.
+            let view = unsafe { &*handle.ns_view.as_ptr().cast::<objc2_app_kit::NSView>() };
+            if let Some(native) = view.window() {
+                native.orderOut(None);
+            }
+        }
+    }
     #[cfg(target_os = "windows")]
     {
         use raw_window_handle::{HasWindowHandle, RawWindowHandle};

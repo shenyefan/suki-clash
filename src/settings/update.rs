@@ -1,17 +1,15 @@
 //! The update dialog projects actor-owned results; no network work starts during rendering.
 use crate::core::app_update::Command;
-use crate::ui::theme::{control, layout, space, text};
+use crate::ui::theme::{control, layout};
 use crate::{core, ui, updates::State};
 use gpui_kit::{
     assets::IconName,
     component::{
-        ActiveTheme, Icon, Sizable, WindowExt,
+        Sizable, WindowExt,
         button::{Button, ButtonVariants},
-        h_flex,
         link::Link,
         notification::Notification,
         text::TextView,
-        v_flex,
     },
     prelude::FluentBuilder as _,
     *,
@@ -64,7 +62,10 @@ fn show(state: State, window: &mut Window, cx: &mut App) {
         let expected = state.available.clone();
         ui::modal(
             dialog,
-            "发现新版本",
+            format!(
+                "发现新版本：{}",
+                state.available.as_deref().unwrap_or_default()
+            ),
             layout::EDITOR_DIALOG_WIDTH,
             window,
             cx,
@@ -160,55 +161,12 @@ struct UpdateStatus {
     state: State,
 }
 impl RenderOnce for UpdateStatus {
-    fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
-        ui::form()
-            .gap(space::SECTION)
-            .child(
-                h_flex()
-                    .gap(space::LG)
-                    .child(
-                        v_flex()
-                            .flex_1()
-                            .min_w_0()
-                            .gap(space::SM)
-                            .child(ui::muted("当前版本", cx))
-                            .child(
-                                div()
-                                    .text_size(text::TITLE)
-                                    .font_weight(text::EMPHASIS)
-                                    .child(env!("CARGO_PKG_VERSION")),
-                            ),
-                    )
-                    .child(Icon::new(IconName::ArrowRight).text_color(cx.theme().muted_foreground))
-                    .child(
-                        v_flex()
-                            .flex_1()
-                            .min_w_0()
-                            .gap(space::SM)
-                            .child(ui::muted("新版本", cx))
-                            .child(
-                                div()
-                                    .text_size(text::TITLE)
-                                    .font_weight(text::EMPHASIS)
-                                    .child(self.state.available.clone().unwrap_or_default()),
-                            ),
-                    ),
-            )
-            .when(!self.state.changelog.is_empty(), |body| {
-                body.child(
-                    v_flex()
-                        .gap(space::MD)
-                        .child(ui::muted("完整变更", cx))
-                        .child(
-                            TextView::markdown(
-                                "app-update-changelog",
-                                self.state.changelog.clone(),
-                            )
-                            .selectable(true)
-                            .scrollable(false),
-                        ),
-                )
-            })
+    fn render(self, _: &mut Window, _: &mut App) -> impl IntoElement {
+        ui::form().child(
+            TextView::markdown("app-update-changelog", self.state.changelog)
+                .selectable(true)
+                .scrollable(false),
+        )
     }
 }
 

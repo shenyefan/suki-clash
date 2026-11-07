@@ -36,6 +36,9 @@ pub(crate) mod text {
 /// Product geometry. Names include their role and axis so call sites are clear.
 pub(crate) mod layout {
     use super::*;
+    pub(crate) const TRAY_MIN_WIDTH: Rems = rems(14.);
+    pub(crate) const TRAY_MAX_WIDTH: Rems = rems(26.);
+    pub(crate) const TRAY_ROW_HEIGHT: Rems = rems(1.75);
     pub(crate) const ICON_SM: Rems = rems(0.75);
     pub(crate) const ICON: Rems = rems(1.);
     pub(crate) const ICON_LG: Rems = rems(1.25);
@@ -149,6 +152,7 @@ pub(crate) mod stroke {
 }
 
 pub(crate) mod opacity {
+    pub(crate) const TRAY: f32 = 0.96;
     pub(crate) const TRANSPARENT: f32 = 0.;
     pub(crate) const PREFERENCES_DARK: f32 = 0.72;
     pub(crate) const PREFERENCES_LIGHT: f32 = 0.72;
@@ -290,6 +294,14 @@ fn translucent(cx: &App) -> bool {
         && crate::integration::read("settings", cx)
             .get("BackdropIndex")
             .is_none_or(|value| value != "纯色")
+}
+
+pub(crate) fn tray_tint(cx: &App) -> Hsla {
+    if translucent(cx) {
+        cx.theme().popover.opacity(opacity::TRAY)
+    } else {
+        cx.theme().popover
+    }
 }
 
 pub(crate) fn window_tint(cx: &App) -> Hsla {
