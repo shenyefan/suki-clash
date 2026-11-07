@@ -7,7 +7,7 @@ use sysinfo::{
     UpdateKind,
 };
 
-pub(super) fn collect(paths: &AppPaths, configuration: Vec<String>, logs: Vec<String>) -> Value {
+pub(super) fn collect(paths: &AppPaths) -> Value {
     let system = System::new_with_specifics(
         RefreshKind::nothing()
             .with_cpu(CpuRefreshKind::everything())
@@ -84,8 +84,6 @@ pub(super) fn collect(paths: &AppPaths, configuration: Vec<String>, logs: Vec<St
             "capture_time":chrono::Local::now().to_rfc3339(),"utc_time":chrono::Utc::now().to_rfc3339(),
             "resources":resources,"disks":disks,"graphics":gpus,"network_interfaces":interfaces},
         "environment_variables":variables(std::env::vars_os()),
-        "diagnostics":{"configuration":configuration,"logs":logs},
-        "redaction":"凭据、用户目录、主机身份、MAC 和公网地址已脱敏。环境变量为当前应用进程继承的完整集合；进程列表不读取其他进程的环境变量或命令行。设备信息不可读取时保留原因。",
     })
 }
 
