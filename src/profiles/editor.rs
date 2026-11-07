@@ -3,7 +3,7 @@ use super::{
     model::{Document, DocumentKind, valid_remote_url},
 };
 use crate::ui;
-use crate::ui::theme::{control, layout, space};
+use crate::ui::theme::{control, layout, space, text};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     assets::IconName,
@@ -418,7 +418,7 @@ impl Render for DocumentEditor {
                     div()
                         .flex_1()
                         .min_h(space::NONE)
-                        .font_family("monospace")
+                        .font_family(text::FONT)
                         .child(
                             Editor::new(&self.content)
                                 .w_full()

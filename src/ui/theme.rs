@@ -29,8 +29,17 @@ pub(crate) mod text {
     pub(crate) const METRIC: Rems = rems(1.875);
     pub(crate) const EMPHASIS: FontWeight = FontWeight::MEDIUM;
     pub(crate) const HEADING: FontWeight = FontWeight::SEMIBOLD;
-    pub(crate) const MAC_FONT: &str = ".AppleSystemUIFont";
-    pub(crate) const WINDOWS_FONT: &str = "Segoe UI";
+    pub(crate) const FONT: &str = "MiSans";
+}
+
+/// Register the original Xiaomi fonts before any window or text layout is created.
+pub(crate) fn load_fonts(cx: &App) -> anyhow::Result<()> {
+    cx.text_system().add_fonts(vec![
+        std::borrow::Cow::Borrowed(include_bytes!("../../assets/fonts/MiSans-Regular.ttf")),
+        std::borrow::Cow::Borrowed(include_bytes!("../../assets/fonts/MiSans-Medium.ttf")),
+        std::borrow::Cow::Borrowed(include_bytes!("../../assets/fonts/MiSans-Semibold.ttf")),
+        std::borrow::Cow::Borrowed(include_bytes!("../../assets/fonts/MiSans-Bold.ttf")),
+    ])
 }
 
 /// Product geometry. Names include their role and axis so call sites are clear.
@@ -366,12 +375,8 @@ fn apply(theme: &mut Theme, translucent: bool) {
         p.chrome = 0xf0f2f6;
         p.muted = 0xf5f6f9;
     }
-    theme.font_family = if cfg!(target_os = "macos") {
-        text::MAC_FONT
-    } else {
-        text::WINDOWS_FONT
-    }
-    .into();
+    theme.font_family = text::FONT.into();
+    theme.mono_font_family = text::FONT.into();
     theme.font_size = text::BASE;
     theme.notification.placement = Anchor::TopCenter;
     theme.radius = radius::CONTROL;

@@ -17,9 +17,13 @@ pub(crate) fn export(
         .map_err(|error| crate::logging::diagnostic_error("无法创建诊断文件", error))?;
     {
         let mut zip = zip::ZipWriter::new(temporary.as_file_mut());
-        let configuration = configuration::export(&mut zip, paths)?;
-        let log_status = export_logs(&mut zip, paths, logs)?;
-        let report = environment::collect(paths, configuration, log_status);
+        for warning in configuration::export(&mut zip, paths)? {
+            logs.emit(crate::logging::Level::Warning, "diagnostics", &warning);
+        }
+        for warning in export_logs(&mut zip, paths, logs)? {
+            logs.emit(crate::logging::Level::Warning, "diagnostics", &warning);
+        }
+        let report = environment::collect(paths);
         let (environment, _) = configuration::sanitize(
             "environment.json",
             &serde_json::to_vec(&report)
@@ -55,10 +59,7 @@ fn export_logs(
     // generations and rotated parts. Never collect older runs by modification time.
     const LIMIT: usize = 64 * 1024 * 1024;
     let prefixes = logs.file_prefixes();
-    let mut status = vec![format!(
-        "本次程序运行 PID：{}。仅导出本次运行登记的日志文件。\n磁盘日志总上限 64 MiB；内存尾部每种来源最多 1000 条，可能与文件重叠。\n脱敏设置与配置位于 configuration/；日志中的凭据、订阅 URL 和用户目录已脱敏。",
-        std::process::id()
-    )];
+    let mut status = Vec::new();
     let mut write = |name: &str, text: &str| -> Result<(), String> {
         zip.start_file(name, zip::write::SimpleFileOptions::default())
             .map_err(|error| crate::logging::diagnostic_error("无法写入诊断日志", error))?;
@@ -131,10 +132,6 @@ fn export_logs(
             Err(error) => status.push(format!("{name} 未导出：{error}")),
         }
     }
-    status.push(format!(
-        "本次登记 {} 个日志写入批次，已读取 {bytes} 字节磁盘日志",
-        prefixes.len()
-    ));
     Ok(status)
 }
 fn redact(message: &str, paths: &AppPaths) -> String {
@@ -237,6 +234,17 @@ mod tests {
         assert!(environment["system"]["architecture"].is_string());
         assert!(environment["system"]["network_interfaces"].is_array());
         assert!(environment["environment_variables"].is_object());
+        assert_eq!(
+            environment
+                .as_object()
+                .unwrap()
+                .keys()
+                .map(String::as_str)
+                .collect::<std::collections::BTreeSet<_>>(),
+            ["application", "environment_variables", "system"]
+                .into_iter()
+                .collect()
+        );
         let app: serde_json::Value =
             serde_json::from_str(&files["configuration/settings/settings.json"]).unwrap();
         assert_eq!(app["general"]["auto_run"], true);
@@ -304,7 +312,7 @@ mod tests {
         let mut zip = zip::ZipArchive::new(std::fs::File::open(output).unwrap()).unwrap();
         assert!(zip.by_name("configuration/settings/dns.yaml").is_err());
         let mut status = String::new();
-        zip.by_name("environment.txt")
+        zip.by_name("logs/program-current.log")
             .unwrap()
             .read_to_string(&mut status)
             .unwrap();
@@ -325,7 +333,7 @@ mod tests {
         let mut zip = zip::ZipArchive::new(std::fs::File::open(path).unwrap()).unwrap();
         use std::io::Read as _;
         let mut check = String::new();
-        zip.by_name("environment.txt")
+        zip.by_name("logs/program-current.log")
             .unwrap()
             .read_to_string(&mut check)
             .unwrap();

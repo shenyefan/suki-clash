@@ -89,6 +89,7 @@ fn main() {
         cx.set_app_identity("suki-clash", "Suki Clash");
         integration::init(service, instance_error, cx);
         init(cx);
+        let font_error = ui::theme::load_fonts(cx).err();
         gpui_kit::component::set_locale("zh-CN");
         match integration::read("settings", cx)
             .get("ThemeIndex")
@@ -128,6 +129,17 @@ fn main() {
                 cx.new(|cx| Root::new(view, window, cx).bg(transparent))
             })
             .expect("无法打开 Suki Clash 窗口");
+        if let Some(error) = font_error {
+            let message = format!("无法加载 MiSans 字体：{error}");
+            log::error!(target: "ui", "{message}");
+            let _ = main_window.update(cx, |_, window, cx| {
+                ui::notifications::push(
+                    window,
+                    gpui_kit::component::notification::Notification::error(message),
+                    cx,
+                );
+            });
+        }
         let primary = instance.is_some();
         if let (Some(instance), Some(app)) = (instance, captured.borrow_mut().take()) {
             desktop::install(instance, main_window, app, cx);
