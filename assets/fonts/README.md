@@ -1,13 +1,11 @@
-# MiSans
+# 旗帜字体
 
-本应用使用小米 MiSans 字体。
+Suki Flag Emoji 由 Twemoji Mozilla v0.7.0 裁剪而成，只保留国家、地区区域指示字符和英格兰、苏格兰、威尔士标签序列，以及对应的组合规则和 COLR/CPAL 彩色图层。全部平台把它设为正文和编辑器的首选字体；字体中没有的字符由平台字体自动回退。仅注册到应用进程，不安装系统字体。
 
-Copyright © 2020–2025 Beijing Xiaomi Mobile Software Co., Ltd. All Rights Reserved.
+- 来源：https://github.com/mozilla/twemoji-colr/releases/tag/v0.7.0
+- 原始文件：https://github.com/mozilla/twemoji-colr/releases/download/v0.7.0/Twemoji.Mozilla.ttf
+- 获取日期：2026-11-07。保留码位为 `U+1F1E6..U+1F1FF`、`U+1F3F4`、`U+E0061..U+E007A`、`U+E007F`；为基础字形补充由同一彩色图层组成的复合轮廓，以提供 GPUI/DirectWrite 所需的非空绘制范围。
+- 制作工具：Mozilla Foundation；图形设计：Twitter Twemoji。
+- 许可：[代码 Apache 2.0 与图形 CC BY 4.0](Twemoji-LICENSE.md)。
 
-- 官方页面：https://hyperos.mi.com/font/zh/download/
-- 原始字体包：https://hyperos.mi.com/font-download/MiSans.zip
-- 获取日期：2026-11-07
-- 字体文件：官方包中的 `MiSans/ttf/MiSans-{Regular,Medium,Semibold,Bold}.ttf`，未修改。
-- 许可：[MiSans 字体知识产权许可协议](MiSans-LICENSE.pdf)。
-
-常规、中等、半粗、粗体分别供正文、强调、标题及组件粗体使用。界面和编辑器均使用 MiSans；字体未包含的字符继续由平台字体补充。
+重建：`python3 packaging/flag_font.py /path/to/Twemoji.Mozilla.ttf assets/fonts/flags.ttf`，需要 `fonttools==4.68.0`。

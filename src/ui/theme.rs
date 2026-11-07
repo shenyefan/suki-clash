@@ -29,17 +29,15 @@ pub(crate) mod text {
     pub(crate) const METRIC: Rems = rems(1.875);
     pub(crate) const EMPHASIS: FontWeight = FontWeight::MEDIUM;
     pub(crate) const HEADING: FontWeight = FontWeight::SEMIBOLD;
-    pub(crate) const FONT: &str = "MiSans";
+    pub(crate) const FONT: &str = "Suki Flag Emoji";
 }
 
-/// Register the original Xiaomi fonts before any window or text layout is created.
+/// Register the flag-only font; characters it lacks use the platform fallback.
 pub(crate) fn load_fonts(cx: &App) -> anyhow::Result<()> {
-    cx.text_system().add_fonts(vec![
-        std::borrow::Cow::Borrowed(include_bytes!("../../assets/fonts/MiSans-Regular.ttf")),
-        std::borrow::Cow::Borrowed(include_bytes!("../../assets/fonts/MiSans-Medium.ttf")),
-        std::borrow::Cow::Borrowed(include_bytes!("../../assets/fonts/MiSans-Semibold.ttf")),
-        std::borrow::Cow::Borrowed(include_bytes!("../../assets/fonts/MiSans-Bold.ttf")),
-    ])
+    cx.text_system()
+        .add_fonts(vec![std::borrow::Cow::Borrowed(include_bytes!(
+            "../../assets/fonts/flags.ttf"
+        ))])
 }
 
 /// Product geometry. Names include their role and axis so call sites are clear.
