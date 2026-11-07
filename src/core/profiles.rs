@@ -510,7 +510,11 @@ impl Actor {
         self.invalidate_monitor();
         let result = async {
             self.reload_prepared(&reload, &yaml).await?;
-            self.snapshot.tun = Some(client.wait_configuration_ready(&expected).await?);
+            self.snapshot.tun = Some(
+                client
+                    .wait_configuration_ready(&expected, super::client::CONFIGURATION_READY_TIMEOUT)
+                    .await?,
+            );
             commit()?;
             self.running
                 .as_mut()
@@ -527,7 +531,14 @@ impl Actor {
                     &previous_yaml,
                 )
                 .await?;
-                self.snapshot.tun = Some(client.wait_configuration_ready(&previous).await?);
+                self.snapshot.tun = Some(
+                    client
+                        .wait_configuration_ready(
+                            &previous,
+                            super::client::CONFIGURATION_READY_TIMEOUT,
+                        )
+                        .await?,
+                );
                 Ok::<(), String>(())
             }
             .await;

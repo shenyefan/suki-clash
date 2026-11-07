@@ -173,6 +173,7 @@ impl Service {
         let worker_shutdown = shutdown.clone();
         let observer = events.clone();
         let (monitor_target, monitor_receiver) = watch::channel(None);
+        let (log_target, log_receiver) = watch::channel(None);
         let (probe_refresh, probe_receiver) =
             watch::channel(super::monitor::ProbeControl::default());
         let (autostart_queries, autostart_receiver) = watch::channel(0);
@@ -185,6 +186,7 @@ impl Service {
                 let mut actor = Actor::new(paths.clone(), updates, observer);
                 actor.logs = logs;
                 actor.monitor = monitor_target;
+                actor.log_target = log_target;
                 actor.control_refresh = control_refresh;
                 let terminal_updates = actor.updates.clone();
                 let terminal_observer = actor.observer.clone();
@@ -192,7 +194,7 @@ impl Service {
                     let log_task = tokio::spawn(super::log_stream::run(
                         paths.clone(),
                         actor.logs.clone(),
-                        monitor_receiver.clone(),
+                        log_receiver,
                         cancellation.clone(),
                     ));
                     let task = tokio::spawn(super::monitor::run(
@@ -409,6 +411,7 @@ pub(super) struct Actor {
     pub(super) profile_attempts: std::collections::BTreeMap<u64, i64>,
     pub(super) profile_schedule_started: i64,
     pub(super) monitor: watch::Sender<Option<super::monitor::Target>>,
+    pub(super) log_target: watch::Sender<Option<super::monitor::Target>>,
     pub(super) control_refresh: watch::Sender<super::monitor::ProbeControl>,
     pub(super) runtime_warning: Option<String>,
     pub(super) deleted_overrides: std::collections::BTreeMap<u64, super::overrides::Deleted>,
@@ -456,6 +459,7 @@ impl Actor {
             deleted_profiles: Default::default(),
             deleted_overrides: Default::default(),
             monitor: watch::channel(None).0,
+            log_target: watch::channel(None).0,
             control_refresh: watch::channel(super::monitor::ProbeControl::default()).0,
             runtime_warning: None,
             system_proxy: crate::system_proxy::Controller::new(paths),
@@ -471,7 +475,12 @@ impl Actor {
         self.publish_snapshot(phase, error, false);
     }
 
-    fn publish_snapshot(&mut self, phase: Phase, error: Option<String>, error_logged: bool) {
+    pub(super) fn publish_snapshot(
+        &mut self,
+        phase: Phase,
+        error: Option<String>,
+        error_logged: bool,
+    ) {
         if let Ok(chain) = crate::proxies::chain_config::Config::load(&self.paths) {
             self.snapshot.chain = chain;
         }
@@ -690,9 +699,7 @@ impl Actor {
                                     super::privileged::require_ready().await?;
                                     let credentials=super::service_identity::current_owner_credentials_for_root(self.paths.data()).map_err(crate::logging::error_message)?;
                                     let firewall=matches!(request,suki_service::windows_network::Request::RebuildFirewall);
-                                    let response=suki_service::windows_network(&credentials,request).await.map_err(crate::logging::error_message)?;
-                                    if response.code!=0{return Err(response.message);}
-                                    let apps=response.data.ok_or("服务未返回 UWP 应用列表")?;
+                                    let apps=suki_service::response_data(suki_service::windows_network(&credentials,request).await.map_err(|error|error.to_string())?).map_err(|error|error.to_string())?;
                                     if !firewall{self.snapshot.uwp_apps=apps;}
                                     else{self.snapshot.information=Some("防火墙规则已重建".into());}
                                     Ok(())
@@ -800,7 +807,7 @@ impl Actor {
                 _ = subscription_timer.tick(), if !self.exit_prepared => {
                     let result=tokio::select! { biased; _=shutdown.changed()=>break, result=async {let profiles=self.automatic_profiles().await;let overrides=self.automatic_overrides().await;let errors=profiles.err().into_iter().chain(overrides.err()).collect::<Vec<_>>();if errors.is_empty(){Ok(())}else{Err(crate::failure::join(&errors))}}=>result };
                     if let Err(error)=result {self.publish(self.snapshot.phase,Some(error));}
-                    else {self.publish(self.snapshot.phase,None);}
+                    else {self.publish_snapshot(self.snapshot.phase,self.snapshot.error.clone(),self.snapshot.error_logged);}
                 },
                 _ = polling.tick() => self.observe_exit().await,
                 _ = health.tick(), if !self.exit_prepared => {
@@ -890,9 +897,13 @@ impl Actor {
             if recovering {
                 self.health_recovery_remaining -= 1;
             }
+            let mut service_rejected = false;
             let result = async {
-                if let Process::Service(session) = &mut running.child {
-                    session.status().await?;
+                if let Process::Service(session) = &mut running.child
+                    && let Err(error) = session.status().await
+                {
+                    service_rejected = !suki_service::is_unreachable(&error);
+                    return Err(error.to_string());
                 }
                 let version = running.launch.client.version().await?;
                 let tun = running.launch.client.tun_enabled().await?;
@@ -925,7 +936,7 @@ impl Actor {
                     }
                     Err(error) if !recovering && self.snapshot.phase == Phase::Ready => {
                         // Observe the same owned process for at most 15 further health probes.
-                        self.health_recovery_remaining = 15;
+                        self.health_recovery_remaining = if service_rejected { 0 } else { 15 };
                         self.snapshot.tun = None;
                         let error = match self.mark_runtime_failed().await {
                             Ok(()) => error,
@@ -933,7 +944,11 @@ impl Actor {
                         };
                         self.publish(Phase::Failed, Some(error));
                     }
-                    Err(error) if recovering && self.health_recovery_remaining == 0 => {
+                    Err(error)
+                        if recovering
+                            && (service_rejected || self.health_recovery_remaining == 0) =>
+                    {
+                        self.health_recovery_remaining = 0;
                         self.publish(
                             Phase::Failed,
                             Some(format!("内核恢复观察已停止，请停止后重试：{error}")),
@@ -2053,8 +2068,7 @@ impl Actor {
             match super::privileged::tun_service_required().await {
                 Ok(required) => required,
                 Err(error) => {
-                    self.snapshot.service_state =
-                        super::privileged::State::Unavailable(error.clone());
+                    self.snapshot.service_state = super::privileged::probe().await;
                     self.snapshot.recovery = Some(super::Recovery::TunService);
                     return Err(error);
                 }
@@ -2174,7 +2188,11 @@ impl Actor {
         self.invalidate_monitor();
         let result = async {
             self.reload_prepared(&reload, &yaml).await?;
-            self.snapshot.tun = Some(client.wait_configuration_ready(&expected).await?);
+            self.snapshot.tun = Some(
+                client
+                    .wait_configuration_ready(&expected, super::client::CONFIGURATION_READY_TIMEOUT)
+                    .await?,
+            );
             desired.save(&self.paths)?;
             // Persist the source/config pair only after the API accepts the candidate.
             candidate.source.commit(&self.paths)?;
@@ -2198,7 +2216,14 @@ impl Actor {
                     &old_yaml,
                 )
                 .await?;
-                self.snapshot.tun = Some(client.wait_configuration_ready(&old_expected).await?);
+                self.snapshot.tun = Some(
+                    client
+                        .wait_configuration_ready(
+                            &old_expected,
+                            super::client::CONFIGURATION_READY_TIMEOUT,
+                        )
+                        .await?,
+                );
                 Ok(())
             }
             .await;
@@ -2310,8 +2335,7 @@ impl Actor {
         #[cfg(not(test))]
         let launch = {
             let mut launch = launch;
-            launch.force_service = super::privileged::owner_active(&self.paths).await?
-                || super::privileged::require_ready().await.is_ok();
+            launch.force_service = super::privileged::ready_for_start(&self.paths).await?;
             launch
         };
         let launch = self.validate(launch).await?;
@@ -2322,7 +2346,18 @@ impl Actor {
     async fn startup(&mut self) -> Result<(), String> {
         #[cfg(not(test))]
         {
-            self.snapshot.service_state = super::privileged::probe().await;
+            let tun_requested = self
+                .snapshot
+                .preferences
+                .as_ref()
+                .ok_or("内核设置尚未加载")?
+                .values()
+                .get("IsTunEnabled")
+                .is_some_and(|value| value == "true");
+            self.snapshot.service_state = super::privileged::probe_startup(tun_requested).await;
+            if let super::privileged::State::Rejected(reason) = &self.snapshot.service_state {
+                return Err(reason.clone());
+            }
         }
         let autostart = (|| {
             let repository = crate::storage::Repository::open(self.paths.clone())
@@ -2351,6 +2386,7 @@ impl Actor {
     }
 
     async fn start_prepared(&mut self, mut launch: Launch) -> Result<(), String> {
+        let log_cursor = self.logs.since(0).last().map_or(0, |record| record.id);
         self.snapshot.proxy_names.clear();
         self.snapshot.resources = super::Resources::default();
         self.snapshot.generation = self
@@ -2430,6 +2466,8 @@ impl Actor {
             _lifetime: lifetime,
             _execution: execution,
         });
+        // Log collection starts with the owned process; runtime data still waits for readiness.
+        self.sync_monitor();
         #[cfg(target_os = "macos")]
         {
             let session = self
@@ -2453,11 +2491,22 @@ impl Actor {
         if downloading {
             self.progress("启动内核 · 按需下载 Geo 数据");
         }
-        let budget = Duration::from_secs(if downloading { 120 } else { 8 });
-        let result = tokio::time::timeout(budget, self.wait_ready())
-            .await
-            .map_err(|_| if downloading { "Mihomo API 未在 120 秒内就绪；Geo 数据文件可能尚未下载完成，请检查网络及外部资源下载地址后重试".to_owned() } else { "Mihomo API 未在 8 秒内就绪".to_owned() })
-            .and_then(|result| result);
+        // On a cold boot, adapter initialization can outlast API availability.
+        // One startup deadline owns both checks; the hot-reload budget does not shorten it.
+        let tun_requested = self
+            .running
+            .as_ref()
+            .ok_or("内核进程不存在")?
+            .launch
+            .tun_enabled()?;
+        let budget = if downloading {
+            Duration::from_secs(120)
+        } else if tun_requested {
+            super::client::CONFIGURATION_READY_TIMEOUT
+        } else {
+            Duration::from_secs(8)
+        };
+        let result = self.wait_ready(budget).await;
         match result {
             Ok(version) => {
                 self.snapshot.version = Some(version);
@@ -2469,56 +2518,104 @@ impl Actor {
                 }
                 Ok(())
             }
-            Err(error) => match self.stop().await {
-                Ok(()) => Err(error),
-                Err(cleanup) => Err(format!("{error}；启动失败后的进程清理也失败：{cleanup}")),
-            },
+            Err(mut error) => {
+                match self.stop().await {
+                    Ok(()) => {}
+                    Err(cleanup) => {
+                        error = format!("{error}；启动失败后的进程清理也失败：{cleanup}")
+                    }
+                }
+                let causes = self
+                    .logs
+                    .since(log_cursor)
+                    .into_iter()
+                    .filter(|record| {
+                        record.source == crate::logging::Source::Core
+                            && record.level == crate::logging::Level::Error
+                    })
+                    .map(|record| record.message)
+                    .collect::<Vec<_>>();
+                if !causes.is_empty() {
+                    error = format!("{error}；{}", crate::failure::join(&causes));
+                }
+                Err(error)
+            }
         }
     }
 
-    async fn wait_ready(&mut self) -> Result<String, String> {
-        loop {
-            let running = self.running.as_mut().ok_or("内核进程不存在")?;
-            if let Process::Service(session) = &mut running.child {
-                session.status().await?;
-            }
-            if let Some(status) = running.child.try_wait().map_err(|error| {
-                log::error!(
-                    "检查内核进程状态失败（{}）",
-                    crate::logging::error_chain(&error)
-                );
-                format!("无法检查内核进程：{}", error.kind())
-            })? {
-                return Err(format!("内核在 API 就绪前退出（{status}）"));
-            }
-            if let Ok(version) = running.launch.client.version().await {
-                let expected: serde_yaml_ng::Value =
-                    serde_yaml_ng::from_str(&running.launch.composed).map_err(|error| {
-                        crate::logging::diagnostic_error("无法读取候选监听设置", error)
-                    })?;
-                self.snapshot.tun = Some(
-                    running
-                        .launch
-                        .client
-                        .wait_configuration_ready(&expected)
-                        .await?,
-                );
-                self.snapshot.service_mode = matches!(running.child, Process::Service(_));
-                if self.snapshot.service_mode {
-                    self.snapshot.service_state = super::privileged::State::Ready;
-                }
-                // The API and process must belong to this generation and both still exist.
-                if running
-                    .child
-                    .try_wait()
-                    .map_err(|error| crate::logging::diagnostic_error("无法确认内核存活", error))?
-                    .is_none()
+    async fn wait_ready(&mut self, budget: Duration) -> Result<String, String> {
+        let expected: serde_yaml_ng::Value = serde_yaml_ng::from_str(
+            &self
+                .running
+                .as_ref()
+                .ok_or("内核进程不存在")?
+                .launch
+                .composed,
+        )
+        .map_err(|error| crate::logging::diagnostic_error("无法读取候选监听设置", error))?;
+        let mut last_error = None;
+        let ready = tokio::time::timeout(budget, async {
+            loop {
+                let running = self.running.as_mut().ok_or("内核进程不存在")?;
+                if let Process::Service(session) = &mut running.child
+                    && let Err(error) = session.status().await
                 {
-                    return Ok(version);
+                    if !suki_service::is_unreachable(&error) {
+                        return Err(error.to_string());
+                    }
+                    last_error = Some(error.to_string());
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    continue;
                 }
+                if let Some(status) = running.child.try_wait().map_err(|error| {
+                    log::error!(
+                        "检查内核进程状态失败（{}）",
+                        crate::logging::error_chain(&error)
+                    );
+                    format!("无法检查内核进程：{}", error.kind())
+                })? {
+                    return Err(format!("内核在 API 就绪前退出（{status}）"));
+                }
+                if let Ok(version) = running.launch.client.version().await {
+                    let configured = async {
+                        running.launch.client.verify_listeners(&expected).await?;
+                        running.launch.client.verify_tun(&expected).await
+                    }
+                    .await;
+                    match configured {
+                        Ok(tun) => self.snapshot.tun = Some(tun),
+                        Err(error) => {
+                            last_error = Some(error);
+                            tokio::time::sleep(Duration::from_millis(100)).await;
+                            continue;
+                        }
+                    }
+                    self.snapshot.service_mode = matches!(running.child, Process::Service(_));
+                    if self.snapshot.service_mode {
+                        self.snapshot.service_state = super::privileged::State::Ready;
+                    }
+                    // The API and process must belong to this generation and both still exist.
+                    if running
+                        .child
+                        .try_wait()
+                        .map_err(|error| {
+                            crate::logging::diagnostic_error("无法确认内核存活", error)
+                        })?
+                        .is_none()
+                    {
+                        return Ok(version);
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
             }
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
+        })
+        .await;
+        ready.unwrap_or_else(|_| {
+            Err(match last_error {
+                Some(error) => format!("内核未在 {} 秒内就绪：{error}", budget.as_secs()),
+                None => format!("Mihomo API 未在 {} 秒内就绪", budget.as_secs()),
+            })
+        })
     }
 
     async fn prepare_exit(&mut self) -> Result<(), String> {

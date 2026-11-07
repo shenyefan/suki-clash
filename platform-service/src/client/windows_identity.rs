@@ -56,8 +56,24 @@ fn verify_registered_service_process_id_inner(pipe_process_id: u32) -> Result<()
 }
 
 #[cfg(not(feature = "test"))]
-pub(super) fn verify_registered_service_process_id(pipe_process_id: u32) -> std::io::Result<()> {
-    verify_registered_service_process_id_inner(pipe_process_id).map_err(std::io::Error::other)
+pub(super) fn verify_pipe(
+    pipe: &tokio::net::windows::named_pipe::NamedPipeClient,
+) -> Result<(), super::RequestError> {
+    use std::os::windows::io::AsRawHandle as _;
+    let mut pid = 0;
+    if unsafe {
+        windows_sys::Win32::System::Pipes::GetNamedPipeServerProcessId(
+            pipe.as_raw_handle(),
+            &mut pid,
+        )
+    } == 0
+    {
+        return Err(super::RequestError::AccessDenied(
+            std::io::Error::last_os_error().to_string(),
+        ));
+    }
+    verify_registered_service_process_id_inner(pid)
+        .map_err(|error| super::RequestError::AccessDenied(format!("{error:#}")))
 }
 
 #[cfg(test)]

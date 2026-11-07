@@ -224,13 +224,21 @@ impl Actor {
                 crate::system_proxy::NetworkStatus::Unavailable => {
                     if self.snapshot.system_proxy != Default::default() {
                         self.snapshot.system_proxy = Default::default();
-                        self.publish(self.snapshot.phase, None);
+                        self.publish_snapshot(
+                            self.snapshot.phase,
+                            self.snapshot.error.clone(),
+                            self.snapshot.error_logged,
+                        );
                     }
                     return Ok(());
                 }
                 crate::system_proxy::NetworkStatus::Changed => {
                     self.sync_system_proxy().await?;
-                    self.publish(self.snapshot.phase, None);
+                    self.publish_snapshot(
+                        self.snapshot.phase,
+                        self.snapshot.error.clone(),
+                        self.snapshot.error_logged,
+                    );
                 }
                 crate::system_proxy::NetworkStatus::Unchanged => {}
             }
@@ -247,7 +255,11 @@ impl Actor {
             Ok(observed) => {
                 if observed != self.snapshot.system_proxy {
                     self.snapshot.system_proxy = observed;
-                    self.publish(self.snapshot.phase, None);
+                    self.publish_snapshot(
+                        self.snapshot.phase,
+                        self.snapshot.error.clone(),
+                        self.snapshot.error_logged,
+                    );
                 }
                 Ok(())
             }

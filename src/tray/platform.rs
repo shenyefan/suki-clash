@@ -10,6 +10,8 @@ pub(super) struct Platform {
     tooltip_attempt: Attempt<String>,
     title: Option<String>,
     dark: Option<bool>,
+    #[cfg(windows)]
+    appearance: super::windows::Appearance,
 }
 impl Platform {
     pub(super) fn new() -> Result<Self, String> {
@@ -42,6 +44,8 @@ impl Platform {
             tooltip_attempt: Attempt::default(),
             title: None,
             dark: None,
+            #[cfg(windows)]
+            appearance: super::windows::Appearance::new(),
         })
     }
     pub(super) fn theme(&mut self, dark: bool) {
@@ -52,7 +56,7 @@ impl Platform {
         #[cfg(target_os = "macos")]
         super::macos::theme(dark);
         #[cfg(windows)]
-        super::windows::theme(self.icon.window_handle(), dark);
+        self.appearance.theme(self.icon.window_handle(), dark);
         // StatusNotifier/DBusMenu exports semantics, not colors. The Linux host
         // owns menu appearance; changing desktop-wide settings here is incorrect.
     }

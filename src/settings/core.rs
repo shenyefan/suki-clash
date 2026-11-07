@@ -5,7 +5,7 @@ use crate::{
 };
 use gpui_kit::{
     assets::IconName,
-    component::{Disableable, Sizable, h_flex, select::Select, v_flex},
+    component::{Disableable, Sizable, button::Button, h_flex, select::Select, v_flex},
     prelude::FluentBuilder as _,
     *,
 };
@@ -64,6 +64,16 @@ impl SettingsPage {
             let status = h_flex()
                 .gap(space::SM)
                 .child(ui::muted(core.label(), cx))
+                .when_some(core.error().map(str::to_owned), |status, error| {
+                    status.child(
+                        Button::new("core-error-details")
+                            .label("查看原因")
+                            .with_size(control::STANDARD)
+                            .on_click(move |_, window, cx| {
+                                ui::show_error(error.clone(), window, cx)
+                            }),
+                    )
+                })
                 .child(
                     ui::icon_button(
                         "core-power",

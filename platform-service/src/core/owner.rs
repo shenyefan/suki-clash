@@ -1,8 +1,6 @@
 use crate::core::paths::{ServicePaths, service_paths};
 use crate::core::process::{is_process_alive, terminate_process};
-use crate::{IPC_AUTH_EXPECT, IpcCommand};
 use anyhow::{Context, Result, anyhow};
-use kode_bridge::{ClientConfig, IpcHttpClient};
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;
@@ -34,10 +32,7 @@ impl Drop for ServiceOwnerGuard {
     fn drop(&mut self) {
         let _ = std::fs::remove_file(self.paths.pid_file_path());
 
-        info!(
-            "已释放服务所有权锁 {:?}",
-            self.paths.owner_lock_path()
-        );
+        info!("已释放服务所有权锁 {:?}", self.paths.owner_lock_path());
     }
 }
 
@@ -55,12 +50,9 @@ pub async fn acquire_service_owner() -> Result<Option<ServiceOwnerGuard>> {
     }
 
     let old_pid = read_owner_pid(&paths);
-    warn!(
-        "服务所有权锁已被占用，正在检查原所有者 {:?}",
-        old_pid
-    );
+    warn!("服务所有权锁已被占用，正在检查原所有者 {:?}", old_pid);
 
-    if wait_for_owner_health(&paths).await {
+    if wait_for_owner_health(paths.ipc_path()).await? {
         info!("原服务所有者可连接，当前进程退出");
         return Ok(None);
     }
@@ -86,10 +78,7 @@ pub async fn acquire_service_owner() -> Result<Option<ServiceOwnerGuard>> {
 
     for attempt in 1..=OWNER_REACQUIRE_ATTEMPTS {
         if let Some(guard) = try_acquire_owner_once(&paths)? {
-            info!(
-                "清理后已获取服务所有权锁（第 {} 次尝试）",
-                attempt
-            );
+            info!("清理后已获取服务所有权锁（第 {} 次尝试）", attempt);
             return Ok(Some(guard));
         }
 
@@ -194,51 +183,22 @@ fn read_owner_lock_pid(path: &Path) -> Option<u32> {
     })
 }
 
-async fn wait_for_owner_health(paths: &ServicePaths) -> bool {
+async fn wait_for_owner_health(path: &Path) -> Result<bool> {
     for attempt in 1..=OWNER_HEALTH_ATTEMPTS {
-        if is_ipc_healthy(paths).await {
-            return true;
+        match crate::client::ping_at(path, Duration::from_millis(150)).await {
+            Ok(()) => return Ok(true),
+            Err(error) if crate::client::is_unreachable(&error) => {
+                if attempt == OWNER_HEALTH_ATTEMPTS {
+                    warn!("本地通道所有者尚未可连接（{error}）");
+                    return Ok(false);
+                }
+            }
+            // A responding owner must never be killed because it rejected this process.
+            Err(error) => return Err(error),
         }
-
-        if attempt < OWNER_HEALTH_ATTEMPTS {
-            tokio::time::sleep(OWNER_HEALTH_RETRY_DELAY).await;
-        }
+        tokio::time::sleep(OWNER_HEALTH_RETRY_DELAY).await;
     }
-
-    false
-}
-
-async fn is_ipc_healthy(paths: &ServicePaths) -> bool {
-    let client = match IpcHttpClient::with_config(
-        paths.ipc_path(),
-        ClientConfig {
-            default_timeout: Duration::from_millis(150),
-            max_retries: 1,
-            retry_delay: Duration::from_millis(25),
-            enable_pooling: false,
-            require_windows_server_system: cfg!(windows),
-            ..Default::default()
-        },
-    ) {
-        Ok(client) => client,
-        Err(error) => {
-            warn!("创建本地通道健康检查客户端失败（{}）", error);
-            return false;
-        }
-    };
-
-    match client
-        .get(IpcCommand::Magic.as_ref())
-        .header("X-IPC-Magic", IPC_AUTH_EXPECT)
-        .send()
-        .await
-    {
-        Ok(response) => response.is_success(),
-        Err(error) => {
-            warn!("本地通道所有者健康检查失败（{}）", error);
-            false
-        }
-    }
+    Ok(false)
 }
 
 fn cleanup_runtime_artifacts(paths: &ServicePaths) {
@@ -251,4 +211,32 @@ fn cleanup_runtime_artifacts(paths: &ServicePaths) {
 
     #[cfg(windows)]
     let _ = paths;
+}
+
+#[cfg(all(test, unix))]
+mod health_tests {
+    #[tokio::test]
+    async fn a_responding_owner_rejection_stops_waiting_without_taking_over() {
+        use std::time::Duration;
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("owner.sock");
+        let listener = tokio::net::UnixListener::bind(&path).unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut bytes = [0; 2048];
+            assert!(stream.read(&mut bytes).await.unwrap() > 0);
+            let body = r#"{"code":403,"message":"owner denied","data":null}"#;
+            stream.write_all(format!("HTTP/1.1 403 Forbidden\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
+            assert!(
+                tokio::time::timeout(Duration::from_millis(250), listener.accept())
+                    .await
+                    .is_err()
+            );
+        });
+        let error = super::wait_for_owner_health(&path).await.unwrap_err();
+        assert!(!crate::client::is_unreachable(&error));
+        assert!(error.to_string().contains("owner denied"));
+        server.await.unwrap();
+    }
 }

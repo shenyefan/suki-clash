@@ -829,10 +829,131 @@ async fn commands_reject_conflicts_and_shutdown_closes_the_owner() {
 }
 
 #[tokio::test]
+async fn startup_configuration_can_settle_after_three_seconds_and_keeps_timeout_cause() {
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+    for settles in [true, false] {
+        let (_root, paths) = fixture(Some(SLEEPING_CORE));
+        let socket = paths.data().join("slow-startup.sock");
+        let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+        let started = tokio::time::Instant::now();
+        let server = tokio::spawn(async move {
+            loop {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut request = [0; 4096];
+                let count = stream.read(&mut request).await.unwrap();
+                let body = if request[..count].starts_with(b"GET /version ") {
+                    r#"{"version":"slow-startup"}"#.to_owned()
+                } else {
+                    serde_json::json!({"tun":{"enable": settles && started.elapsed() > Duration::from_millis(3300)}}).to_string()
+                };
+                stream.write_all(format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).as_bytes()).await.unwrap();
+            }
+        });
+        let mut launch = Launch::prepare(&paths).await.unwrap();
+        launch.composed = "tun: {enable: true}".into();
+        launch.client = super::super::client::Client::new(
+            super::super::client::Endpoint::Unix(socket),
+            String::new(),
+        );
+        let child = tokio::process::Command::new("/bin/sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
+        let mut owner = actor(paths);
+        owner.running = Some(Running {
+            child: Process::Local(child),
+            launch,
+            pipe_suppressed: Default::default(),
+            output: None,
+            log_settings: None,
+            _lifetime: None,
+            _execution: None,
+        });
+        let result = owner
+            .wait_ready(Duration::from_secs(if settles { 5 } else { 1 }))
+            .await;
+        if settles {
+            assert_eq!(result.unwrap(), "slow-startup");
+            assert_eq!(owner.snapshot.tun(), Some(true));
+        } else {
+            let error = result.unwrap_err();
+            assert!(error.contains("1 秒内就绪"), "{error}");
+            assert!(error.contains("期望 true，实际 false"), "{error}");
+        }
+        owner.stop().await.unwrap();
+        server.abort();
+    }
+}
+
+#[tokio::test]
+async fn automatic_refresh_does_not_erase_startup_failure() {
+    let (_root, paths) = fixture(None);
+    let mut service = Service::start(paths).unwrap();
+    let events = service.events();
+    let mut latest = tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            let snapshot = events.recv().await.unwrap();
+            if snapshot.phase() == Phase::Failed {
+                break snapshot;
+            }
+        }
+    })
+    .await
+    .unwrap();
+    // The schedule interval ticks immediately after startup; let that refresh complete.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    while let Ok(snapshot) = events.try_recv() {
+        latest = snapshot;
+    }
+    assert_eq!(latest.phase(), Phase::Failed);
+    assert!(latest.error().unwrap().contains("未安装"));
+    let worker = service.shutdown().unwrap();
+    tokio::task::spawn_blocking(move || worker.join().unwrap().unwrap())
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
 async fn a_live_process_is_not_ready_and_cancelled_start_remains_owned_until_reaped() {
     let (_root, paths) = fixture(Some(SLEEPING_CORE));
-    let launch = Launch::prepare(&paths).await.unwrap();
+    use futures_util::{SinkExt as _, StreamExt as _};
+    use tokio_tungstenite::tungstenite::Message;
+    let socket = paths.data().join("starting-logs.sock");
+    let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+    let server = tokio::spawn(async move {
+        loop {
+            let (stream, _) = listener.accept().await.unwrap();
+            // Version probes are intentionally unavailable while the log endpoint is connectable.
+            let Ok(mut ws) = tokio_tungstenite::accept_async(stream).await else {
+                continue;
+            };
+            ws.send(Message::Text(
+                r#"{"type":"error","payload":"startup adapter failure"}"#.into(),
+            ))
+            .await
+            .unwrap();
+            while let Some(message) = ws.next().await {
+                if matches!(message, Ok(Message::Close(_)) | Err(_)) {
+                    break;
+                }
+            }
+            break;
+        }
+    });
+    let mut launch = Launch::prepare(&paths).await.unwrap();
+    launch.client = super::super::client::Client::new(
+        super::super::client::Endpoint::Unix(socket),
+        String::new(),
+    );
     let mut actor = actor(paths.clone());
+    let mut log_target = actor.log_target.subscribe();
+    let (shutdown, cancellation) = tokio::sync::watch::channel(false);
+    let logging = tokio::spawn(super::super::log_stream::run(
+        paths.clone(),
+        actor.logs.clone(),
+        log_target.clone(),
+        cancellation,
+    ));
     assert!(
         tokio::time::timeout(Duration::from_millis(120), actor.start_prepared(launch))
             .await
@@ -840,9 +961,41 @@ async fn a_live_process_is_not_ready_and_cancelled_start_remains_owned_until_rea
     );
     assert_eq!(actor.snapshot.phase(), Phase::Starting);
     assert!(actor.running.is_some());
+    assert!(
+        actor.monitor.borrow().is_none(),
+        "runtime streams must wait for readiness"
+    );
+    assert!(
+        log_target.borrow_and_update().is_some(),
+        "startup logs must already be collected"
+    );
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while !actor.logs.since(0).iter().any(|record| {
+            record.level == crate::logging::Level::Error
+                && record.message == "startup adapter failure"
+        }) {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    actor.publish(Phase::Ready, None);
+    assert!(actor.monitor.borrow().is_some());
+    assert!(
+        !log_target.has_changed().unwrap(),
+        "readiness must retain the same log connection"
+    );
     actor.stop().await.unwrap();
     assert_eq!(actor.snapshot.phase(), Phase::Stopped);
     assert!(actor.running.is_none());
+    assert!(actor.monitor.borrow().is_none());
+    assert!(
+        actor.log_target.borrow().is_none(),
+        "stopped generations must drop the log target"
+    );
+    shutdown.send_replace(true);
+    logging.await.unwrap();
+    server.await.unwrap();
     assert!(
         std::fs::read_dir(paths.directory(DirectoryKind::Core))
             .unwrap()
@@ -852,6 +1005,11 @@ async fn a_live_process_is_not_ready_and_cancelled_start_remains_owned_until_rea
                 .to_string_lossy()
                 .starts_with("run-"))
     );
+    let saved = std::fs::read_dir(paths.directory(DirectoryKind::Logs))
+        .unwrap()
+        .map(|entry| std::fs::read_to_string(entry.unwrap().path()).unwrap())
+        .collect::<String>();
+    assert!(saved.contains("startup adapter failure"));
 }
 
 #[tokio::test]

@@ -1,4 +1,5 @@
 //! Explicit diagnostic export, including redacted logs from this application run.
+mod configuration;
 use crate::{
     preferences::{self, SettingsKind},
     storage::{AppPaths, DirectoryKind, Repository},
@@ -63,7 +64,6 @@ pub(crate) fn export(
         chrono::Utc::now().to_rfc3339(),
         crate::bootstrap::require_core(paths).is_ok()
     );
-    // File metadata is sufficient to locate broken inputs without exporting subscription secrets.
     let mut files = String::new();
     for name in ["settings.json", "mihomo.yaml", "dns.yaml", "sniffer.yaml"] {
         let path = paths.settings().join(name);
@@ -100,6 +100,7 @@ pub(crate) fn export(
             zip.write_all(content.as_bytes())
                 .map_err(|error| crate::logging::diagnostic_error("无法写入诊断信息", error))?;
         }
+        configuration::export(&mut zip, paths)?;
         export_logs(&mut zip, paths, logs)?;
         zip.finish()
             .map_err(|error| crate::logging::diagnostic_error("无法完成诊断包", error))?;
@@ -127,13 +128,13 @@ fn export_logs(
     const LIMIT: usize = 64 * 1024 * 1024;
     let prefixes = logs.file_prefixes();
     let mut status = vec![format!(
-        "本次程序运行 PID：{}。仅导出本次运行登记的日志文件。\n磁盘日志总上限 64 MiB；内存尾部每种来源最多 1000 条，可能与文件重叠。\n配置正文不导出；日志中的凭据、订阅 URL 和应用目录已脱敏。",
+        "本次程序运行 PID：{}。仅导出本次运行登记的日志文件。\n磁盘日志总上限 64 MiB；内存尾部每种来源最多 1000 条，可能与文件重叠。\n脱敏设置与配置位于 configuration/；日志中的凭据、订阅 URL 和用户目录已脱敏。",
         std::process::id()
     )];
     let mut write = |name: &str, text: &str| -> Result<(), String> {
         zip.start_file(name, zip::write::SimpleFileOptions::default())
             .map_err(|error| crate::logging::diagnostic_error("无法写入诊断日志", error))?;
-        zip.write_all(redact(&crate::logging::redact(text), paths).as_bytes())
+        zip.write_all(redact(text, paths).as_bytes())
             .map_err(|error| crate::logging::diagnostic_error("无法写入诊断日志".to_owned(), error))
     };
     let mut program = String::new();
@@ -209,7 +210,7 @@ fn export_logs(
     write("logs/export-status.txt", &status.join("\n"))
 }
 fn redact(message: &str, paths: &AppPaths) -> String {
-    let mut text = message.to_owned();
+    let mut text = crate::logging::redact(message);
     for directory in [
         DirectoryKind::Config,
         DirectoryKind::Data,
@@ -222,17 +223,147 @@ fn redact(message: &str, paths: &AppPaths) -> String {
             "<app>",
         );
     }
-    // Validation reasons can contain user supplied endpoints. Keep the reason, omit values.
-    for pattern in [r"(?i)https?://[^\s；，]+", r"AGE-SECRET-KEY-[A-Za-z0-9]+"] {
-        if let Ok(regex) = regex::Regex::new(pattern) {
-            text = regex.replace_all(&text, "<redacted>").into_owned();
-        }
+    if let Some(home) = dirs::home_dir() {
+        text = text.replace(home.to_string_lossy().as_ref(), "<home>");
     }
     text
 }
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn export_includes_actual_settings_and_configuration_with_nested_secrets_removed() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = AppPaths::isolated(root.path());
+        let repository = Repository::open(paths.clone()).unwrap();
+        let settings = serde_json::json!({"schema_version":1,
+            "general":{"theme_index":"dark","auto_run":true,"download_directory":paths.data().join("downloads")},
+            "sysproxy":{"mode":"manual","proxy_guard":true},
+            "dns":{"dns_override_enabled":true},
+            "backup":{"encrypt":true,"recipient":"private-recipient"},
+            "core":{"enable_external_controller":true}
+        });
+        std::fs::write(
+            paths.settings().join("settings.json"),
+            serde_json::to_vec(&settings).unwrap(),
+        )
+        .unwrap();
+        let mihomo = "mixed-port: 7890\nexternal-controller: 127.0.0.1:9090\nsecret: controller-private\nauthentication: [user-private:password-private]\ntun: {enable: true, stack: mixed}\n";
+        std::fs::write(paths.settings().join("mihomo.yaml"), mihomo).unwrap();
+        std::fs::write(paths.settings().join("dns.yaml"), "enable: true\nlisten: 127.0.0.1:1053\nnameserver: [https://dns.example.test/dns-query?token=dns-private, 1.1.1.1]\n").unwrap();
+        std::fs::write(
+            paths.settings().join("sniffer.yaml"),
+            "enable: true\noverride-destination: false\n",
+        )
+        .unwrap();
+        for area in ["profiles", "overrides"] {
+            std::fs::create_dir_all(paths.data().join(area)).unwrap();
+        }
+        let profile = "proxies:\n- name: test-node\n  type: vless\n  server: private-server.test\n  port: 443\n  uuid: uuid-private\n  headers: {Authorization: header-private}\n  reality-opts: {private-key: key-private}\nrules: [MATCH,DIRECT]\n";
+        std::fs::write(paths.data().join("profiles/1.yaml"), profile).unwrap();
+        std::fs::write(paths.data().join("overrides/2.yaml"), "ipv6: false\n").unwrap();
+        std::fs::write(
+            paths.data().join("overrides/3.js"),
+            "const credential = 'script-private';",
+        )
+        .unwrap();
+        std::fs::write(paths.records().join("profile-index.json"), br#"{"version":1,"values":{"format":"1","ids":"1","1/url":"https://subscription.test/private-path?token=url-private","1/token":"subscription-private"}}"#).unwrap();
+        let enhance = serde_json::json!({"version":1,"values":{"proxies":"prepend: [{name: extra, type: trojan, password: enhance-private}]"}});
+        std::fs::write(
+            paths.records().join("profile-enhance-1.json"),
+            serde_json::to_vec(&enhance).unwrap(),
+        )
+        .unwrap();
+        std::fs::write(paths.records().join("service-owner.token"), "owner-private").unwrap();
+        let runtime = paths.directory(DirectoryKind::Core).join("run-test");
+        std::fs::create_dir(&runtime).unwrap();
+        std::fs::write(runtime.join("candidate.yaml"), mihomo).unwrap();
+        let output = export(&repository, &crate::logging::Feed::default()).unwrap();
+        let mut zip = zip::ZipArchive::new(std::fs::File::open(output).unwrap()).unwrap();
+        let mut files = std::collections::BTreeMap::new();
+        for index in 0..zip.len() {
+            let mut file = zip.by_index(index).unwrap();
+            let name = file.name().unwrap().to_string();
+            let mut text = String::new();
+            file.read_to_string(&mut text).unwrap();
+            files.insert(name, text);
+        }
+        let app: serde_json::Value =
+            serde_json::from_str(&files["configuration/settings/settings.json"]).unwrap();
+        assert_eq!(app["general"]["auto_run"], true);
+        assert_eq!(app["general"]["theme_index"], "dark");
+        assert_eq!(app["sysproxy"]["proxy_guard"], true);
+        let native: serde_yaml_ng::Value =
+            serde_yaml_ng::from_str(&files["configuration/settings/mihomo.yaml"]).unwrap();
+        assert_eq!(native["mixed-port"], 7890);
+        assert_eq!(native["tun"]["enable"], true);
+        assert_eq!(native["external-controller"], "127.0.0.1:9090");
+        for name in [
+            "configuration/settings/dns.yaml",
+            "configuration/settings/sniffer.yaml",
+            "configuration/profiles/1.yaml",
+            "configuration/overrides/2.yaml",
+            "configuration/records/profile-enhance-1.json",
+            "configuration/runtime/run-test/candidate.yaml",
+        ] {
+            assert!(files.contains_key(name), "{name}");
+        }
+        let contents = files.values().cloned().collect::<String>();
+        assert!(contents.contains("test-node"));
+        assert!(contents.contains("1.1.1.1"));
+        for secret in [
+            "controller-private",
+            "password-private",
+            "user-private",
+            "private-recipient",
+            "dns-private",
+            "private-server.test",
+            "uuid-private",
+            "header-private",
+            "key-private",
+            "script-private",
+            "subscription-private",
+            "private-path",
+            "url-private",
+            "enhance-private",
+            "owner-private",
+            root.path().to_str().unwrap(),
+        ] {
+            assert!(!contents.contains(secret), "leaked {secret}");
+        }
+        assert_eq!(
+            std::fs::read_to_string(paths.data().join("profiles/1.yaml")).unwrap(),
+            profile
+        );
+        assert_eq!(
+            std::fs::read_to_string(paths.settings().join("mihomo.yaml")).unwrap(),
+            mihomo
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn export_skips_symlinked_configuration_and_reports_partial_capture() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = AppPaths::isolated(root.path());
+        let repository = Repository::open(paths.clone()).unwrap();
+        let outside = root.path().join("outside.yaml");
+        std::fs::write(&outside, "password: outside-private").unwrap();
+        std::os::unix::fs::symlink(&outside, paths.settings().join("dns.yaml")).unwrap();
+        std::os::unix::fs::symlink(root.path(), paths.data().join("profiles")).unwrap();
+        let output = export(&repository, &crate::logging::Feed::default()).unwrap();
+        let mut zip = zip::ZipArchive::new(std::fs::File::open(output).unwrap()).unwrap();
+        assert!(zip.by_name("configuration/settings/dns.yaml").is_err());
+        let mut status = String::new();
+        zip.by_name("configuration/export-status.txt")
+            .unwrap()
+            .read_to_string(&mut status)
+            .unwrap();
+        assert!(status.contains("来源不是普通文件"));
+        assert!(status.contains("profiles：目录未导出"));
+        assert!(!status.contains("outside-private"));
+    }
+
     #[test]
     fn export_checks_all_broken_inputs_without_including_sources_or_secrets() {
         let root = tempfile::tempdir().unwrap();
@@ -254,6 +385,13 @@ mod tests {
         assert!(check.contains("settings.json"));
         assert!(!check.contains("private-token"));
         assert!(!check.contains(root.path().to_str().unwrap()));
+        let mut masked = String::new();
+        zip.by_name("configuration/settings/settings.json.redacted.txt")
+            .unwrap()
+            .read_to_string(&mut masked)
+            .unwrap();
+        assert!(masked.starts_with('{'));
+        assert!(!masked.contains("private-token"));
         assert_eq!(
             std::fs::read(paths.settings().join("settings.json")).unwrap(),
             b"{private-token"

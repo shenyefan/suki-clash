@@ -790,7 +790,44 @@ impl SettingsPage {
 mod tests {
     use super::{Session, SettingsKind, SettingsPage};
     use gpui_kit::test::TestWindowExt;
-    use gpui_kit::{AppContext, Role, TestAppContext, WindowOptions};
+    use gpui_kit::{AppContext, Role, TestAppContext, WindowOptions, component::WindowExt as _};
+    #[gpui_kit::test]
+    fn failed_core_reason_can_be_reopened_after_the_startup_toast_expires(cx: &mut TestAppContext) {
+        let root = tempfile::tempdir().unwrap();
+        let paths = crate::storage::AppPaths::isolated(root.path());
+        let service =
+            crate::integration::Service::start(crate::storage::Repository::open(paths).unwrap())
+                .unwrap();
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            crate::integration::init(service, None, cx);
+            crate::core::init_unavailable("虚拟网卡未就绪：adapter not ready".into(), cx);
+            cx.set_reduce_motion(true);
+        });
+        let (handle, _) = cx.update(|cx| {
+            gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
+                let session = cx.new(Session::new);
+                cx.new(|cx| SettingsPage::new(SettingsKind::Core, session, window, cx))
+            })
+            .unwrap()
+        });
+        for _ in 0..2 {
+            handle
+                .update(cx, |_, window, cx| {
+                    window.render_frame(cx);
+                    assert!(window.find("core-error-details").visible());
+                    window.click("core-error-details", cx);
+                    assert_eq!(crate::ui::notifications::current(window, cx).len(), 1);
+                    assert!(!window.has_active_dialog(cx));
+                })
+                .unwrap();
+            cx.executor()
+                .advance_clock(std::time::Duration::from_secs(6));
+            cx.run_until_parked();
+        }
+        crate::integration::finish_test_services(cx);
+    }
+
     #[gpui_kit::test]
     fn resources_preserve_database_groups_switch_order_and_have_no_save_or_refresh(
         cx: &mut TestAppContext,

@@ -610,35 +610,28 @@ fn wait_for_service_ready() -> Result<(), Error> {
         .build()
         .context("failed to create service readiness runtime")?;
     runtime.block_on(async {
-        suki_clash_service::set_config(Some(suki_clash_service::IpcConfig {
-            default_timeout: Duration::from_millis(250),
-            max_retries: 1,
-            retry_delay: Duration::from_millis(25),
-        }))
-        .await;
+        suki_clash_service::set_request_timeout(Some(Duration::from_millis(250))).await;
 
         let deadline = Instant::now() + READY_TIMEOUT;
         let result = loop {
-            if let Ok(response) = suki_clash_service::get_version().await
-                && response.code == 0
-                && response.data.is_some_and(|info| {
-                    info.supports_client(
-                        suki_clash_service::ProtocolVersion::current(),
-                        suki_clash_service::MIN_REQUIRED_SERVICE_REVISION,
-                    )
-                })
+            match suki_clash_service::get_version()
+                .await
+                .and_then(suki_clash_service::validate_protocol_response)
             {
-                break Ok(());
-            }
-            if Instant::now() >= deadline {
-                break Err(anyhow::anyhow!(
-                    "service IPC did not become protocol-ready within {READY_TIMEOUT:?}"
-                ));
+                Ok(()) => break Ok(()),
+                Err(error) if suki_clash_service::is_unreachable(&error) => {
+                    if Instant::now() >= deadline {
+                        break Err(error.context(format!(
+                            "service IPC did not become ready within {READY_TIMEOUT:?}"
+                        )));
+                    }
+                }
+                Err(error) => break Err(error),
             }
             tokio::time::sleep(READY_INTERVAL).await;
         };
 
-        suki_clash_service::set_config(None).await;
+        suki_clash_service::set_request_timeout(None).await;
         result
     })
 }

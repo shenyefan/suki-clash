@@ -20,6 +20,13 @@ pub(crate) fn redact(message: &str) -> String {
         let Ok(url) = url::Url::parse(&capture[0]) else {
             return "<redacted-address>".to_owned();
         };
+        // Proxy links can encode the entire credential in what URL parsing calls a host.
+        if !matches!(
+            url.scheme(),
+            "http" | "https" | "ws" | "wss" | "udp" | "tcp" | "tls" | "quic" | "dhcp"
+        ) {
+            return format!("{}://<redacted-address>", url.scheme());
+        }
         let Some(host) = url.host() else {
             return format!("{}://<redacted-address>", url.scheme());
         };
@@ -80,5 +87,9 @@ mod tests {
         assert!(!message.contains("123ABC"));
         assert!(!message.contains("bearer-value"));
         assert!(message.contains("status=500"));
+        assert_eq!(
+            redact("vmess://encodedcredential ss://encodedpassword"),
+            "vmess://<redacted-address> ss://<redacted-address>"
+        );
     }
 }

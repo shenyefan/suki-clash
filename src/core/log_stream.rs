@@ -130,6 +130,7 @@ pub(super) async fn run(
             output.configure(&paths, source.settings.borrow().1);
             let mut polling = tokio::time::interval(Duration::from_millis(250));
             polling.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            let mut rejected = false;
             let result: Result<(), String> = loop {
                 tokio::select! { biased;
                     _ = shutdown.changed() => break 'supervisor,
@@ -144,16 +145,12 @@ pub(super) async fn run(
                             changed = targets.changed() => { if changed.is_err() { break 'supervisor; } continue 'supervisor; },
                             result = suki_service::get_clash_logs(credentials, proof, suki_service::CoreLogRequest { after: service_cursor.after, stream_started_at: service_cursor.stream_started_at }) => result,
                         };
-                        match batch {
-                            Ok(response) if response.code == 0 => match response.data {
-                                Some(batch) => {
-                                    if let Err(error) = service_cursor.publish(batch, &mut output, &source.settings.borrow().0, &feed) { break Err(error); }
+                        match batch.and_then(suki_service::response_data) {
+                            Ok(batch) => {
+                                    if let Err(error) = service_cursor.publish(batch, &mut output, &source.settings.borrow().0, &feed) { rejected = true; break Err(error); }
                                     failure = None; failures = 0; backoff = Duration::from_millis(250);
-                                },
-                                None => break Err("后台服务未返回日志窗口".into()),
                             },
-                            Ok(response) => break Err(format!("后台服务拒绝日志读取请求，状态码 {}（{}）", response.code, response.message)),
-                            Err(error) => break Err(format!("后台服务日志连接中断（{error}）")),
+                            Err(error) => { rejected = !suki_service::is_unreachable(&error); break Err(error.to_string()); },
                         }
                     },
                 }
@@ -164,12 +161,14 @@ pub(super) async fn run(
                     failure = Some(error);
                 }
                 failures += 1;
-                if failures >= 3 {
-                    feed.emit(
-                        Level::Warning,
-                        "logging",
-                        "后台服务日志连续读取失败，已停止自动重连",
-                    );
+                if rejected || failures >= 3 {
+                    if !rejected {
+                        feed.emit(
+                            Level::Warning,
+                            "logging",
+                            "后台服务日志连续读取失败，已停止自动重连",
+                        );
+                    }
                     tokio::select! { _ = shutdown.changed() => break, changed = targets.changed() => { if changed.is_err() { break; } } }
                     continue;
                 }
@@ -247,6 +246,51 @@ pub(super) async fn run(
 }
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn failed_startup_history_is_saved_redacted_and_bound_to_its_session() {
+        use super::*;
+        let root = tempfile::tempdir().unwrap();
+        let paths = AppPaths::isolated(root.path());
+        let feed = Feed::default();
+        let batch = suki_service::CoreLogBatch {
+            stream_started_at: std::time::UNIX_EPOCH,
+            generation: 7,
+            oldest: 1,
+            next: 1,
+            entries: vec![suki_service::CoreLogEntry {
+                stderr: false,
+                sequence: 1,
+                line: r#"level=error msg="Start TUN listening error: adapter not ready token""#
+                    .into(),
+            }],
+        };
+        let mut cursor = ServiceCursor::default();
+        let mut output = Output::new(feed.clone(), Default::default());
+        output.configure(&paths, (7, 1024 * 1024));
+        cursor.bind(1, 8);
+        assert!(
+            cursor
+                .publish(batch.clone(), &mut output, &["token".into()], &feed)
+                .is_err()
+        );
+        assert!(feed.since(0).is_empty());
+        cursor.bind(1, 7);
+        cursor
+            .publish(batch, &mut output, &["token".into()], &feed)
+            .unwrap();
+        let entries = feed.since(0);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].level, Level::Error);
+        assert!(entries[0].message.contains("adapter not ready"));
+        assert!(!entries[0].message.contains("token"));
+        let logs = std::fs::read_dir(paths.directory(crate::storage::DirectoryKind::Logs))
+            .unwrap()
+            .map(|file| std::fs::read_to_string(file.unwrap().path()).unwrap())
+            .collect::<String>();
+        assert!(logs.contains("adapter not ready"));
+        assert!(!logs.contains("token"));
+    }
+
     #[test]
     fn service_history_cursor_preserves_repeated_lines_and_rejects_old_sessions() {
         use super::*;

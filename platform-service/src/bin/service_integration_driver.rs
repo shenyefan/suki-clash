@@ -5,12 +5,12 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 #[cfg(feature = "test")]
 use suki_clash_service::test_owner_credentials;
-use suki_clash_service::{
-    IpcConfig, MIN_REQUIRED_SERVICE_REVISION, OwnerSessionProof, ProtocolVersion, RuntimeBundle,
-    StartClashRequest, get_status, get_version, set_config, start_clash, stop_clash,
-};
 #[cfg(not(feature = "test"))]
 use suki_clash_service::{OwnerCredentials, OwnerIdentity};
+use suki_clash_service::{
+    OwnerSessionProof, RuntimeBundle, StartClashRequest, get_status, get_version,
+    set_request_timeout, start_clash, stop_clash,
+};
 use tokio::time::sleep;
 
 const IPC_READY_TIMEOUT: Duration = Duration::from_secs(20);
@@ -42,36 +42,16 @@ async fn main() -> anyhow::Result<()> {
 }
 
 async fn probe_protocol() -> anyhow::Result<()> {
-    set_config(Some(IpcConfig {
-        default_timeout: Duration::from_millis(250),
-        max_retries: 1,
-        retry_delay: Duration::from_millis(25),
-    }))
-    .await;
-    let result = async {
-        let response = get_version().await?;
-        let info = response
-            .data
-            .ok_or_else(|| anyhow::anyhow!("service omitted protocol information"))?;
-        if response.code != 0
-            || !info.supports_client(ProtocolVersion::current(), MIN_REQUIRED_SERVICE_REVISION)
-        {
-            anyhow::bail!("service protocol is not compatible");
-        }
-        Ok(())
-    }
-    .await;
-    set_config(None).await;
+    set_request_timeout(Some(Duration::from_millis(250))).await;
+    let result = get_version()
+        .await
+        .and_then(suki_clash_service::validate_protocol_response);
+    set_request_timeout(None).await;
     result
 }
 
 async fn wait_protocol_ready() -> anyhow::Result<()> {
-    set_config(Some(IpcConfig {
-        default_timeout: Duration::from_millis(250),
-        max_retries: 1,
-        retry_delay: Duration::from_millis(25),
-    }))
-    .await;
+    set_request_timeout(Some(Duration::from_millis(250))).await;
 
     let result: anyhow::Result<()> = async {
         let deadline = Instant::now() + IPC_READY_TIMEOUT;
@@ -79,7 +59,8 @@ async fn wait_protocol_ready() -> anyhow::Result<()> {
         while Instant::now() < deadline {
             match probe_protocol().await {
                 Ok(()) => return Ok(()),
-                Err(error) => last_error = Some(error),
+                Err(error) if suki_clash_service::is_unreachable(&error) => last_error = Some(error),
+                Err(error) => return Err(error),
             }
             sleep(IPC_PROBE_INTERVAL).await;
         }
@@ -92,7 +73,7 @@ async fn wait_protocol_ready() -> anyhow::Result<()> {
     }
     .await;
 
-    set_config(None).await;
+    set_request_timeout(None).await;
     result
 }
 
@@ -158,29 +139,31 @@ fn session_proof() -> anyhow::Result<OwnerSessionProof> {
 }
 
 async fn wait_ipc_ready() -> anyhow::Result<()> {
-    set_config(Some(IpcConfig {
-        default_timeout: Duration::from_millis(250),
-        max_retries: 1,
-        retry_delay: Duration::from_millis(25),
-    }))
-    .await;
+    set_request_timeout(Some(Duration::from_millis(250))).await;
 
     let result: anyhow::Result<()> = async {
         let deadline = Instant::now() + IPC_READY_TIMEOUT;
+        let mut last_error = None;
         while Instant::now() < deadline {
-            if let Ok(response) = get_status(&owner_credentials()?).await
-                && response.code == 0
-                && response.data.is_some()
+            match get_status(&owner_credentials()?)
+                .await
+                .and_then(suki_clash_service::response_data)
             {
-                return Ok(());
+                Ok(_) => return Ok(()),
+                Err(error) if suki_clash_service::is_unreachable(&error) => {
+                    last_error = Some(error)
+                }
+                Err(error) => return Err(error),
             }
             sleep(IPC_PROBE_INTERVAL).await;
         }
-        anyhow::bail!("IPC server not reachable within {:?}", IPC_READY_TIMEOUT)
+        Err(last_error.unwrap_or_else(|| {
+            anyhow::anyhow!("IPC server not reachable within {IPC_READY_TIMEOUT:?}")
+        }))
     }
     .await;
 
-    set_config(None).await;
+    set_request_timeout(None).await;
     result
 }
 

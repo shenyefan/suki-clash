@@ -362,16 +362,19 @@ pub fn prepare_install(mut arguments: impl Iterator<Item = OsString>) -> Result<
                 .as_ref()
                 .is_none_or(|digest| digest == &status.service_sha256)
     };
-    if ensure
-        && runtime
-            .block_on(crate::client::inspect_installation_with_digest(
-                &requirements,
-                !core_only,
-            ))
-            .is_ok_and(|status| verified(&status))
-    {
-        write_installation_result(false, std::io::stdout().lock())?;
-        return Ok(());
+    if ensure {
+        match runtime.block_on(crate::client::inspect_installation_with_digest(
+            &requirements,
+            !core_only,
+        )) {
+            Ok(status) if verified(&status) => {
+                write_installation_result(false, std::io::stdout().lock())?;
+                return Ok(());
+            }
+            Ok(_) => {}
+            Err(error) if crate::client::is_unreachable(&error) => {}
+            Err(error) => return Err(error),
+        }
     }
     #[cfg(windows)]
     let elevated = {

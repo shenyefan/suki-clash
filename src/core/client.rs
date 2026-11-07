@@ -8,6 +8,7 @@ use std::{io, time::Duration};
 use tokio::io::{AsyncRead, AsyncWrite};
 
 const RESPONSE_LIMIT: usize = 8 * 1024 * 1024;
+pub(super) const CONFIGURATION_READY_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Clone)]
 pub(super) enum Endpoint {
@@ -322,9 +323,10 @@ impl Client {
     pub(super) async fn wait_configuration_ready(
         &self,
         expected: &serde_yaml_ng::Value,
+        budget: Duration,
     ) -> Result<bool, String> {
         let mut last_error = None;
-        let ready = tokio::time::timeout(Duration::from_secs(3), async {
+        let ready = tokio::time::timeout(budget, async {
             loop {
                 let result = async {
                     self.verify_listeners(expected).await?;
@@ -812,7 +814,7 @@ mod tests {
                 serde_yaml_ng::from_str("mixed-port: 7897\ntun: {enable: true}").unwrap();
             let result = tokio::time::timeout(
                 Duration::from_secs(5),
-                client.wait_configuration_ready(&expected),
+                client.wait_configuration_ready(&expected, Duration::from_secs(1)),
             )
             .await
             .unwrap();

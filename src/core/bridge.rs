@@ -424,14 +424,10 @@ pub(crate) fn submit(command: Command, window: &mut Window, cx: &mut App) -> Res
             .is_some_and(|value| value == "true"),
         _ => false,
     };
-    if enabling_tun
-        && matches!(
-            snapshot.service_state(),
-            super::ServiceState::Unavailable(_)
-        )
-    {
+    if enabling_tun && let Some(reason) = snapshot.service_state().reason() {
+        let reason = reason.to_owned();
         owner.update(cx, |_, cx| cx.emit(TunServiceRequired));
-        return Err("请在虚拟网卡页安装或修复服务".into());
+        return Err(reason);
     }
     let result = owner.update(cx, |this, cx| {
         if this.quitting.is_some() {
@@ -792,7 +788,7 @@ mod startup_notice_tests {
             cx.set_reduce_motion(true);
             super::controller(cx).update(cx, |owner, _| {
                 owner.snapshot.service_state =
-                    super::super::ServiceState::Unavailable("not installed".into());
+                    super::super::ServiceState::Unreachable("not installed".into());
             });
         });
         let window = cx.open_window(size(px(1220.), px(820.)), |window, cx| {
@@ -832,6 +828,8 @@ mod startup_notice_tests {
                     "{origin}, service: {:?}",
                     super::controller(cx).read(cx).snapshot().service_state()
                 );
+                assert!(window.find("service-安装服务").visible());
+                assert!(window.find("service-修复服务").visible());
                 assert!(!super::controller(cx).read(cx).is_busy());
                 assert_eq!(super::controller(cx).read(cx).snapshot().request_id(), None);
                 assert!(super::controller(cx).read(cx).snapshot().tun() != Some(true));

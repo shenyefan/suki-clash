@@ -260,17 +260,12 @@ impl Controller {
                 Request::Rollback => Operation::Rollback,
                 Request::Clear => Operation::Clear,
             };
-            let result =
-                match suki_service::set_system_proxy(credentials, session, &operation).await {
-                    Ok(reply) if reply.code == 0 => reply
-                        .data
-                        .ok_or_else(|| "后台服务未返回代理状态".to_owned()),
-                    Ok(reply) => Err(format!(
-                        "后台服务拒绝代理操作（{}）：{}",
-                        reply.code, reply.message
-                    )),
-                    Err(error) => Err(format!("系统代理服务请求未确认：{error}")),
-                };
+            let result = match suki_service::set_system_proxy(credentials, session, &operation)
+                .await
+            {
+                Ok(reply) => suki_service::response_data(reply).map_err(|error| error.to_string()),
+                Err(error) => Err(error.to_string()),
+            };
             if result.is_err() {
                 self.automatic_suspended = true;
                 self.guard_at = None;

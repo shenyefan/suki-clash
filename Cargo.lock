@@ -7901,7 +7901,7 @@ checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
 
 [[package]]
 name = "suki-clash"
-version = "0.3.7"
+version = "0.3.8"
 dependencies = [
  "age",
  "anyhow",
@@ -7961,6 +7961,9 @@ version = "2.7.6"
 dependencies = [
  "anyhow",
  "embed-resource",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
  "kode-bridge",
  "libc",
  "log",

@@ -32,18 +32,13 @@ impl Actor {
         self.monitor.send_replace(None);
     }
     pub(super) fn sync_monitor(&mut self) {
-        if self.snapshot.phase != Phase::Ready {
-            self.monitor.send_if_modified(|current| {
-                if current.is_some() {
-                    *current = None;
-                    true
-                } else {
-                    false
-                }
-            });
+        let Some(running) = &self.running else {
+            self.monitor
+                .send_if_modified(|current| current.take().is_some());
+            self.log_target
+                .send_if_modified(|current| current.take().is_some());
             return;
-        }
-        let Some(running) = &self.running else { return };
+        };
         let mut order = serde_yaml_ng::from_str::<serde_yaml_ng::Value>(&running.launch.composed)
             .ok()
             .and_then(|config| {
@@ -112,6 +107,21 @@ impl Actor {
                 .and_then(|values| values.lines().next())
                 .map(str::to_owned),
         };
+        self.log_target.send_if_modified(|current| {
+            if current.as_ref().is_some_and(|current| {
+                current.generation == target.generation && current.epoch == target.epoch
+            }) {
+                false
+            } else {
+                *current = Some(target.clone());
+                true
+            }
+        });
+        if self.snapshot.phase != Phase::Ready {
+            self.monitor
+                .send_if_modified(|current| current.take().is_some());
+            return;
+        }
         self.monitor.send_if_modified(|current| {
             if current.as_ref().is_some_and(|current| {
                 current.generation == target.generation && current.epoch == target.epoch

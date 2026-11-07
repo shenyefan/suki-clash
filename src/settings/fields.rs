@@ -244,11 +244,12 @@ impl SettingsPage {
             let state = self.session.read(cx).core().service_state();
             let ready = matches!(state, crate::core::ServiceState::Ready);
             let checking = matches!(state, crate::core::ServiceState::Checking);
-            let actions: &[&str] = if ready {
-                &["修复服务", "卸载服务"]
-            } else {
-                &["安装服务"]
-            };
+            let actions: &[&str] =
+                if ready || matches!(state, crate::core::ServiceState::Rejected(_)) {
+                    &["修复服务", "卸载服务"]
+                } else {
+                    &["安装服务", "修复服务"]
+                };
             let buttons = h_flex()
                 .gap(space::SM)
                 .children(actions.iter().map(|action| {

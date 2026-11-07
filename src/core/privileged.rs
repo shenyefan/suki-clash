@@ -1,7 +1,7 @@
 //! App-side CV service sessions. The lifecycle actor owns each proof; no UI or global owner state.
 use super::launch::Launch;
 use crate::storage::AppPaths;
-use suki_service::{OwnerCredentials, OwnerSessionProof, ProtocolVersion, ServiceStatusSnapshot};
+use suki_service::{OwnerCredentials, OwnerSessionProof, ServiceStatusSnapshot};
 pub(super) struct Session {
     credentials: OwnerCredentials,
     proof: OwnerSessionProof,
@@ -11,30 +11,85 @@ fn credentials(paths: &AppPaths) -> Result<OwnerCredentials, String> {
     super::service_identity::current_owner_credentials_for_root(paths.data())
         .map_err(crate::logging::error_message)
 }
-fn response<T>(response: suki_service::Response<T>) -> Result<T, String> {
-    if response.code != 0 {
-        return Err(format!(
-            "后台服务拒绝操作（{}）：{}",
-            response.code, response.message
-        ));
-    }
-    response.data.ok_or_else(|| "后台服务未返回结果".into())
+fn response<T>(reply: suki_service::Response<T>) -> Result<T, String> {
+    suki_service::response_data(reply).map_err(|error| error.to_string())
 }
 pub(super) async fn require_ready() -> Result<(), String> {
-    let version = suki_service::get_version()
+    await_protocol(std::time::Duration::ZERO, suki_service::get_version)
         .await
-        .map_err(|error| format!("后台服务未就绪，请在虚拟网卡页安装或修复服务（{error}）"))?;
-    let version = response(version)?;
-    if version.protocol != ProtocolVersion::current() {
-        return Err("后台服务协议不一致，请修复服务".into());
+        .map_err(|error| error.to_string())
+}
+
+/// Only an unavailable transport may settle with time. Rejections stop immediately.
+async fn await_protocol<F, Fut>(budget: std::time::Duration, mut probe: F) -> anyhow::Result<()>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<
+            Output = anyhow::Result<suki_service::Response<suki_service::ProtocolInfo>>,
+        >,
+{
+    let deadline = tokio::time::Instant::now() + budget;
+    let mut previous = None;
+    loop {
+        let result = if budget.is_zero() {
+            probe().await
+        } else {
+            match tokio::time::timeout_at(deadline, probe()).await {
+                Ok(result) => result,
+                Err(_) => {
+                    return Err(previous.unwrap_or_else(|| {
+                        suki_service::RequestError::Unreachable("等待服务响应超时".into()).into()
+                    }));
+                }
+            }
+        };
+        match result {
+            Ok(reply) => return suki_service::validate_protocol_response(reply),
+            Err(error) => {
+                if !suki_service::is_unreachable(&error) {
+                    return Err(error);
+                }
+                let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+                if remaining.is_zero() {
+                    return Err(error);
+                }
+                previous = Some(error);
+                tokio::time::sleep(remaining.min(std::time::Duration::from_millis(200))).await;
+            }
+        }
     }
-    Ok(())
+}
+
+#[cfg(not(test))]
+pub(super) async fn probe_startup(tun_requested: bool) -> State {
+    #[cfg(windows)]
+    let budget = if tun_requested {
+        match crate::platform_access::elevated() {
+            Ok(false) => std::time::Duration::from_secs(30),
+            Ok(true) => std::time::Duration::ZERO,
+            Err(error) => return State::Rejected(error),
+        }
+    } else {
+        std::time::Duration::ZERO
+    };
+    #[cfg(not(windows))]
+    let budget = {
+        let _ = tun_requested;
+        std::time::Duration::ZERO
+    };
+    match await_protocol(budget, suki_service::get_version).await {
+        Ok(()) => State::Ready,
+        Err(error) => State::from_error(error),
+    }
 }
 /// Existing elevated privileges can run TUN directly; never request elevation during a toggle.
 pub(super) async fn tun_service_required() -> Result<bool, String> {
-    match require_ready().await {
+    match await_protocol(std::time::Duration::ZERO, suki_service::get_version).await {
         Ok(()) => Ok(true),
-        Err(error) => elevated_tun_policy(crate::platform_access::elevated()?, error),
+        Err(error) if suki_service::is_unreachable(&error) => {
+            elevated_tun_policy(crate::platform_access::elevated()?, error.to_string())
+        }
+        Err(error) => Err(error.to_string()),
     }
 }
 fn elevated_tun_policy(elevated: bool, service_error: String) -> Result<bool, String> {
@@ -46,6 +101,92 @@ fn elevated_tun_policy(elevated: bool, service_error: String) -> Result<bool, St
 }
 #[cfg(test)]
 mod policy_tests {
+    #[tokio::test]
+    async fn temporary_service_transport_waits_but_readable_rejections_never_retry() {
+        use std::{cell::Cell, time::Duration};
+        let attempts = Cell::new(0);
+        super::await_protocol(Duration::from_secs(1), || {
+            let attempt = attempts.get();
+            attempts.set(attempt + 1);
+            std::future::ready(if attempt < 2 {
+                Err(suki_service::RequestError::Unreachable("pipe not ready".into()).into())
+            } else {
+                Ok(suki_service::Response {
+                    code: 0,
+                    message: String::new(),
+                    data: Some(suki_service::ProtocolInfo::current()),
+                })
+            })
+        })
+        .await
+        .unwrap();
+        assert_eq!(attempts.get(), 3);
+
+        let mut wrong_protocol = suki_service::ProtocolInfo::current();
+        wrong_protocol.protocol.revision += 1;
+        for result in [
+            Ok(suki_service::Response {
+                code: 403,
+                message: "session denied".into(),
+                data: None,
+            }),
+            Ok(suki_service::Response {
+                code: 0,
+                message: String::new(),
+                data: Some(wrong_protocol),
+            }),
+            Err(anyhow::Error::new(
+                suki_service::RequestError::AccessDenied("permission denied".into()),
+            )),
+            Err(anyhow::Error::new(
+                suki_service::RequestError::InvalidResponse("bad JSON".into()),
+            )),
+        ] {
+            let attempts = Cell::new(0);
+            let mut result = Some(result);
+            let error = super::await_protocol(Duration::from_secs(1), || {
+                attempts.set(attempts.get() + 1);
+                std::future::ready(
+                    result
+                        .take()
+                        .expect("a terminal response must never be retried"),
+                )
+            })
+            .await
+            .unwrap_err();
+            assert_eq!(attempts.get(), 1);
+            assert!(!suki_service::is_unreachable(&error));
+            assert!(matches!(
+                super::State::from_error(error),
+                super::State::Rejected(_)
+            ));
+        }
+    }
+
+    #[tokio::test]
+    async fn service_wait_deadline_retains_transport_reason_and_bounds_a_silent_probe() {
+        use std::time::Duration;
+        let error = super::await_protocol(Duration::from_millis(100), || {
+            std::future::ready(Err(suki_service::RequestError::Unreachable(
+                "pipe not found".into(),
+            )
+            .into()))
+        })
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("pipe not found"));
+        assert!(matches!(
+            super::State::from_error(error),
+            super::State::Unreachable(_)
+        ));
+        let started = tokio::time::Instant::now();
+        let error = super::await_protocol(Duration::from_millis(100), std::future::pending)
+            .await
+            .unwrap_err();
+        assert!(suki_service::is_unreachable(&error));
+        assert!(started.elapsed() < Duration::from_secs(1));
+    }
+
     #[test]
     fn generated_session_tokens_meet_the_current_service_contract() {
         let first = super::session_token().unwrap();
@@ -84,17 +225,13 @@ impl Session {
         let reply = match suki_service::start_clash(&credentials, &request).await {
             Ok(reply) => reply,
             // The service deduplicates this exact session token. Retry once if the acknowledgement was lost.
-            Err(error) => {
-                log::warn!("后台服务未确认启动应答，将在同一会话中重试（{error:#}）");
+            Err(error) if suki_service::is_unreachable(&error) => {
+                log::debug!("后台服务未确认启动应答，将在同一会话中确认（{error:#}）");
                 suki_service::start_clash(&credentials, &request)
                     .await
-                    .map_err(|error| {
-                        crate::logging::diagnostic_error(
-                            format!("服务启动请求未确认；未启动其他内核：{error}"),
-                            format_args!("{error:#}"),
-                        )
-                    })?
+                    .map_err(|error| format!("服务启动请求未确认，未启动其他内核：{error}"))?
             }
+            Err(error) => return Err(error.to_string()),
         };
         let started = response(reply)?;
         let proof = OwnerSessionProof {
@@ -114,15 +251,17 @@ impl Session {
     pub(super) fn id(&self) -> Option<u32> {
         self.pid
     }
-    pub(super) async fn status(&mut self) -> Result<ServiceStatusSnapshot, String> {
-        let status = response(suki_service::get_status(&self.credentials).await.map_err(
-            |error| crate::logging::diagnostic_error("后台服务连接中断，未启动第二个内核", error),
-        )?)?;
+    pub(super) async fn status(&mut self) -> anyhow::Result<ServiceStatusSnapshot> {
+        let status =
+            suki_service::response_data(suki_service::get_status(&self.credentials).await?)?;
         if !status.is_active || status.active_generation != Some(self.proof.generation) {
-            return Err("后台服务内核归属已变化，未接管其他会话".into());
+            anyhow::bail!("后台服务内核归属已变化，未接管其他会话");
         }
         if status.core_pid.is_none() {
-            return Err(format!("服务内核未运行：{:?}", status.service_state));
+            anyhow::bail!(match &status.last_core_exit_reason {
+                Some(reason) => format!("服务内核未运行：{reason}"),
+                None => format!("服务内核未运行：{:?}", status.service_state),
+            });
         }
         self.pid = status.core_pid;
         Ok(status)
@@ -157,7 +296,7 @@ impl Session {
                         },
                     )
                     .await
-                    .map_err(crate::logging::error_message)?,
+                    .map_err(|error| error.to_string())?,
                 )
             },
         )
@@ -183,14 +322,14 @@ impl Session {
                         },
                     )
                     .await
-                    .map_err(crate::logging::error_message)?,
+                    .map_err(|error| error.to_string())?,
                 )
             },
             || async {
                 let status = response(
                     suki_service::get_status(&self.credentials)
                         .await
-                        .map_err(crate::logging::error_message)?,
+                        .map_err(|error| error.to_string())?,
                 )?;
                 if !status.is_active || status.active_generation != Some(self.proof.generation) {
                     return Err("Provider 同步期间后台服务归属已变化".into());
@@ -212,7 +351,7 @@ impl Session {
                 &launch.service_bundle().await?,
             )
             .await
-            .map_err(crate::logging::error_message)?,
+            .map_err(|error| error.to_string())?,
         )?;
         Ok(outcome)
     }
@@ -290,29 +429,30 @@ async fn install(
     })
     .await
     .map_err(|error| crate::logging::diagnostic_error("服务安装任务异常退出", error))??;
-    require_ready()
-        .await
-        .map_err(|error| format!("安装操作已完成；后台服务状态未确认：{error}"))?;
+    await_protocol(
+        std::time::Duration::from_secs(30),
+        suki_service::get_version,
+    )
+    .await
+    .map_err(|error| format!("安装操作已完成；后台服务状态未确认：{error}"))?;
     Ok(outcome.warnings)
 }
 
 #[cfg(not(test))]
-pub(super) async fn owner_active(paths: &AppPaths) -> Result<bool, String> {
-    #[cfg(unix)]
-    if !suki_service::is_ipc_path_exists() {
-        return Ok(false);
+pub(super) async fn ready_for_start(paths: &AppPaths) -> Result<bool, String> {
+    match suki_service::get_version().await {
+        Ok(reply) => {
+            suki_service::validate_protocol_response(reply).map_err(|error| error.to_string())?
+        }
+        Err(error) if suki_service::is_unreachable(&error) => return Ok(false),
+        Err(error) => return Err(error.to_string()),
     }
-    #[cfg(windows)]
-    if suki_service::get_version().await.is_err() {
-        return Ok(false);
-    }
-    require_ready().await?;
-    Ok(response(
+    response(
         suki_service::get_status(&credentials(paths)?)
             .await
-            .map_err(crate::logging::error_message)?,
-    )?
-    .is_active)
+            .map_err(|error| error.to_string())?,
+    )?;
+    Ok(true)
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -320,20 +460,35 @@ pub(crate) enum State {
     #[default]
     Checking,
     Ready,
-    Unavailable(String),
+    Unreachable(String),
+    Rejected(String),
 }
 impl State {
+    fn from_error(error: anyhow::Error) -> Self {
+        if suki_service::is_unreachable(&error) {
+            Self::Unreachable(error.to_string())
+        } else {
+            Self::Rejected(error.to_string())
+        }
+    }
+    pub(crate) fn reason(&self) -> Option<&str> {
+        match self {
+            Self::Unreachable(reason) | Self::Rejected(reason) => Some(reason),
+            Self::Checking | Self::Ready => None,
+        }
+    }
     pub(crate) fn label(&self) -> &str {
         match self {
             Self::Checking => "读取中",
             Self::Ready => "就绪",
-            Self::Unavailable(_) => "未连接",
+            Self::Unreachable(_) => "尚未连接",
+            Self::Rejected(_) => "服务异常",
         }
     }
 }
 pub(super) async fn probe() -> State {
-    match require_ready().await {
+    match await_protocol(std::time::Duration::ZERO, suki_service::get_version).await {
         Ok(()) => State::Ready,
-        Err(error) => State::Unavailable(error),
+        Err(error) => State::from_error(error),
     }
 }

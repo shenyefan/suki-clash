@@ -487,7 +487,7 @@ impl CoreManager {
         let core_ipc_path = start_clash
             .as_ref()
             .map(|config| config.core_config.core_ipc_path.clone());
-        if let Some(_) = start_clash {
+        if start_clash.is_some() {
             debug!("清除运行配置");
         } else {
             debug!("无运行配置可清除");
@@ -639,9 +639,7 @@ impl CoreManager {
                             {
                                 error!("加固重启后的内核通道失败（{error:#}）");
                                 if let Err(kill_error) = new_guard.terminate(Duration::ZERO).await {
-                                    error!(
-                                        "通道加固失败后终止内核失败（{kill_error:#}）"
-                                    );
+                                    error!("通道加固失败后终止内核失败（{kill_error:#}）");
                                     let now_secs = unix_timestamp_secs();
                                     running_pid_arc
                                         .store(new_pid.unwrap_or_default(), Ordering::Release);
@@ -654,9 +652,7 @@ impl CoreManager {
                                     )
                                     .await
                                     {
-                                        warn!(
-                                            "记录重启后未确认的内核清理失败（{record_error:#}）"
-                                        );
+                                        warn!("记录重启后未确认的内核清理失败（{record_error:#}）");
                                     }
                                     *failed_child_arc.lock().await = Some(new_guard);
                                     set_core_lifecycle_state(ServiceLifecycleState::Fatal);
@@ -698,10 +694,7 @@ impl CoreManager {
                             restart_count_arc.fetch_add(1, Ordering::Relaxed);
                             last_recovery_at_arc.store(now_secs, Ordering::Relaxed);
                             consecutive_attempt += 1;
-                            info!(
-                                "内核已重启（第 {} 次尝试）",
-                                consecutive_attempt
-                            );
+                            info!("内核已重启（第 {} 次尝试）", consecutive_attempt);
                             set_core_lifecycle_state(ServiceLifecycleState::Running);
                             child_guard = Some(new_guard);
                             continue 'watchdog;
