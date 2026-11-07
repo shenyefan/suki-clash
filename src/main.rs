@@ -130,7 +130,7 @@ fn main() {
             })
             .expect("无法打开 Suki Clash 窗口");
         if let Some(error) = font_error {
-            let message = format!("无法加载 MiSans 字体：{error}");
+            let message = format!("无法加载旗帜字体：{error}");
             log::error!(target: "ui", "{message}");
             let _ = main_window.update(cx, |_, window, cx| {
                 ui::notifications::push(

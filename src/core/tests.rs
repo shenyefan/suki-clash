@@ -2315,7 +2315,8 @@ async fn default_subscription_agent_identifies_clash_verge_before_suki() {
         })
         .unwrap();
     assert_eq!(agent, crate::network::DEFAULT_USER_AGENT);
-    assert!(agent.starts_with("clash-verge/v"));
+    // CV's identity follows docs/cv-upstream-sync.md, independently of Suki releases.
+    assert!(agent.starts_with("clash-verge/v2.6.0 "));
     assert!(agent.contains(" Suki-Clash/"));
 }
 

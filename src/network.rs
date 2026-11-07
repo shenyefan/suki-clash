@@ -51,13 +51,10 @@ pub(crate) fn github_proxy_url(
     })
 }
 
+/// CV version follows docs/cv-upstream-sync.md (2.6.0), independently of Suki releases.
 /// Subscription servers recognize Clash Verge first; retain this application's identity as well.
-pub(crate) const DEFAULT_USER_AGENT: &str = concat!(
-    "clash-verge/v",
-    env!("CARGO_PKG_VERSION"),
-    " Suki-Clash/",
-    env!("CARGO_PKG_VERSION")
-);
+pub(crate) const DEFAULT_USER_AGENT: &str =
+    concat!("clash-verge/v2.6.0 Suki-Clash/", env!("CARGO_PKG_VERSION"));
 type ClientCache = Vec<(Transport, bool, bool, Client)>;
 #[derive(Clone, Default)]
 pub(crate) struct Http {
