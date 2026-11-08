@@ -379,7 +379,7 @@ mod tests {
     #[tokio::test]
     async fn durable_deltas_restore_without_recounting_core_totals_and_exclude_direct() {
         let root = tempfile::tempdir().unwrap();
-        let path = root.path().join("record/traffic.json");
+        let path = root.path().join("records/traffic.json");
         let mut ledger = open(path.clone()).await;
         ledger.set_proxies(&proxies());
         let at = Instant::now();
@@ -521,17 +521,17 @@ mod tests {
     #[tokio::test]
     async fn failed_write_keeps_pending_bytes_and_retries_without_double_counting() {
         let root = tempfile::tempdir().unwrap();
-        let path = root.path().join("record/traffic.json");
+        let path = root.path().join("records/traffic.json");
         let mut ledger = open(path.clone()).await;
         let at = Instant::now();
         let now = time(8, 11);
         ledger.sample(now, at, &fixture(0, 0));
         ledger.sample(now, at + Duration::from_secs(1), &fixture(10, 20));
-        std::fs::write(root.path().join("record"), b"not a directory").unwrap();
+        std::fs::write(root.path().join("records"), b"not a directory").unwrap();
         ledger.flush(now).await;
         assert!(ledger.error().is_some());
         assert_eq!(ledger.snapshot(now).today.all.upload, 10);
-        std::fs::remove_file(root.path().join("record")).unwrap();
+        std::fs::remove_file(root.path().join("records")).unwrap();
         ledger.flush(now).await;
         assert!(ledger.error().is_none());
         assert_eq!(open(path).await.snapshot(now).today.all.upload, 10);
