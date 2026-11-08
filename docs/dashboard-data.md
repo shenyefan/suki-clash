@@ -7,10 +7,10 @@
 | 指标 | CV 取得路径 | Suki 处理 |
 | --- | --- | --- |
 | 上传、下载速率 | `use-traffic-data.ts` → Mihomo `/traffic` WebSocket → `enhanced-traffic-stats.tsx` | 保留真实流速率与近期曲线 |
-| 累计上传、下载 | 同一 traffic 响应 `upTotal/downTotal` | 当前完整 connections 快照已带 `uploadTotal/downloadTotal`；展示内核累计量，不以应用采样量代替 |
+| 累计上传、下载 | 同一 traffic 响应 `upTotal/downTotal` | 当前完整 connections 快照已带 `uploadTotal/downloadTotal`；累计卡片改为持久账本的今日／本月已观察增量；内核累计量只作为差值来源 |
 | 活动连接 | `use-connection-data.ts::useConnectionSummaryData` → count | 完整连接快照长度，流断开标未知，不把旧快照当作最新活动数 |
 | 内核内存 | `use-memory-data.ts` → `/memory` → `inuse` | 由同批 memory 采集任务接入；不能展示本应用进程 RSS 当内核内存 |
-| 速率曲线 | `use-traffic-monitor.ts` / `traffic-monitor-worker.ts` / `traffic-sampler.ts` | CV raw 10 分钟、压缩 60 分钟，纯内存；Suki 本批保留最近 10 分钟、最多 600 点有界会话曲线 |
+| 速率曲线 | `use-traffic-monitor.ts` / `traffic-monitor-worker.ts` / `traffic-sampler.ts` | CV raw 10 分钟、压缩 60 分钟，纯内存；Suki 保留最近 30 秒、最多 600 点有界会话曲线 |
 | 当前节点延迟 | `current-proxy-card.tsx` / 测速接口 | 使用节点测速，不把出口 IP 查询耗时当节点延迟 |
 | DNS 延迟 | 内核 `/dns/query` 实测 | 首次就绪及每次进入仪表盘时用随机子域查询计时，失败显示“—”；不是 DNS 请求统计 |
 
@@ -35,7 +35,7 @@ CV 的 `mihomo_traffic_date` / `mihomo_memory_date` storage key 是 WebSocket �
 
 顶部只保留外部 IP 及显隐、刷新。IP 国家／城市／ASN／运营商／时区／经纬度移至页面下方；实时指标随后展示，配置／节点／模式在统计区下方。内存使用私有 /memory 流，复用有限重连、心跳、有界刷新与代次隔离。节点延迟来自来源绑定的测速结果，失败、超时和未测分别展示，不使用 IP 探测耗时替代。
 
-没有实现 CV 未提供的日／月持久账本或 DNS 请求统计。原磁盘统计文件保留，不自动删除或迁移。
+日／月账本按 2026-11-08 用户要求独立实现，见下文。DNS 请求统计未实现；不读取或迁移旧磁盘统计文件。
 
 ## 验证
 
@@ -44,3 +44,19 @@ CV 的 `mihomo_traffic_date` / `mihomo_memory_date` storage key 是 WebSocket �
 ## 用户后续调整
 
 按用户要求恢复原有左右分区卡片与上方配置／当前节点／出站模式控制行。恢复代理／域名／进程排行，作为 Suki 明确的产品功能；它不依赖 CV 是否有对应卡片，只统计当前内核生命周期内已观察连接差值，重复快照不重复计数，断流不追补未知时段，重启或停止清空；不写磁盘。移除 IP 自动刷新偏好与 300 秒周期，每次进入仪表盘通过独立监测通道刷新，首次内核就绪探测保留。
+
+## 2026-11-08 小时账本
+
+仪表盘右列在排行上方新增当天 24 小时柱状图，可选择全部或仅代理；左侧累计流量提供今日／本月，范围跟随柱状图。账本由 `core::monitor` 单一后台所有者维护，领域实现为 `overview::history`，GPUI 只读取小型统计快照并拥有筛选状态。
+
+- 路径：平台数据目录 `record/traffic.json`，与订阅索引 `records/` 分开。当前版本 JSON 仅包含版本号、本月日期和每小时上传／下载、代理上传／下载及采样次数。最多 744 个小时，不存连接身份、地址、域名、进程或逐秒采样。
+- 内存：复用已有排行 Recorder 的连接基线，不另外克隆连接表；账本只持有已保存汇总、待保存增量、小型小时快照及代理类型索引。每 30 秒在后台合并并原子替换，退出补写，不在 render 中调度、读取或写盘。满月两个数值汇总副本的固定 payload 小于 64 KiB（不含映射元数据和代理类型索引）；全计数取 u64 最大值的 JSON 仍小于 192 KiB，已加入边界测试。
+- 全部计数来自 `/connections` 的内核总计数增量；代理部分来自已观察连接按实际出口类型的增量。连接在两个样本间结束可能少计代理流量；未知出口不推断为代理，不宣称完整系统流量。断流、内核代次／配置改变和总计数重置后重建基线；重复或迟到样本不增加账本。
+- 按本地自然日／月汇总，跨小时样本归入接收小时；无观测的小时提示“未记录”。只有本月汇总保存在内存及下次成功写入的文件中，不归档旧月份。
+- 保存失败保留待写增量并报告真实错误；坏文件不覆盖，修正后重读并合并一次。异常终止可能丢失最近约 30 秒尚未落盘的增量。
+
+内核字段语义已核对 Mihomo 官方 [connections.go](https://github.com/MetaCubeX/mihomo/blob/Meta/hub/route/connections.go)、[manager.go](https://github.com/MetaCubeX/mihomo/blob/Meta/tunnel/statistic/manager.go) 与 [tracker.go](https://github.com/MetaCubeX/mihomo/blob/Meta/tunnel/statistic/tracker.go)，并阅读本地 CV 速率订阅／采样及 ClashSuki `TrafficStatisticsStore` 调用链。参考项目没有作为本账本的状态或持久化实现。
+
+## 进入刷新
+
+每次进入或再次点击仪表盘均通过 `refresh_overview` 递增独立探测与控制读取修订，刷新控制状态、代理快照、出口 IP 和延迟。不会清空实时流、累计账本、排行或上次可用的 IP／延迟；失败保留旧值并报告真实原因。新值取得后按字段替换，内核代次／配置变化继续取消旧探测并校验结果身份。

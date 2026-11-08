@@ -44,6 +44,7 @@ pub(super) fn configure(window: &mut Window, cx: &mut App) {
                 .footer(
                     ui::modal_footer().child(
                         Button::new("gist-done")
+                            .icon(gpui_kit::assets::IconName::Check)
                             .label("完成")
                             .with_size(control::STANDARD)
                             .on_click(|_, window, cx| window.close_dialog(cx)),
@@ -355,6 +356,7 @@ pub(super) fn history(window: &mut Window, cx: &mut App) {
                 .footer(
                     ui::modal_footer().child(
                         Button::new("gist-history-done")
+                            .icon(gpui_kit::assets::IconName::Check)
                             .label("完成")
                             .with_size(control::STANDARD)
                             .on_click(|_, window, cx| window.close_dialog(cx)),
@@ -438,7 +440,7 @@ impl History {
         h_flex().w_full().gap(space::SM)
             .child(v_flex().flex_1().min_w(space::NONE).child(entry.created_at.clone()).child(ui::muted(entry.description.clone(), cx).truncate()))
             .child(ui::icon_button(SharedString::from(format!("gist-download-{}", entry.id)), gpui_kit::assets::IconName::Download, "下载备份").disabled(disabled).on_click(cx.listener(move |this, _, window, cx| this.run(Command::Download(download.clone()), window, cx))))
-            .child(Button::new(SharedString::from(format!("gist-restore-{}", entry.id))).outline().label("恢复备份").disabled(disabled).on_click(cx.listener(move |_, _, window, cx| {
+            .child(Button::new(SharedString::from(format!("gist-restore-{}", entry.id))).outline().icon(gpui_kit::assets::IconName::RotateCcw).label("恢复备份").disabled(disabled).on_click(cx.listener(move |_, _, window, cx| {
                 let owner = cx.weak_entity(); let restore = restore.clone();
                 window.open_alert_dialog(cx, move |dialog, window, cx| {
                     let owner = owner.clone(); let restore = restore.clone();
@@ -459,6 +461,7 @@ impl Render for History {
                     .gap(space::SM)
                     .child(
                         Button::new("gist-history-refresh")
+                            .icon(gpui_kit::assets::IconName::RefreshCw)
                             .outline()
                             .label("刷新")
                             .disabled(disabled)
@@ -474,6 +477,7 @@ impl Render for History {
                     )
                     .child(
                         Button::new("gist-history-previous")
+                            .icon(gpui_kit::assets::IconName::ArrowLeft)
                             .outline()
                             .label("上一页")
                             .disabled(disabled || self.state.page <= 1)
@@ -489,6 +493,7 @@ impl Render for History {
                     )
                     .child(
                         Button::new("gist-history-next")
+                            .icon(gpui_kit::assets::IconName::ArrowRight)
                             .outline()
                             .label("下一页")
                             .disabled(disabled || !self.state.has_more)

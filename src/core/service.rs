@@ -260,10 +260,12 @@ impl Service {
         self.autostart_queries
             .send_modify(|revision| *revision = revision.wrapping_add(1));
     }
-    pub(crate) fn refresh_ip(&self) {
-        log::debug!("开始刷新出口 IP");
-        self.probe_refresh
-            .send_modify(|control| control.revision = control.revision.wrapping_add(1));
+    pub(crate) fn refresh_overview(&self) {
+        log::debug!("开始刷新仪表盘");
+        self.probe_refresh.send_modify(|control| {
+            control.revision = control.revision.wrapping_add(1);
+            control.proxies = control.proxies.wrapping_add(1);
+        });
     }
     pub(crate) fn runtime_events(&self) -> async_channel::Receiver<std::sync::Arc<super::Runtime>> {
         self.runtime_events.clone()

@@ -325,6 +325,7 @@ impl EnhancementEditor {
                     let owner = owner.clone();
                     let text = text.clone();
                     Button::new(SharedString::from(format!("import-{part}")))
+                        .icon(IconName::FileInput)
                         .label(label)
                         .with_size(control::STANDARD)
                         .on_click(move |_, window, cx| {
@@ -405,6 +406,7 @@ impl EnhancementEditor {
                 ui::modal_footer()
                     .child(
                         Button::new("proxy-import-cancel")
+                            .icon(gpui_kit::assets::IconName::X)
                             .label("取消")
                             .with_size(control::STANDARD)
                             .on_click({
@@ -923,6 +925,7 @@ impl Render for EnhancementEditor {
                         .when(self.property == 1, |row| {
                             row.child(
                                 Button::new("enhancement-import")
+                                    .icon(gpui_kit::assets::IconName::FileInput)
                                     .outline()
                                     .with_size(control::STANDARD)
                                     .label("批量导入")

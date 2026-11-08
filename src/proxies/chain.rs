@@ -627,6 +627,7 @@ impl Render for ChainEditor {
                     )
                     .child(
                         Button::new("chain-clear")
+                            .icon(gpui_kit::assets::IconName::Trash)
                             .outline()
                             .label("清空")
                             .disabled(busy || self.nodes.is_empty())

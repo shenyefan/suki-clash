@@ -1,4 +1,4 @@
-//! Menu entries are text-only unless their command explicitly supplies an icon.
+//! Action entries supply semantic icons; value choices and filters remain text-only.
 use gpui_kit::{SharedString, component::menu::PopupMenuItem};
 
 pub(crate) fn menu(label: impl Into<SharedString>) -> PopupMenuItem {

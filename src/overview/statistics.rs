@@ -92,6 +92,10 @@ impl Recorder {
         self.rates.clear();
     }
 
+    pub(crate) fn previous_connections(&self) -> Option<&BTreeMap<String, (u64, u64)>> {
+        self.baseline.as_ref()
+    }
+
     pub(crate) fn connection_gap(&mut self) {
         self.baseline = None;
     }

@@ -62,10 +62,12 @@ pub(crate) mod layout {
     pub(crate) const BRAND_HEIGHT: Rems = rems(4.);
     pub(crate) const TEXTAREA_HEIGHT: Rems = rems(5.);
     pub(crate) const SETTINGS_EDITOR_HEIGHT: Rems = rems(16.);
-    pub(crate) const OVERVIEW_TRAFFIC_HEIGHT: Rems = rems(29.);
+    pub(crate) const OVERVIEW_HOURLY_BAR_WIDTH: Rems = rems(0.5);
+    pub(crate) const OVERVIEW_HOURLY_BAR_RADIUS: Rems = rems(0.25);
     pub(crate) const OVERVIEW_RANKING_ROW_HEIGHT: Rems = rems(3.);
     pub(crate) const OVERVIEW_TOTAL_BAR_HEIGHT: Rems = rems(0.75);
     pub(crate) const OVERVIEW_TOP_HEIGHT: Rems = rems(14.);
+    pub(crate) const OVERVIEW_DETAILS_HEIGHT: Rems = rems(20.);
     pub(crate) const EMPTY_STATE_HEIGHT: Rems = rems(18.);
     pub(crate) const EMPTY_INLINE_HEIGHT: Rems = rems(6.);
     pub(crate) const EMPTY_CHART_GRID_LINES: usize = 3;

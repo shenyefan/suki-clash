@@ -280,6 +280,7 @@ pub(crate) fn dialog_footer_pending(commit: &str, pending: bool) -> impl IntoEle
     modal_footer()
         .child(
             Button::new("dialog-cancel")
+                .icon(gpui_kit::assets::IconName::X)
                 .with_size(control::STANDARD)
                 .label("取消")
                 .on_click(|_, window, cx| window.close_dialog(cx)),
@@ -289,7 +290,14 @@ pub(crate) fn dialog_footer_pending(commit: &str, pending: bool) -> impl IntoEle
             div().flex_none().child(
                 DialogAction::new().child(
                     Button::new("dialog-commit")
-                        .icon(gpui_kit::assets::IconName::Check)
+                        .icon(match commit {
+                            "保存" => IconName::Save,
+                            "导入" => IconName::Download,
+                            "恢复备份" | "重置程序" => IconName::RotateCcw,
+                            "卸载服务" => IconName::Trash,
+                            "安装并重启" => IconName::Power,
+                            _ => IconName::Check,
+                        })
                         .with_size(control::STANDARD)
                         .primary()
                         .loading(pending)

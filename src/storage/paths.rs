@@ -95,6 +95,9 @@ impl AppPaths {
     pub(crate) fn settings(&self) -> PathBuf {
         self.config.join("settings")
     }
+    pub(crate) fn traffic_record(&self) -> PathBuf {
+        self.data.join("record").join("traffic.json")
+    }
     pub(crate) fn records(&self) -> PathBuf {
         self.data.join("records")
     }
