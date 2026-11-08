@@ -5,7 +5,13 @@ use crate::{
 };
 use gpui_kit::{
     assets::IconName,
-    component::{Disableable, Sizable, button::Button, h_flex, select::Select, v_flex},
+    component::{
+        Disableable, Sizable,
+        button::{Button, ButtonVariants},
+        h_flex,
+        select::Select,
+        v_flex,
+    },
     prelude::FluentBuilder as _,
     *,
 };
@@ -63,12 +69,18 @@ impl SettingsPage {
         if status_matches {
             let status = h_flex()
                 .gap(space::SM)
-                .child(ui::muted(core.label(), cx))
+                .when(core.error().is_none(), |status| {
+                    status.child(ui::muted(core.label(), cx))
+                })
                 .when_some(core.error().map(str::to_owned), |status, error| {
                     status.child(
                         Button::new("core-error-details")
-                            .label("查看原因")
-                            .with_size(control::STANDARD)
+                            .ghost()
+                            .small()
+                            .icon(IconName::CircleAlert)
+                            .label(core.label())
+                            .accessibility_label("查看原因")
+                            .tooltip("查看原因")
                             .on_click(move |_, window, cx| {
                                 ui::show_error(error.clone(), window, cx)
                             }),

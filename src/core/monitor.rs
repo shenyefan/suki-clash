@@ -84,6 +84,8 @@ pub(crate) struct Runtime {
     pub(crate) proxy_port: Option<u16>,
     pub(crate) proxies: Proxies,
     pub(crate) statistics: Summary,
+    pub(crate) history: crate::overview::history::Snapshot,
+    pub(crate) history_error: Option<String>,
     pub(crate) latency: Option<u32>,
     pub(crate) external_ip: Option<String>,
     pub(crate) ip_info: Option<IpInfo>,
@@ -119,7 +121,9 @@ impl Runtime {
         }
     }
     fn apply_probe(&mut self, result: Probe) {
-        self.latency = result.latency;
+        if let Some(latency) = result.latency {
+            self.latency = Some(latency);
+        }
         if let Some(info) = result.ip_info {
             self.external_ip = Some(info.ip.clone());
             self.ip_info = Some(info);
@@ -170,8 +174,15 @@ pub(super) async fn run(
         icons,
         shutdown.clone(),
     ));
+    let mut history = crate::overview::history::Ledger::open(paths.traffic_record()).await;
+    let mut persist = tokio::time::interval(Duration::from_secs(30));
+    persist.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut recorder = Recorder::default();
-    let mut runtime = Runtime::default();
+    let mut runtime = Runtime {
+        history: history.snapshot(chrono::Local::now()),
+        history_error: history.error(),
+        ..Default::default()
+    };
     let mut connections = super::streams::Feed::start(
         "/connections?interval=1000",
         target.clone(),
@@ -213,6 +224,8 @@ pub(super) async fn run(
             }
             icon_requests.send_replace(None);
             recorder.set_scope(next_scope);
+            history.gap();
+            history.set_proxies(&Proxies::default());
             scope = next_scope;
             last_control = None;
             control_failures = 0;
@@ -220,6 +233,11 @@ pub(super) async fn run(
             connection_error = None;
             traffic_error = None;
             runtime = Runtime {
+                latency: runtime.latency,
+                external_ip: runtime.external_ip.clone(),
+                ip_info: runtime.ip_info.clone(),
+                history: history.snapshot(chrono::Local::now()),
+                history_error: history.error(),
                 statistics: Summary {
                     rankings: recorder.rankings(),
                     ..Default::default()
@@ -234,6 +252,13 @@ pub(super) async fn run(
         }
         tokio::select! {
                     _=shutdown.changed()=>break,
+                    _=persist.tick()=> {
+                        history.flush(chrono::Local::now()).await;
+                        runtime.history = history.snapshot(chrono::Local::now());
+                        runtime.history_error = history.error();
+                        dirty=true;
+                        continue;
+                    },
                     _=async { match &mut refresh { Some(refresh) => { let _ = refresh.changed().await; }, None => std::future::pending::<()>().await } },if refresh.is_some()=> {
                         if let Some(receiver) = &mut refresh {
                             if receiver.has_changed().is_err() { refresh=None; }
@@ -268,15 +293,17 @@ pub(super) async fn run(
                             if scope!=Some((packet.generation,packet.epoch)){continue;}
                             match decode_connections(&packet.bytes) {
                                 Ok(current)=> {
+                                    history.sample(chrono::Local::now(), packet.at, &current, recorder.previous_connections());
+                                    runtime.history = history.snapshot(chrono::Local::now());
                                     runtime.statistics.connections=Some(current.connections.len());
                                     runtime.statistics.rankings=recorder.sample_connections(&current);
 
                                     runtime.connections=Arc::new(current);runtime.connections_at=Some(packet.at);runtime.connections_live=true;connection_error=None;
                                 },
-                                Err(error)=> {connection_error=Some(error);runtime.connections_live=false;runtime.statistics.connections=None;recorder.connection_gap();}
+                                Err(error)=> {connection_error=Some(error);runtime.connections_live=false;runtime.statistics.connections=None;recorder.connection_gap();history.gap();}
                             }
                         } else if let Some(error)=state.error {
-                            runtime.connections_live=false;runtime.statistics.connections=None;connection_error=Some(error);recorder.connection_gap();
+                            runtime.connections_live=false;runtime.statistics.connections=None;connection_error=Some(error);recorder.connection_gap();history.gap();
                         }
                     },
                     changed=traffic.events.changed()=> {
@@ -303,6 +330,7 @@ pub(super) async fn run(
                             match observed {
                                 Ok((mode,dns,mut proxies,port))=>{
                                     control_failures=0;
+                                    history.set_proxies(&proxies);
                                     let delays=delay_events.borrow();
                                     if scope==Some((delays.generation,delays.epoch)){proxies.measurements=delays.results.clone();proxies.testing=delays.testing.clone();proxies.batches=delays.batches.clone();}
         let sources=proxies.entries.values().filter(|proxy|!proxy.hidden).map(|proxy|proxy.icon.trim().to_owned()).filter(|source|!source.is_empty() && source.len()<=3*1024*1024).take(128).collect();
@@ -349,6 +377,10 @@ pub(super) async fn run(
     connections.finish().await;
     traffic.finish().await;
     memory.finish().await;
+    history.flush(chrono::Local::now()).await;
+    if let Some(error) = history.error() {
+        log::error!(target: "statistics", "{error}");
+    }
     updates.close();
 }
 fn decode_connections(bytes: &[u8]) -> Result<Connections, String> {
@@ -657,7 +689,20 @@ mod tests {
         });
         assert_eq!(runtime.ip_info, Some(info));
         assert_eq!(runtime.external_ip.as_deref(), Some("203.0.113.9"));
+        assert_eq!(runtime.latency, Some(23));
         assert_eq!(runtime.probe_error.as_deref(), Some("IP 服务返回 HTTP 503"));
+        runtime.apply_probe(super::Probe {
+            generation: 1,
+            epoch: 1,
+            latency: Some(42),
+            ip: Some(nested.ip.clone()),
+            ip_info: Some(nested.clone()),
+            error: None,
+        });
+        assert_eq!(runtime.ip_info, Some(nested));
+        assert_eq!(runtime.external_ip.as_deref(), Some("203.0.113.10"));
+        assert_eq!(runtime.latency, Some(42));
+        assert!(runtime.probe_error.is_none());
     }
 
     use super::*;

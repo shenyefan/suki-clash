@@ -58,13 +58,17 @@ pub(crate) fn expand(
         .footer(
             ui::modal_footer()
                 .w_full()
-                .child(Button::new("copy-source").label("复制").outline().on_click(
-                    move |_, _, cx| {
-                        cx.write_to_clipboard(ClipboardItem::new_string(
-                            copy.read(cx).value().to_string(),
-                        ));
-                    },
-                ))
+                .child(
+                    Button::new("copy-source")
+                        .icon(gpui_kit::assets::IconName::Copy)
+                        .label("复制")
+                        .outline()
+                        .on_click(move |_, _, cx| {
+                            cx.write_to_clipboard(ClipboardItem::new_string(
+                                copy.read(cx).value().to_string(),
+                            ));
+                        }),
+                )
                 .child(div().flex_1())
                 .child(ui::modal_close("完成")),
         )

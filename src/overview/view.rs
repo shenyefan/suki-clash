@@ -2,9 +2,10 @@ use super::Overview;
 use crate::ui;
 use crate::ui::theme::{self, layout, opacity, space, stroke, text};
 use gpui_kit::{
+    base::plot::AxisLabelPlacement,
     component::{
         ActiveTheme, Disableable, Sizable,
-        chart::LineChart,
+        chart::{BarChart, LineChart},
         h_flex,
         progress::Progress,
         scroll::ScrollableElement,
@@ -241,13 +242,16 @@ impl Overview {
             Self::context("内核内存", memory, text::CAPTION, cx),
         ]
     }
-    fn totals(&self, cx: &App) -> Div {
+    fn totals(&self, cx: &mut Context<Self>) -> Div {
         let runtime = self.session.read(cx).runtime();
-        let available = runtime.connections_at.is_some();
-        let (up, down) = (
-            runtime.connections.upload_total,
-            runtime.connections.download_total,
-        );
+        let available = runtime.history.available;
+        let period = if self.month {
+            runtime.history.month
+        } else {
+            runtime.history.today
+        };
+        let amount = period.bytes(self.proxy_only);
+        let (up, down) = (amount.upload, amount.download);
         let total = up.saturating_add(down);
         let share = if total == 0 {
             0.5
@@ -271,7 +275,40 @@ impl Overview {
             .w_full()
             .h_full()
             .justify_between()
-            .child(Self::value("累计流量", &total_value, &total_unit, cx))
+            .child(
+                h_flex()
+                    .justify_between()
+                    .items_center()
+                    .gap(space::SM)
+                    .child(ui::muted(
+                        if self.proxy_only {
+                            "累计流量 · 仅代理"
+                        } else {
+                            "累计流量"
+                        },
+                        cx,
+                    ))
+                    .child(
+                        TabBar::new("traffic-period")
+                            .segmented()
+                            .small()
+                            .children([Tab::new().label("今日"), Tab::new().label("本月")])
+                            .selected_index(usize::from(self.month))
+                            .on_click(cx.listener(|this, index, _, cx| {
+                                this.month = *index == 1;
+                                cx.notify();
+                            })),
+                    ),
+            )
+            .child(
+                h_flex()
+                    .items_baseline()
+                    .gap(space::XS)
+                    .text_size(text::METRIC)
+                    .font_weight(text::EMPHASIS)
+                    .child(total_value)
+                    .child(total_unit),
+            )
             .child(
                 v_flex()
                     .gap(space::SM)
@@ -322,6 +359,82 @@ impl Overview {
                     ),
             )
     }
+    fn history_card(&self, window: &Window, cx: &mut Context<Self>) -> Div {
+        let runtime = self.session.read(cx).runtime();
+        let proxy_only = self.proxy_only;
+        let points: Vec<_> = runtime.history.hours.iter().copied().enumerate().collect();
+        let color = theme::download_color(cx);
+        let plot = BarChart::new(points)
+            .id("hourly-traffic-chart")
+            .appear(false)
+            .band(|(hour, _): &(usize, super::history::Hour)| format!("{hour:02}:00"))
+            .value(move |(_, hour): &(usize, super::history::Hour)| {
+                hour.bytes(proxy_only).total() as f64
+            })
+            .fill(move |_, _, _, _| color)
+            .tick_margin(6)
+            .value_axis(true)
+            .value_axis_label_placement(AxisLabelPlacement::Inside)
+            .value_tick_count(3)
+            .value_tick_format(|value| bytes(value.max(0.) as u64))
+            .grid(true)
+            .grid_dashed(true)
+            .max_band_width(layout::OVERVIEW_HOURLY_BAR_WIDTH.to_pixels(window.rem_size()))
+            .min_length(
+                layout::OVERVIEW_HOURLY_BAR_WIDTH
+                    .to_pixels(window.rem_size())
+                    .as_f32(),
+            )
+            .corner_radii(layout::OVERVIEW_HOURLY_BAR_RADIUS.to_pixels(window.rem_size()))
+            .tooltip_title(|(hour, _)| format!("{hour:02}:00–{:02}:00", hour + 1).into())
+            .tooltip_value(move |(_, hour), _| {
+                if hour.samples == 0 {
+                    "未记录".into()
+                } else {
+                    format!(
+                        "上传 {} · 下载 {}",
+                        bytes(hour.bytes(proxy_only).upload),
+                        bytes(hour.bytes(proxy_only).download)
+                    )
+                    .into()
+                }
+            })
+            .name(if proxy_only { "仅代理" } else { "全部" });
+        let frame = div()
+            .id("hourly-traffic-plot")
+            .flex_1()
+            .min_h(space::NONE)
+            .w_full();
+        #[cfg(test)]
+        let frame = {
+            use gpui_kit::test::TestSupportExt;
+            frame.test_support()
+        };
+        ui::surface(cx)
+            .w_full()
+            .h(layout::OVERVIEW_TOP_HEIGHT)
+            .p(space::XL)
+            .gap(space::LG)
+            .child(
+                h_flex()
+                    .justify_between()
+                    .items_center()
+                    .gap(space::SM)
+                    .child(ui::muted("流量", cx))
+                    .child(
+                        TabBar::new("traffic-scope")
+                            .segmented()
+                            .small()
+                            .children([Tab::new().label("全部"), Tab::new().label("仅代理")])
+                            .selected_index(usize::from(proxy_only))
+                            .on_click(cx.listener(|this, index, _, cx| {
+                                this.proxy_only = *index == 1;
+                                cx.notify();
+                            })),
+                    ),
+            )
+            .child(frame.child(plot))
+    }
     fn rankings_card(&self, window: &mut Window, cx: &mut Context<Self>) -> Div {
         let runtime = self.session.read(cx).runtime();
         let ranks = runtime
@@ -335,7 +448,7 @@ impl Overview {
         let ranks = std::rc::Rc::new(ranks);
         ui::surface(cx)
             .w_full()
-            .h(layout::OVERVIEW_TRAFFIC_HEIGHT)
+            .h(layout::OVERVIEW_DETAILS_HEIGHT)
             .p(space::XL)
             .gap(space::LG)
             .child(
@@ -417,11 +530,17 @@ impl Overview {
                     }),
             )
     }
-    fn ip_details(&self, cx: &App) -> Div {
+    fn ip_details(&self, cx: &App) -> AnyElement {
         let runtime = self.session.read(cx).runtime();
-        let mut card = ui::surface(cx)
+        let card = ui::surface(cx).id("overview-ip-details");
+        #[cfg(test)]
+        let card = {
+            use gpui_kit::test::TestSupportExt;
+            card.test_support()
+        };
+        let mut card = card
             .w_full()
-            .h(layout::OVERVIEW_TOP_HEIGHT)
+            .h(layout::OVERVIEW_DETAILS_HEIGHT)
             .p(space::XL)
             .gap(space::LG)
             .child("IP 信息");
@@ -431,29 +550,64 @@ impl Overview {
                 info.asn.map(|asn| format!("AS{asn}")).unwrap_or_default(),
                 info.asn_organization
             );
-            for (label, value) in [
-                ("国家地区", format!("{} {}", info.flag(), info.country)),
-                ("城市", info.location()),
-                ("网络组织", network),
-                ("运营商", info.organization.clone()),
+            for (key, label, value) in [
+                (
+                    "overview-ip-country",
+                    "国家地区",
+                    format!("{} {}", info.flag(), info.country),
+                ),
+                ("overview-ip-city", "城市", info.location()),
+                ("overview-ip-network", "网络组织", network),
+                ("overview-ip-isp", "运营商", info.organization.clone()),
+                (
+                    "overview-ip-timezone",
+                    "时区",
+                    if info.timezone.is_empty() {
+                        "—".into()
+                    } else {
+                        info.timezone.clone()
+                    },
+                ),
+                (
+                    "overview-ip-coordinates",
+                    "经纬度",
+                    info.longitude_microdegrees
+                        .zip(info.latitude_microdegrees)
+                        .map(|(longitude, latitude)| {
+                            format!(
+                                "{:.4}, {:.4}",
+                                f64::from(longitude) / 1_000_000.,
+                                f64::from(latitude) / 1_000_000.
+                            )
+                        })
+                        .unwrap_or_else(|| "—".into()),
+                ),
             ] {
                 if !value.trim().is_empty() {
-                    card = card.child(
-                        h_flex().gap(space::MD).child(ui::muted(label, cx)).child(
+                    let row = h_flex()
+                        .id(key)
+                        .gap(space::MD)
+                        .child(ui::muted(label, cx))
+                        .child(
                             div()
                                 .flex_1()
                                 .min_w(space::NONE)
                                 .truncate()
                                 .text_right()
                                 .child(value.trim().to_owned()),
-                        ),
-                    );
+                        );
+                    #[cfg(test)]
+                    let row = {
+                        use gpui_kit::test::TestSupportExt;
+                        row.test_support()
+                    };
+                    card = card.child(row);
                 }
             }
         } else {
             card = card.child(ui::muted("暂无 IP 信息", cx));
         }
-        card
+        card.into_any_element()
     }
 }
 
@@ -628,6 +782,8 @@ impl Render for Overview {
                                         v_flex()
                                             .flex_1()
                                             .min_w(space::NONE)
+                                            .gap(space::LG)
+                                            .child(self.history_card(_window, cx))
                                             .child(self.rankings_card(_window, cx)),
                                     ),
                             ),

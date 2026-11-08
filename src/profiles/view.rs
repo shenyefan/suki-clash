@@ -394,11 +394,15 @@ impl ProfilesPage {
                         }),
                 )
                 .when(overrides, |menu| {
-                    menu.item(crate::ui::actions::menu("新建 JavaScript").on_click(
-                        move |_, w, cx| {
-                            js.update(cx, |this, cx| this.create(DocumentKind::JavaScript, w, cx))
-                        },
-                    ))
+                    menu.item(
+                        crate::ui::actions::menu("新建 JavaScript")
+                            .icon(IconName::FileCode)
+                            .on_click(move |_, w, cx| {
+                                js.update(cx, |this, cx| {
+                                    this.create(DocumentKind::JavaScript, w, cx)
+                                })
+                            }),
+                    )
                 })
             })
     }

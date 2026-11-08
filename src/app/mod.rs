@@ -166,20 +166,20 @@ impl SukiApp {
     }
 
     fn navigate(&mut self, page: Page, cx: &mut Context<Self>) {
-        if self.page != page {
-            if page == Page::Overview
-                && let Some(window) = cx.active_window()
-            {
-                cx.defer(move |cx| {
-                    let _ = window.update(cx, |_, window, cx| {
-                        if crate::core::controller(cx).read(cx).snapshot().phase()
-                            == crate::core::Phase::Ready
-                        {
-                            crate::core::refresh_ip(window, cx);
-                        }
-                    });
+        if page == Page::Overview
+            && let Some(window) = cx.active_window()
+        {
+            cx.defer(move |cx| {
+                let _ = window.update(cx, |_, window, cx| {
+                    if crate::core::controller(cx).read(cx).snapshot().phase()
+                        == crate::core::Phase::Ready
+                    {
+                        crate::core::refresh_overview(window, cx);
+                    }
                 });
-            }
+            });
+        }
+        if self.page != page {
             if page == Page::Override {
                 self.overrides.update(cx, |page, cx| page.reopen(cx));
             }

@@ -124,7 +124,7 @@
 | 远程备份 | `WebDavAction` | CV WebDAV |
 | 运行配置 | `RuntimeConfig` | CV 运行配置查看 |
 | 目录 | `ConfigDirectories` | CV 目录菜单 |
-| 应用更新 | `CheckUpdates` | CV 应用更新 |
+| 应用版本与更新 | `AppVersion` | 版本号右侧检查更新入口 |
 | 诊断 | `DeveloperTools` | CV 开发工具／诊断入口；当前未接入 |
 | 后台服务 | `ServiceMode` | CV 服务管理 |
 | 应用版本 | `AppVersion` | 应用版本信息 |

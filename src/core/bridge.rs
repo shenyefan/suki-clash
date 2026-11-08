@@ -189,6 +189,7 @@ fn install(service: Option<Service>, snapshot: Snapshot, cx: &mut App) {
                             let mut errors = vec![];
                             for (current, previous, level) in [
                                 (&runtime.error, &this.runtime.error, "ERROR"),
+                                (&runtime.history_error, &this.runtime.history_error, "ERROR"),
                                 (&runtime.stream_error, &this.runtime.stream_error, "WARNING"),
                                 (&runtime.probe_error, &this.runtime.probe_error, "WARNING"),
                             ] {
@@ -461,20 +462,20 @@ pub(crate) fn refresh_autostart(cx: &App) {
     }
 }
 
-pub(crate) fn refresh_ip(window: &mut Window, cx: &mut App) {
+pub(crate) fn refresh_overview(window: &mut Window, cx: &mut App) {
     let available = controller(cx).update(cx, |this, _| {
         if this.snapshot.phase != Phase::Ready {
             return false;
         }
         if let Some(service) = &this.service {
-            service.refresh_ip();
+            service.refresh_overview();
             true
         } else {
             false
         }
     });
     if !available {
-        crate::ui::show_error("内核未就绪，无法刷新出口 IP".into(), window, cx);
+        crate::ui::show_error("内核未就绪，无法刷新仪表盘".into(), window, cx);
     }
 }
 pub(crate) fn execute(

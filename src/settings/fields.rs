@@ -136,6 +136,17 @@ impl SettingsPage {
                         Some(IconName::FolderOpen)
                     }
                     "生成密钥" => Some(IconName::KeyRound),
+                    "安装服务" => Some(IconName::Download),
+                    "修复服务" => Some(IconName::Wrench),
+                    "卸载服务" => Some(IconName::Trash),
+                    "应用所选通道" => Some(IconName::Check),
+                    "校验配置" => Some(IconName::FileCheck),
+                    "清空 Fake-IP 缓存" => Some(IconName::Trash),
+                    "管理隧道" => Some(IconName::Network),
+                    "退出应用" => Some(IconName::LogOut),
+                    "选择应用" => Some(IconName::AppWindow),
+                    "重建防火墙规则" => Some(IconName::Shield),
+                    "重置程序" => Some(IconName::RotateCcw),
                     "添加 WebUI" => Some(IconName::Plus),
                     "导出诊断信息" => Some(IconName::FileOutput),
                     "查看运行配置" => Some(IconName::FileCode),
@@ -143,32 +154,36 @@ impl SettingsPage {
                     | "更新 MMDB" | "更新 ASN" => Some(IconName::RefreshCw),
                     _ => None,
                 };
-                if spec.kind == FieldKind::ReadOnly
-                    && !(self.kind == super::SettingsKind::Core
-                        && matches!(action, "打开内核目录" | "打开配置目录" | "校验配置"))
-                {
-                    return Button::new(SharedString::from(format!("action-{key}-{action}")))
-                        .outline()
-                        .with_size(control::STANDARD)
-                        .label(match action {
-                            "配置 Gist 备份" => "Gist 配置",
-                            "创建 Gist 备份" | "创建本地备份" => "创建备份",
-                            "本地备份历史" => "备份历史",
-                            "Gist 备份历史" => "备份历史",
-                            _ => action,
-                        })
-                        .when_some(icon, |button, icon| button.icon(icon))
-                        .disabled(busy)
-                        .on_click(cx.listener(move |this, _, w, cx| {
-                            this.field_action(key, action, w, cx)
-                        }));
-                }
+                let label = match action {
+                    "配置 Gist 备份" => "Gist 配置",
+                    "复制环境变量" => "复制",
+                    "刷新版本列表" => "刷新版本",
+                    "应用所选通道" => "应用通道",
+                    "重建防火墙规则" => "重建规则",
+                    "清空 Fake-IP 缓存" => "清空缓存",
+                    "创建 Gist 备份" | "创建本地备份" => "创建备份",
+                    "本地备份历史" | "Gist 备份历史" => "备份历史",
+                    "打开配置目录" => "配置目录",
+                    "打开内核目录" => "内核目录",
+                    "打开日志目录" => "日志目录",
+                    "打开备份目录" => "备份目录",
+                    "检查应用更新" => "检查更新",
+                    "导出诊断信息" => "导出诊断",
+                    "查看运行配置" => "运行配置",
+                    _ => action,
+                };
                 Button::new(SharedString::from(format!("action-{key}-{action}")))
+                    .outline()
                     .with_size(control::STANDARD)
-                    .when_some(icon, |button, icon| {
-                        button.ghost().icon(icon).tooltip(action)
-                    })
-                    .when(icon.is_none(), |button| button.outline().label(action))
+                    .when(
+                        spec.kind == FieldKind::ReadOnly || icon.is_none(),
+                        |button| button.label(label),
+                    )
+                    .when(
+                        spec.kind != FieldKind::ReadOnly && icon.is_some(),
+                        |button| button.ghost().accessibility_label(label).tooltip(label),
+                    )
+                    .when_some(icon, |button, icon| button.icon(icon))
                     .disabled(busy || disabled)
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.field_action(key, action, window, cx)
@@ -257,6 +272,11 @@ impl SettingsPage {
                     Button::new(SharedString::from(format!("service-{action}")))
                         .outline()
                         .label(action)
+                        .icon(match action {
+                            "安装服务" => IconName::Download,
+                            "修复服务" => IconName::Wrench,
+                            _ => IconName::Trash,
+                        })
                         .with_size(control::STANDARD)
                         .disabled(disabled || checking)
                         .on_click(cx.listener(move |this, _, window, cx| {

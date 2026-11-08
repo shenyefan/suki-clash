@@ -318,6 +318,7 @@ impl ProxiesPage {
                     ui::modal_footer()
                         .child(
                             Button::new("cancel-group-url")
+                                .icon(gpui_kit::assets::IconName::X)
                                 .with_size(control::STANDARD)
                                 .outline()
                                 .label("取消")
@@ -325,6 +326,7 @@ impl ProxiesPage {
                         )
                         .child(
                             Button::new("save-group-url")
+                                .icon(gpui_kit::assets::IconName::Check)
                                 .with_size(control::STANDARD)
                                 .primary()
                                 .label("保存")

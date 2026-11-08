@@ -41,8 +41,8 @@ mod service;
 
 pub(crate) use bridge::{
     TunServiceRequired, apply_app_update, attach_window, controller, execute, init,
-    init_unavailable, quit, refresh_autostart, refresh_ip, request, reset_program, restart_program,
-    submit, try_controller,
+    init_unavailable, quit, refresh_autostart, refresh_overview, request, reset_program,
+    restart_program, submit, try_controller,
 };
 pub(crate) use privileged::{Action as ServiceAction, State as ServiceState};
 pub(crate) use service::{Command, Service, ServiceError};
