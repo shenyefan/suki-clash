@@ -299,6 +299,7 @@ impl ProfilesPage {
                                 "override-rows",
                                 vec![height; self.documents.len()],
                                 &self.list_scroll,
+                                None,
                                 move |this, index, _, cx| {
                                     this.override_row(&this.documents[index], cx)
                                 },

@@ -506,6 +506,7 @@ impl Overview {
                             "traffic-ranking-rows",
                             vec![height; count],
                             &self.ranking_scroll,
+                            None,
                             move |_, index, _, cx| {
                                 let (name, amount) = &ranks[index];
                                 v_flex()

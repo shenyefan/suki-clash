@@ -674,6 +674,7 @@ impl Render for ChainEditor {
                             "chain-node-list",
                             vec![list::DETAIL_ROW_HEIGHT.to_pixels(window.rem_size()); nodes.len()],
                             &self.list_scroll,
+                            None,
                             move |this, index, _, cx| this.row(index, &nodes[index], cx),
                         ))
                     }),

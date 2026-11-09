@@ -417,6 +417,7 @@ impl Render for ProfilesPage {
             "profile-card-rows",
             vec![height; count.div_ceil(columns)],
             &self.list_scroll,
+            None,
             move |this, row, _, cx| {
                 let start = row * columns;
                 let end = (start + columns).min(this.documents.len());

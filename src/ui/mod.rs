@@ -14,7 +14,7 @@ pub(crate) mod theme;
 use gpui_kit::{
     assets::IconName,
     component::{
-        ActiveTheme, Disableable, Icon, Selectable, Sizable, WindowExt,
+        ActiveTheme, Disableable, FocusableExt, Icon, Selectable, Sizable, WindowExt,
         button::{Button, ButtonVariants},
         empty::{Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle},
         form::{Field, Form},
@@ -63,9 +63,13 @@ pub(crate) fn file_size(bytes: u64) -> String {
 pub(crate) fn selectable_card(card: Button, selected: bool, cx: &App) -> Button {
     use gpui_kit::prelude::FluentBuilder as _;
     card.selected(selected)
+        // Virtual rows clip to their height. Keep keyboard focus inside the card.
+        .focus_ring(false)
+        .border(stroke::HAIRLINE)
+        .border_color(transparent_black())
         .bg(cx.theme().muted.opacity(opacity::PANEL))
         .when(selected, |card| card.bg(theme::selection_tint(cx)))
-        .focus_visible(|card| card.border_1().border_color(cx.theme().ring))
+        .focus_visible(|card| card.border_color(cx.theme().ring))
 }
 
 pub(crate) fn section(title: impl Into<SharedString>, cx: &App) -> Div {

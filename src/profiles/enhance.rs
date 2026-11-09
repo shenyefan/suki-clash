@@ -878,6 +878,7 @@ impl Render for EnhancementEditor {
                 "enhancement-list-scroll",
                 heights,
                 &self.lists[part],
+                None,
                 move |this, row, _, cx| {
                     this.enhancement_row(part, indices[row], editable, &deleted, cx)
                 },

@@ -208,6 +208,7 @@ impl Render for Editor {
                         "uwp-rows",
                         vec![height; self.visible.len()],
                         &self.scroll,
+                        None,
                         |this, ix, _, cx| {
                             let app = &this.apps[this.visible[ix]];
                             let sid = app.sid.clone();

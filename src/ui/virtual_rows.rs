@@ -10,6 +10,7 @@ pub(crate) fn rows<V: Render>(
     id: impl Into<ElementId>,
     heights: Vec<Pixels>,
     handle: &VirtualListScrollHandle,
+    overlay: Option<AnyElement>,
     render: impl Fn(&mut V, usize, &mut Window, &mut Context<V>) -> AnyElement + 'static,
 ) -> AnyElement {
     let sizes: Rc<Vec<Size<Pixels>>> = Rc::new(
@@ -38,6 +39,8 @@ pub(crate) fn rows<V: Render>(
             })
             .track_scroll(handle),
         )
+        // Pinned content covers rows, while the scrollbar remains above both.
+        .children(overlay)
         .child(Scrollbar::vertical(handle))
         .into_any_element()
 }
@@ -59,7 +62,7 @@ pub(crate) fn panel<V: Render>(
         .w_full()
         .h(height)
         .flex_none()
-        .child(rows(owner, id, heights, handle, render))
+        .child(rows(owner, id, heights, handle, None, render))
         .into_any_element()
 }
 
@@ -82,6 +85,7 @@ mod tests {
                 "large-rows",
                 vec![px(30.); 10000],
                 &self.scroll,
+                None,
                 |this, index, _, _| {
                     this.seen.insert(index);
                     div().child(index.to_string()).into_any_element()

@@ -294,6 +294,7 @@ impl Render for Inventory {
                     "interface-rows",
                     heights,
                     &self.list_scroll,
+                    None,
                     move |_, index, _, cx| {
                         let (name, value) = &entries[index];
                         let Some((label, value)) = value else {

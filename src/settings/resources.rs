@@ -186,6 +186,7 @@ impl SettingsPage {
             "provider-rows",
             heights,
             &self.lists["providers"],
+            None,
             move |this, index, _, cx| {
                 let provider = &providers[index];
                 let name = provider.name().to_owned();

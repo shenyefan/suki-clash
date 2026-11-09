@@ -174,7 +174,7 @@ impl ProxiesPage {
             div()
                 .id("proxy-sticky-header")
                 .absolute()
-                .top(y + list::INSET_Y.to_pixels(window.rem_size()))
+                .top(y)
                 .left(list::INSET_X)
                 .right(list::INSET_X)
                 .h(height)
@@ -197,6 +197,7 @@ impl ProxiesPage {
                 "proxy-virtual-rows",
                 heights,
                 &self.list_scroll,
+                sticky.map(IntoElement::into_any_element),
                 move |this, index, window, cx| {
                     let (group, nodes) = &rows[index];
                     if let Some(nodes) = nodes {
@@ -226,7 +227,6 @@ impl ProxiesPage {
                     }
                 },
             ))
-            .children(sticky)
             .into_any_element()
     }
     fn group_header(
