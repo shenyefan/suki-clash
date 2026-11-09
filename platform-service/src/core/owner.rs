@@ -189,7 +189,7 @@ async fn wait_for_owner_health(path: &Path) -> Result<bool> {
             Ok(()) => return Ok(true),
             Err(error) if crate::client::is_unreachable(&error) => {
                 if attempt == OWNER_HEALTH_ATTEMPTS {
-                    warn!("本地通道所有者尚未可连接（{error}）");
+                    warn!("本地通道所有者尚未可连接：{error}");
                     return Ok(false);
                 }
             }

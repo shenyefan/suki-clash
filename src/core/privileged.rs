@@ -224,7 +224,7 @@ impl Session {
             Ok(reply) => reply,
             // The service deduplicates this exact session token. Retry once if the acknowledgement was lost.
             Err(error) if suki_service::is_unreachable(&error) => {
-                log::debug!("后台服务未确认启动应答，将在同一会话中确认（{error:#}）");
+                log::debug!("后台服务未确认启动应答，将在同一会话中确认：{error:#}");
                 suki_service::start_clash(&credentials, &request)
                     .await
                     .map_err(|error| format!("服务启动请求未确认，未启动其他内核：{error}"))?

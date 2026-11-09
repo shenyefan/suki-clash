@@ -47,7 +47,7 @@ impl ProgramLog {
                 feed.publish(Record::program(
                     Level::Warning,
                     "logging",
-                    &format!("清理脚本日志失败（{error}）"),
+                    &format!("清理脚本日志失败：{error}"),
                 ));
             }
             self.policy = Some(policy);
@@ -90,7 +90,7 @@ impl ProgramLog {
     }
     fn fail(&mut self, feed: &Feed, error: &dyn std::fmt::Display) {
         self.sink = None;
-        let message = format!("程序日志文件不可用（{error}），记录暂存于内存");
+        let message = format!("程序日志文件不可用：{error}，记录暂存于内存");
         if self.failure.as_ref() != Some(&message) {
             feed.publish(Record::program(Level::Error, "logging", &message));
             self.failure = Some(message);

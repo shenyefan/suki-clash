@@ -215,10 +215,7 @@ pub async fn stop_child(
                 Err(_) => log::warn!("内核收到 SIGTERM 后未退出，强制终止"),
             }
         } else {
-            log::warn!(
-                "无法向内核发送信号（{}）",
-                std::io::Error::last_os_error()
-            );
+            log::warn!("无法向内核发送信号：{}", std::io::Error::last_os_error());
         }
     }
     child.start_kill()?;

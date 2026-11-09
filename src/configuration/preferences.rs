@@ -503,8 +503,7 @@ impl Preferences {
                 ));
             }
         };
-        atomic_write(&native, bytes.as_bytes())
-            .map_err(|error| crate::logging::diagnostic_error("无法保存内核设置", error))?;
+        atomic_write(&native, bytes.as_bytes()).map_err(crate::logging::error_message)?;
         if let Err(error) = crate::preferences::app::write_values(paths, "core", &self.app) {
             let recovery = match previous {
                 Some(bytes) => atomic_write(&native, &bytes).map_err(crate::logging::error_message),

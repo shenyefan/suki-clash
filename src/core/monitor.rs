@@ -109,7 +109,7 @@ impl Runtime {
                 }
                 Err(error) => {
                     if self.memory_error.is_none() {
-                        log::warn!("解析内核内存流失败（{error}）");
+                        log::warn!("解析内核内存流失败：{error}");
                     }
                     self.memory_live = false;
                     self.memory_error = Some("内存流响应无效".into());
@@ -314,7 +314,7 @@ pub(super) async fn run(
                             #[derive(serde::Deserialize)] struct Traffic {up:u64,down:u64}
                             match serde_json::from_slice::<Traffic>(&packet.bytes) {
                                 Ok(rate)=> {runtime.statistics.upload_rate=Some(rate.up);runtime.statistics.download_rate=Some(rate.down);runtime.statistics.rates=recorder.record_rate(chrono::Local::now(),rate.up,rate.down);runtime.traffic_live=true;traffic_error=None;},
-                                Err(error)=>{if traffic_error.is_none(){log::warn!("解析内核流量流失败（{error}）");}traffic_error=Some("流量流响应无效".into());runtime.traffic_live=false;runtime.statistics.upload_rate=None;runtime.statistics.download_rate=None;runtime.statistics.rates.clear();recorder.gap();}
+                                Err(error)=>{if traffic_error.is_none(){log::warn!("解析内核流量流失败：{error}");}traffic_error=Some("流量流响应无效".into());runtime.traffic_live=false;runtime.statistics.upload_rate=None;runtime.statistics.download_rate=None;runtime.statistics.rates.clear();recorder.gap();}
                             }
                         } else if let Some(error)=state.error {recorder.gap();runtime.statistics.rates.clear();runtime.traffic_live=false;runtime.statistics.upload_rate=None;runtime.statistics.download_rate=None;traffic_error=Some(error);}
                     },

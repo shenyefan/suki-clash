@@ -339,10 +339,7 @@ async fn terminate_process_inner(
                 bail!("process {pid} identity changed before SIGKILL");
             }
         }
-        warn!(
-            "进程 {} 在 {:?} 内未退出，发送 SIGKILL",
-            pid, grace
-        );
+        warn!("进程 {} 在 {:?} 内未退出，发送 SIGKILL", pid, grace);
         if unsafe { platform_lib::kill(unix_pid, platform_lib::SIGKILL) } != 0
             && std::io::Error::last_os_error().raw_os_error() != Some(platform_lib::ESRCH)
         {

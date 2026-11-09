@@ -50,4 +50,17 @@ mod tests {
             "用户文字：a；b"
         );
     }
+    #[test]
+    fn settings_recovery_groups_shared_cause_without_hiding_runtime_failure() {
+        let reason = std::io::Error::from_raw_os_error(5).to_string();
+        assert_eq!(
+            super::scoped([
+                ("应用设置", reason.clone()),
+                ("恢复旧设置", reason.clone()),
+                ("恢复旧内核配置", "控制通道已关闭".into()),
+                ("恢复来源", reason.clone()),
+            ]),
+            format!("应用设置、恢复旧设置、恢复来源：{reason}；恢复旧内核配置：控制通道已关闭")
+        );
+    }
 }

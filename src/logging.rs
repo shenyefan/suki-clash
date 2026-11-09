@@ -21,6 +21,14 @@ pub(crate) fn rejected<T: std::fmt::Display>(message: T, cause: impl std::fmt::D
 }
 #[track_caller]
 fn report<T: std::fmt::Display>(level: log::Level, message: T, cause: impl std::fmt::Display) -> T {
+    record(
+        level,
+        crate::failure::join([message.to_string(), format!("{cause:#}")]),
+    );
+    message
+}
+#[track_caller]
+fn record(level: log::Level, details: impl std::fmt::Display) {
     let location = std::panic::Location::caller();
     let module = location
         .file()
@@ -31,15 +39,15 @@ fn report<T: std::fmt::Display>(level: log::Level, message: T, cause: impl std::
     log::log!(
         target: &target,
         level,
-        "{message}（{cause:#}），位于 {} 第 {} 行",
+        "{details}；位于 {} 第 {} 行",
         location.file(),
         location.line()
     );
-    message
 }
 #[track_caller]
 pub(crate) fn error_message(error: impl std::fmt::Display) -> String {
-    diagnostic_error(error.to_string(), format_args!("{error:#}"))
+    record(log::Level::Error, format_args!("{error:#}"));
+    error.to_string()
 }
 pub(crate) fn panic_message(payload: &(dyn std::any::Any + Send)) -> &str {
     payload
@@ -59,17 +67,13 @@ pub(crate) fn install_panic_hook() {
     }));
 }
 pub(crate) fn error_chain(error: &(dyn std::error::Error + 'static)) -> String {
-    let mut details = error.to_string();
-    let mut causes = Vec::new();
+    let mut causes = vec![error.to_string()];
     let mut source = error.source();
     while let Some(error) = source {
         causes.push(error.to_string());
         source = error.source();
     }
-    if !causes.is_empty() {
-        details.push_str(&format!("（{}）", causes.join("，")));
-    }
-    details
+    crate::failure::join(causes)
 }
 use std::{
     fs::{self, File, OpenOptions},
@@ -263,15 +267,20 @@ fn cleanup(
 mod tests {
     use super::*;
     #[test]
-    fn error_chain_keeps_nested_native_reason_and_display_message_is_unchanged() {
+    fn error_chain_keeps_native_reason_without_parenthesis_wrapping() {
         #[derive(Debug, thiserror::Error)]
         #[error("transport failed")]
         struct Transport(#[source] io::Error);
         let error = Transport(io::Error::from_raw_os_error(13));
         let details = error_chain(&error);
-        assert!(details.starts_with("transport failed（"));
+        assert_eq!(details, format!("transport failed；{}", error.0));
         assert!(details.contains("13"));
         assert_eq!(diagnostic_error("原有 Toast", details), "原有 Toast");
+    }
+    #[test]
+    fn transparent_error_sources_are_reported_once() {
+        let error = crate::storage::StorageError::from(io::Error::from_raw_os_error(5));
+        assert_eq!(error_chain(&error), error.to_string());
     }
     #[test]
     fn logs_rotate_between_complete_records_and_do_not_touch_unowned_files() {

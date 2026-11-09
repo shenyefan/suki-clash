@@ -158,7 +158,7 @@ pub async fn restore_desired_state() -> Result<()> {
     if let Some(writer_config) = state.last_writer_config.as_ref()
         && let Err(error) = set_or_update_writer(writer_config)
     {
-        warn!("恢复写入配置失败（{}）", error);
+        warn!("恢复写入配置失败：{}", error);
     }
 
     if !state.core_should_be_running {
@@ -171,10 +171,7 @@ pub async fn restore_desired_state() -> Result<()> {
         return Ok(());
     };
 
-    info!(
-        "按期望状态第 {} 代恢复内核",
-        state.generation
-    );
+    info!("按期望状态第 {} 代恢复内核", state.generation);
     if let Err(error) = CORE_MANAGER
         .lock()
         .await
@@ -257,10 +254,7 @@ where
         && let Err(cleanup_error) = tokio::fs::remove_file(&temp_path).await
         && cleanup_error.kind() != std::io::ErrorKind::NotFound
     {
-        warn!(
-            "清理状态临时文件 {:?} 失败（{}）",
-            temp_path, cleanup_error
-        );
+        warn!("清理状态临时文件 {:?} 失败：{}", temp_path, cleanup_error);
     }
     result
 }

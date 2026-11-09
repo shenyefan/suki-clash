@@ -144,7 +144,7 @@ impl Recovery {
         self.manifest.committed = true;
         self.write_manifest()?;
         if let Err(error) = fs::remove_dir_all(&self.root) {
-            log::warn!("内核更新已提交，但清理恢复目录失败（{error}）");
+            log::warn!("内核更新已提交，但清理恢复目录失败：{error}");
         }
         Ok(())
     }

@@ -29,7 +29,7 @@ pub(super) fn capture(
                 output.feed.track(&sink);
                 output.sink = Some(sink);
             }
-            Err(error) => output.fail(format!("创建内核日志文件失败（{error}）")),
+            Err(error) => output.fail(format!("创建内核日志文件失败：{error}")),
         }
         let (mut stdout, mut stderr) = (stdout, stderr);
         let (mut out, mut err) = (Lines::default(), Lines::default());
@@ -43,7 +43,7 @@ pub(super) fn capture(
                     if settings_open {
                         let (_, limits)=updates.borrow_and_update().clone();
                         if let Some(sink)=&mut output.sink && let Err(error)=sink.configure(limits.0,limits.1) {
-                            output.fail(format!("应用内核日志保留设置失败（{error}）"));
+                            output.fail(format!("应用内核日志保留设置失败：{error}"));
                         }
                     }
                 },
@@ -86,12 +86,12 @@ impl Output {
                     self.feed.track(&sink);
                     self.sink = Some(sink);
                 }
-                Err(error) => self.fail(format!("创建内核日志文件失败（{error}）")),
+                Err(error) => self.fail(format!("创建内核日志文件失败：{error}")),
             }
         } else if let Some(sink) = &mut self.sink
             && let Err(error) = sink.configure(limits.0, limits.1)
         {
-            self.fail(format!("应用内核日志保留设置失败（{error}）"));
+            self.fail(format!("应用内核日志保留设置失败：{error}"));
         }
     }
 
@@ -120,7 +120,7 @@ impl Output {
         if let Some(sink) = &mut self.sink
             && let Err(error) = sink.write(line.as_bytes())
         {
-            self.fail(format!("写入内核日志文件失败（{error}）"));
+            self.fail(format!("写入内核日志文件失败：{error}"));
         }
     }
 }

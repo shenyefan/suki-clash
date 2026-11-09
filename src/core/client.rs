@@ -94,7 +94,7 @@ impl Client {
                     .await
                     .map_err(|error| {
                         log::debug!(
-                            "内核 WebSocket 握手失败（{}）",
+                            "内核 WebSocket 握手失败：{}",
                             crate::logging::error_chain(&error)
                         );
                         match error {
@@ -252,7 +252,7 @@ impl Client {
         })
         .await
         .map_err(|error| {
-            log::debug!("节点测速超时（{error}）");
+            log::debug!("节点测速超时：{error}");
             MeasurementError::Timeout
         })?
         .map_err(MeasurementError::Failed)?;

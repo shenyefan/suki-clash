@@ -135,7 +135,7 @@ impl ChildGuard {
         while let Some(reader) = self.readers.first_mut() {
             match tokio::time::timeout_at(deadline, &mut *reader).await {
                 Ok(Ok(())) => {}
-                Ok(Err(error)) => warn!("读取已退出内核的剩余输出失败（{error}）"),
+                Ok(Err(error)) => warn!("读取已退出内核的剩余输出失败：{error}"),
                 Err(_) => {
                     warn!("内核退出后输出管道仍未关闭，丢弃剩余输出");
                     reader.abort();
@@ -156,7 +156,7 @@ impl Drop for ChildGuard {
         if let Some(mut child) = self.child.take() {
             tokio::spawn(async move {
                 if let Err(e) = child.kill().await {
-                    warn!("终止子进程（{:?}）失败（{e}）", child.id());
+                    warn!("终止子进程（{:?}）失败：{e}", child.id());
                 } else {
                     info!("已终止子进程（{:?}）", child.id());
                 }
@@ -411,7 +411,7 @@ impl CoreManager {
                 )
                 .await
                 {
-                    warn!("记录未确认的内核清理失败（{record_error:#}）");
+                    warn!("记录未确认的内核清理失败：{record_error:#}");
                 }
                 *self.failed_child.lock().await = Some(child_guard);
                 set_core_lifecycle_state(ServiceLifecycleState::Fatal);
@@ -555,7 +555,7 @@ impl CoreManager {
                 let status = match wait_result {
                     Ok(status) => status,
                     Err(error) => {
-                        warn!("等待内核进程失败（{}）", error);
+                        warn!("等待内核进程失败：{}", error);
                         recovery_exhausted = true;
                         break;
                     }
@@ -613,7 +613,7 @@ impl CoreManager {
                     if let Err(error) =
                         prepare_core_ipc_socket(&config.core_config.core_ipc_path, &owner)
                     {
-                        error!("重启前准备内核通道失败（{error:#}）");
+                        error!("重启前准备内核通道失败：{error:#}");
                         consecutive_attempt += 1;
                         let now = Instant::now();
                         restart_timestamps.retain(|timestamp| {
@@ -637,9 +637,9 @@ impl CoreManager {
                                 .await_ipc(config.core_config.core_ipc_path.clone(), owner.clone())
                                 .await
                             {
-                                error!("加固重启后的内核通道失败（{error:#}）");
+                                error!("加固重启后的内核通道失败：{error:#}");
                                 if let Err(kill_error) = new_guard.terminate(Duration::ZERO).await {
-                                    error!("通道加固失败后终止内核失败（{kill_error:#}）");
+                                    error!("通道加固失败后终止内核失败：{kill_error:#}");
                                     let now_secs = unix_timestamp_secs();
                                     running_pid_arc
                                         .store(new_pid.unwrap_or_default(), Ordering::Release);
@@ -652,7 +652,7 @@ impl CoreManager {
                                     )
                                     .await
                                     {
-                                        warn!("记录重启后未确认的内核清理失败（{record_error:#}）");
+                                        warn!("记录重启后未确认的内核清理失败：{record_error:#}");
                                     }
                                     *failed_child_arc.lock().await = Some(new_guard);
                                     set_core_lifecycle_state(ServiceLifecycleState::Fatal);
@@ -671,7 +671,7 @@ impl CoreManager {
                                 write_runtime_record_for_config(new_pid, &config, "after restart")
                                     .await
                             {
-                                error!("提交重启后的内核运行记录失败（{record_error:#}）");
+                                error!("提交重启后的内核运行记录失败：{record_error:#}");
                                 if let Err(kill_error) = new_guard.terminate(Duration::ZERO).await {
                                     let now_secs = unix_timestamp_secs();
                                     running_pid_arc
@@ -700,7 +700,7 @@ impl CoreManager {
                             continue 'watchdog;
                         }
                         Err(error) => {
-                            error!("重启内核失败（{}）", error);
+                            error!("重启内核失败：{}", error);
                             consecutive_attempt += 1;
                             let now = Instant::now();
                             restart_timestamps.retain(|t| {
@@ -764,7 +764,7 @@ impl CoreManager {
                 } else {
                     match fs::remove_file(target).await {
                         Ok(_) => debug!("已移除套接字文件 {:?}", target),
-                        Err(e) => warn!("移除 {:?} 失败（{}）", target, e),
+                        Err(e) => warn!("移除 {:?} 失败：{}", target, e),
                     }
                 }
             }

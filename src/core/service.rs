@@ -796,7 +796,11 @@ impl Actor {
                     self.snapshot.operation_active=false;
                     self.snapshot.progress=None;
                     if let Err(error) = result {
-                        log::error!("{}失败，{}（{}）", operation_name, if self.snapshot.operation_committed { "部分更改已提交" } else { "未提交任何更改" }, error);
+                        if self.snapshot.operation_committed {
+                            log::error!("{operation_name}：{error}；部分更改已提交");
+                        } else {
+                            log::error!("{operation_name}：{error}");
+                        }
                         // Preparation failure must preserve an existing ready child.
                         let phase = if matches!(&request.command, Command::Gist(_) | Command::LocalBackup(_) | Command::AppUpdate(_)) { self.snapshot.phase } else if self.running.is_some() && self.snapshot.phase == Phase::Ready { Phase::Ready } else { Phase::Failed };
                         self.publish_snapshot(phase, Some(error), true);
@@ -882,7 +886,7 @@ impl Actor {
         let result = result.and(recovered);
         if let Err(error) = &result {
             self.publish(Phase::Failed, Some(format!("退出清理失败：{error}")));
-            log::error!("退出时无法确认应用内核进程已结束（{error}）");
+            log::error!("退出时无法确认应用内核进程已结束：{error}");
         }
         if let Some(query) = autostart_query {
             let _ = query.task.await;
@@ -1065,7 +1069,7 @@ impl Actor {
             .spawn()
             .map_err(|error| {
                 log::error!(
-                    "启动内核校验进程失败（{}）",
+                    "启动内核校验进程失败：{}",
                     crate::logging::error_chain(&error)
                 );
                 format!("无法启动内核校验：{}", error.kind())
@@ -2235,20 +2239,20 @@ impl Actor {
                 .ok_or_else(|| "旧内核不存在".to_owned())
                 .and_then(|r| r.launch.source.commit(&self.paths));
             self.snapshot.preferences = Some(previous);
-            let mut failures = vec![cause];
+            let mut failures = vec![("应用设置", cause)];
             if let Err(error) = files {
-                failures.push(format!("旧设置恢复失败：{error}"));
+                failures.push(("恢复旧设置", error));
             }
             if let Err(error) = restored {
-                failures.push(format!("旧内核配置恢复失败：{error}"));
+                failures.push(("恢复旧内核配置", error));
                 if let Err(cleanup) = self.mark_runtime_failed().await {
-                    failures.push(cleanup);
+                    failures.push(("清理内核", cleanup));
                 }
             }
             if let Err(error) = record {
-                failures.push(format!("来源恢复失败：{error}"));
+                failures.push(("恢复来源", error));
             }
-            return Err(crate::failure::join(&failures));
+            return Err(crate::failure::scoped(failures));
         }
         self.snapshot.preferences = Some(desired);
         if self.resources_requested {
@@ -2428,7 +2432,7 @@ impl Actor {
                 .spawn()
                 .map_err(|error| {
                     log::error!(
-                        "启动 Mihomo 进程失败（{}）",
+                        "启动 Mihomo 进程失败：{}",
                         crate::logging::error_chain(&error)
                     );
                     format!("无法启动 Mihomo：{}", error.kind())
@@ -2571,7 +2575,7 @@ impl Actor {
                 }
                 if let Some(status) = running.child.try_wait().map_err(|error| {
                     log::error!(
-                        "检查内核进程状态失败（{}）",
+                        "检查内核进程状态失败：{}",
                         crate::logging::error_chain(&error)
                     );
                     format!("无法检查内核进程：{}", error.kind())

@@ -651,7 +651,7 @@ impl Actor {
         self.snapshot.progress = None;
         match &result {
             Ok(()) => log::info!("自动更新订阅完成，共 {count} 项"),
-            Err(error) => log::error!("自动更新订阅失败（{error}）"),
+            Err(error) => log::error!("自动更新订阅失败：{error}"),
         }
         result
     }

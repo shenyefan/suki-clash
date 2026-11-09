@@ -63,8 +63,14 @@ pub(crate) enum StorageError {
     Document { path: PathBuf, reason: String },
     #[error("{0}")]
     Settings(String),
-    #[error("存储操作失败：{0}")]
+    #[error(transparent)]
     Io(#[from] io::Error),
+    #[error("无法写入 {path}：{source}")]
+    Write {
+        path: PathBuf,
+        #[source]
+        source: io::Error,
+    },
 }
 
 #[derive(Serialize, Deserialize)]
@@ -337,19 +343,28 @@ fn decode(bytes: &[u8]) -> Result<Values, StorageError> {
     Ok(envelope.values)
 }
 pub(crate) fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), StorageError> {
-    let directory = path
-        .parent()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "文件没有父目录"))?;
-    fs::create_dir_all(directory)?;
-    let mut temporary = tempfile::NamedTempFile::new_in(directory)?;
-    temporary.write_all(bytes)?;
-    temporary.as_file().sync_all()?;
-    temporary.persist(path).map_err(|error| error.error)?;
+    let failure = |source| StorageError::Write {
+        path: path.to_owned(),
+        source,
+    };
+    let directory = path.parent().ok_or_else(|| {
+        failure(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "文件没有父目录",
+        ))
+    })?;
+    fs::create_dir_all(directory).map_err(failure)?;
+    let mut temporary = tempfile::NamedTempFile::new_in(directory).map_err(failure)?;
+    temporary.write_all(bytes).map_err(failure)?;
+    temporary.as_file().sync_all().map_err(failure)?;
+    temporary
+        .persist(path)
+        .map_err(|error| failure(error.error))?;
     // Replacement is the commit point. A later directory flush failure must not
     // report an uncommitted write or make callers roll back only part of a save.
     #[cfg(unix)]
     if let Err(error) = fs::File::open(directory).and_then(|directory| directory.sync_all()) {
-        log::warn!("文件已替换，但同步目录元数据失败（{error}）");
+        log::warn!("文件已替换，但同步目录元数据失败：{error}");
     }
     Ok(())
 }

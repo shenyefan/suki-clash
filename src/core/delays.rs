@@ -316,7 +316,7 @@ pub(super) async fn run(
                     for key in results.keys(){measured_at.insert(key.clone(),std::time::Instant::now());}
                     state.results.extend(results);updates.send_replace(state.clone());
                 } else {
-                    if let Some(Err(error)) = result { log::debug!("测速任务异常退出（{error}）"); }
+                    if let Some(Err(error)) = result { log::debug!("测速任务异常退出：{error}"); }
                     tasks.abort_all();reserved.clear();state.testing.clear();state.batches.clear();state.error=Some((0,"测速任务异常结束".into()));updates.send_replace(state.clone());
                 }
             },
@@ -334,7 +334,7 @@ pub(super) async fn run(
                         state.testing.extend(keys.iter().cloned());state.batches.extend(keys.iter().cloned());reserved.extend(keys.iter().cloned().map(|key|(key,request.id)));state.error=None;updates.send_replace(state.clone());
                         if let Some(target)=target {let limit=limit.clone();let progress=progress.clone();tasks.spawn(async move {Batch{scope,request_id:request.id,keys,results:measure(target,plan,limit,request.id,progress).await}});}
                     },
-                    Err(error)=>{log::debug!("测速请求被拒绝（{error}）");state.error=Some((request.id,error));updates.send_replace(state.clone());}
+                    Err(error)=>{log::debug!("测速请求被拒绝：{error}");state.error=Some((request.id,error));updates.send_replace(state.clone());}
                 }
             }
         }

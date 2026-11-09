@@ -130,7 +130,7 @@ impl Worker {
                 if let Some(Ok(owner)) = &mut owner
                     && let Err(error) = owner.clear()
                 {
-                    log::error!("退出时清理系统代理失败（{error}）");
+                    log::error!("退出时清理系统代理失败：{error}");
                 }
             })
             .map_err(|error| format!("无法启动系统代理执行端：{error}"))?;

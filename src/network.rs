@@ -108,10 +108,7 @@ impl Http {
                 authentication,
             } => {
                 let mut proxy = Proxy::all(url).map_err(|error| {
-                    log::debug!(
-                        "HTTP 代理地址无效（{}）",
-                        crate::logging::error_chain(&error)
-                    );
+                    log::debug!("HTTP 代理地址无效：{}", crate::logging::error_chain(&error));
                     "HTTP 代理地址无效"
                 })?;
                 if let Some(authentication) = authentication {
@@ -124,7 +121,7 @@ impl Http {
         }
         let client = builder.build().map_err(|error| {
             log::debug!(
-                "创建 HTTP 客户端失败（{}）",
+                "创建 HTTP 客户端失败：{}",
                 crate::logging::error_chain(&error)
             );
             "无法创建 HTTP 客户端"
@@ -145,7 +142,7 @@ impl Http {
 }
 pub(crate) fn error(error: reqwest::Error) -> String {
     // The owning workflow reports the failure once; retain transport details for diagnosis.
-    log::debug!("HTTP 请求失败（{}）", crate::logging::error_chain(&error));
+    log::debug!("HTTP 请求失败：{}", crate::logging::error_chain(&error));
     if error.is_timeout() {
         "HTTP 请求超时".into()
     } else if let Some(status) = error.status() {

@@ -8,6 +8,24 @@ fn namespace() -> Namespace {
 }
 
 #[test]
+fn failed_atomic_write_reports_target_and_native_cause_without_storage_wrapper() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("settings.json");
+    fs::create_dir(&path).unwrap();
+    fs::write(path.join("keep"), b"unchanged").unwrap();
+    let error = atomic_write(&path, b"{}").unwrap_err();
+    let StorageError::Write { source, .. } = &error else {
+        panic!("expected a write error, got {error}");
+    };
+    assert_eq!(
+        error.to_string(),
+        format!("无法写入 {}：{source}", path.display())
+    );
+    assert_eq!(fs::read(path.join("keep")).unwrap(), b"unchanged");
+    assert_eq!(fs::read_dir(root.path()).unwrap().count(), 1);
+}
+
+#[test]
 fn replace_existing_settings_and_roundtrip_unicode_and_escapes() {
     let root = tempfile::tempdir().unwrap();
     let store = repository(root.path());

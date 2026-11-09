@@ -49,10 +49,7 @@ pub async fn reconcile_service_startup() -> Result<()> {
         );
     }
     if !socket_reachable {
-        info!(
-            "清理已退出进程遗留的内核套接字 {}",
-            record.ipc_path
-        );
+        info!("清理已退出进程遗留的内核套接字 {}", record.ipc_path);
         cleanup_core_socket(&record.ipc_path).await;
     } else {
         warn!(

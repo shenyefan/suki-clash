@@ -39,7 +39,7 @@ async fn run_daemon() -> Result<()> {
     init_service_logging();
     let result = run_standalone().await;
     if let Err(error) = &result {
-        warn!("服务异常退出（{error:#}）");
+        warn!("服务异常退出：{error:#}");
     }
     flush_service_log();
     result
@@ -64,7 +64,7 @@ fn run_daemon() -> Result<()> {
             .map_err(anyhow::Error::from)
             .and_then(|rt| rt.block_on(run_standalone()));
         if let Err(error) = &result {
-            warn!("服务异常退出（{error:#}）");
+            warn!("服务异常退出：{error:#}");
         }
         flush_service_log();
         result?;
@@ -78,7 +78,7 @@ define_windows_service!(ffi_service_main, my_service_main);
 #[cfg(windows)]
 fn my_service_main(_args: Vec<OsString>) {
     if let Err(e) = run_service() {
-        info!("服务运行失败（{}）", e);
+        info!("服务运行失败：{}", e);
     }
     flush_service_log();
 }
@@ -120,7 +120,7 @@ fn run_service() -> platform_lib::Result<()> {
             Ok(Some(owner_guard)) => owner_guard,
             Ok(None) => return false,
             Err(error) => {
-                tracing::warn!("获取服务所有权锁失败（{}）", error);
+                tracing::warn!("获取服务所有权锁失败：{}", error);
                 return true;
             }
         };
@@ -128,14 +128,11 @@ fn run_service() -> platform_lib::Result<()> {
         match reconcile_service_startup().await {
             Ok(()) => {
                 if let Err(error) = restore_desired_state().await {
-                    tracing::warn!(
-                        "期望状态恢复失败，保留本地通道供界面恢复（{:#}）",
-                        error
-                    );
+                    tracing::warn!("期望状态恢复失败，保留本地通道供界面恢复：{:#}", error);
                 }
             }
             Err(error) => tracing::warn!(
-                "服务启动对账失败，内核启动保持阻止，本地通道仍可用（{}）",
+                "服务启动对账失败，内核启动保持阻止，本地通道仍可用：{}",
                 error
             ),
         }
@@ -145,7 +142,7 @@ fn run_service() -> platform_lib::Result<()> {
         })
         .await;
         if let Err(error) = result {
-            tracing::warn!("本地通道监督失败（{}）", error);
+            tracing::warn!("本地通道监督失败：{}", error);
             drop(owner_guard);
             return true;
         }
@@ -187,14 +184,12 @@ async fn run_standalone() -> Result<()> {
         Ok(()) => {
             if let Err(error) = restore_desired_state().await {
                 warn!(
-                    "启动时恢复期望内核状态失败，不自动启动内核，保留本地通道供界面重连恢复（{error:#}）"
+                    "启动时恢复期望内核状态失败，不自动启动内核，保留本地通道供界面重连恢复：{error:#}"
                 );
             }
         }
         Err(error) => {
-            warn!(
-                "服务启动对账失败，内核启动保持阻止，本地通道仍可用（{error:#}）"
-            )
+            warn!("服务启动对账失败，内核启动保持阻止，本地通道仍可用：{error:#}")
         }
     }
 
@@ -204,7 +199,7 @@ async fn run_standalone() -> Result<()> {
         && error.is::<suki_clash_service::IpcRecoveryBudgetExhausted>()
     {
         // An intentional exhausted supervisor must not be relaunched forever by launchd.
-        warn!("服务恢复次数已耗尽，需要手动修复（{error:#}）");
+        warn!("服务恢复次数已耗尽，需要手动修复：{error:#}");
         return Ok(());
     }
     result?;

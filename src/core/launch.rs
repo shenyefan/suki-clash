@@ -464,7 +464,7 @@ impl Launch {
             .tempdir_in(&work_dir)
             .map_err(|error| {
                 log::error!(
-                    "创建内核运行目录失败（{}）",
+                    "创建内核运行目录失败：{}",
                     crate::logging::error_chain(&error)
                 );
                 format!("无法创建内核运行目录：{}", error.kind())
@@ -475,7 +475,7 @@ impl Launch {
             std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700))
                 .map_err(|error| {
                     log::error!(
-                        "设置内核本地通道权限失败（{}）",
+                        "设置内核本地通道权限失败：{}",
                         crate::logging::error_chain(&error)
                     );
                     format!("无法保护内核本地通道：{}", error.kind())

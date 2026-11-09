@@ -397,7 +397,7 @@ fn install(service: Option<Service>, snapshot: Snapshot, cx: &mut App) {
             if let Some(worker) = worker
                 && let Err(error) = wait_session_cleanup(worker, std::time::Duration::from_secs(3))
             {
-                log::error!(target: "suki_clash::core", "系统结束时内核清理未完成（{error}）");
+                log::error!(target: "suki_clash::core", "系统结束时内核清理未完成：{error}");
             }
             std::future::ready(())
         }));
@@ -451,7 +451,7 @@ pub(crate) fn submit(command: Command, window: &mut Window, cx: &mut App) -> Res
                 .unwrap_or_else(|| error.to_string()),
             _ => error.to_string(),
         };
-        log::error!("{operation}的提交被拒绝（{message}）");
+        log::error!("{operation}的提交被拒绝：{message}");
         message
     })
 }
@@ -635,7 +635,7 @@ fn finish(exit: Exit, cx: &mut App) {
                     .ok()
                     .flatten();
                 cx.update(|cx| {
-                    crate::integration::announce("ERROR", format!("退出清理未完成（{error}）"), cx);
+                    crate::integration::announce("ERROR", format!("退出清理未完成：{error}"), cx);
                     if let Some(window) = window.or_else(|| cx.active_window()) {
                         crate::desktop::show_main(window, cx);
                         let _ = window.update(cx, |_, window, cx| {

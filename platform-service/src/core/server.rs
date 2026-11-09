@@ -522,10 +522,7 @@ async fn cleanup_stale_ipc_socket() -> Result<()> {
         .await
         {
             Ok(Ok(_stream)) => {
-                warn!(
-                    "本地通道套接字 {:?} 可连接，保留不清理",
-                    socket_path
-                );
+                warn!("本地通道套接字 {:?} 可连接，保留不清理", socket_path);
             }
             _ => {
                 info!("清理失效的本地通道套接字 {:?}", socket_path);
