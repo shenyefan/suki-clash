@@ -2,13 +2,24 @@
 
 状态更新（2026-11-09）：用户确认文档此前列出的实机验收部分均已完成，相关待验收项关闭。下文各次检查中的“未验收／待验收”保留为当时记录；本次未重新运行验收。实现范围、暂缓项及能力限制以[当前功能对照](../reference/cv/cv-gap-checklist.md)为准。
 
-本项目首次接入固定使用 Rust SDK／`vpk` **1.2.161**。Velopack处理应用分发和更新；GPUI Kit仍负责应用界面，Mihomo与独立平台服务保持现有所有权。参考依据为[官方Rust接入](https://docs.velopack.io/getting-started/rust)、[官方打包参数](https://docs.velopack.io/packaging/overview)、[GitHub发布](https://docs.velopack.io/distributing/github-actions)及[1.2.161源码](https://github.com/velopack/velopack/tree/1.2.161)，不使用仅新版本提供的参数。
+本项目首次接入固定使用 Rust SDK／`vpk` **1.2.161**。Velopack处理应用分发和更新；GPUI Kit仍负责应用界面，Mihomo与独立平台服务保持现有所有权。参考依据为[官方Rust接入](https://docs.velopack.io/getting-started/rust)、[官方打包参数](https://docs.velopack.io/packaging/overview)、[GitHub发布](https://docs.velopack.io/distributing/github-actions)及[1.2.161源码](https://github.com/velopack/velopack/tree/1.2.161)，不使用仅新版本提供的参数。`.config/dotnet-tools.json`使用官方 dotnet local tool清单固定CLI版本，CI执行`dotnet tool restore`后直接调用`dotnet vpk`。
 
 ## GitHub自动构建
 
 `.github/workflows/release.yml`提供手动试构建和`v*`标签构建。标签必须严格等于根Cargo.toml版本的`v{version}`。初版只允许稳定版本，拒绝预发布／build metadata，避免beta进入默认stable源。普通分支推送不自动发布。
 
-四个原生runner分别构建主程序及集成维护的服务程序，使用Cargo.lock；不把整个target目录加入包。矩阵全部成功后才汇总，产物不会由并行job抢写同一Release。手动运行只保留Actions artifacts；标签运行创建／更新**一个草稿Release**，不会自动公开发布，不修改已发布同名版本。用户检查草稿和签名状态后再发布。
+四个原生runner（`windows-latest`、`macos-latest`、`ubuntu-latest`）分别构建主程序及集成维护的服务程序，使用Cargo.lock；不把整个target目录加入包。矩阵全部成功后才汇总，产物不会由并行job抢写同一Release。手动运行只保留Actions artifacts；标签运行创建／更新**一个草稿Release**，不会自动公开发布，不修改已发布同名版本。用户检查草稿后再发布。普通分支推送不自动发布。
+
+工作流默认使用bash，较长的步骤放在`packaging/`下的脚本中，各脚本只在GitHub runner上运行：
+
+| 脚本 | 运行位置 | 职责 |
+| --- | --- | --- |
+| `runtime.sh` | prepare（ubuntu-latest） | 下载并校验全部平台的内核与Geo，生成各目标的离线资源及manifest |
+| `stage.sh` | 各平台构建runner | 按平台目录结构暂存程序和离线资源；macOS生成图标并写入版本，Linux运行linuxdeploy |
+| `pack.sh` | 各平台构建runner | 调用官方`dotnet vpk pack`，写入`build.{channel}.json` |
+| `release.sh` | release（ubuntu-latest） | 汇总下载文件与更新清单，生成发布说明并创建／更新草稿Release |
+
+Windows仅“选择MSVC工具链”一步使用PowerShell，因为它调用Visual Studio自带的`Launch-VsDevShell.ps1`。当前不签名、不公证。
 
 | 平台／架构 | 更新channel | 用户下载文件 |
 | --- | --- | --- |
@@ -22,31 +33,27 @@ Windows便携版是**免安装程序包**，用户配置仍沿当前平台应用
 
 ## 文件结构与资源
 
-`packaging/velopack.py`要求传入已构建主程序目录、服务目录、目标及新的工作目录；`--prepare-only`只检查和暂存。仅两个可执行文件必需：`suki-clash`、`suki-clash-service`；Windows 使用 `.exe`。安装／卸载由服务程序自身承接，构建目录内其他工具不会随包。macOS放入Contents/MacOS，资源在Contents/Resources；其他平台资源相对实际可执行文件为resources/。打包作者／公司为 Moenya，Windows 两个可执行文件的公司与版权属性、macOS 应用版权同步使用 Moenya；各可执行文件版本来自所属 Cargo 包。
+`packaging/stage.sh`读取`target/<目标>/release`与`platform-service/target/<目标>/release`中的两个可执行文件：`suki-clash`、`suki-clash-service`（Windows 使用 `.exe`），构建目录内其他工具不会随包。安装／卸载由服务程序自身承接。macOS放入Contents/MacOS，资源在Contents/Resources；其他平台资源相对实际可执行文件为resources/。打包作者／公司为 Moenya，Windows 两个可执行文件的公司与版权属性、macOS 应用版权同步使用 Moenya；`pack.sh`直接调用官方`dotnet vpk`。各可执行文件版本来自所属 Cargo 包。
 
 resources 仅保留离线运行资源与必要的平台图标，不再复制 licenses 目录、协议／来源说明或 logo.png。界面及托盘使用编译进主程序的图片；macOS 保留供 Finder／Dock 使用的 suki-clash.icns，Linux 保留 AppDir 根目录下供桌面入口使用的 suki-clash.png，Windows 图标嵌入可执行文件及安装器。仓库中的原始协议文件保留。
 
 Mihomo、四份 GeoData 和 manifest.json 直接放在资源目录中，不再嵌套 runtime/。Windows 安装版与便携版使用程序旁的 resources/，Linux AppImage 内部使用 usr/bin/resources/，macOS 安装版与应用压缩包使用 Contents/Resources/。运行资源没有嵌入主程序。manifest.json 保存目标平台、文件长度和 SHA-256，首次启动按清单校验并将缺失文件复制到用户数据目录 core/；已有内核和数据库不被覆盖。因此随包资源用于离线初始化，用户目录中的副本用于实际运行及独立更新，二者承担不同职责。
 
-所有正式包必须内置 **Mihomo、Country.mmdb、ASN.mmdb、geoip.dat、geosite.dat**，`--runtime-dir`为必填。CI先由`packaging/runtime.py --resolve runtime-lock.json`读取官方发行元数据，记录当轮四架构内核及四份Geo的URL、长度和上游SHA-256，作为共享artifact。每个runner使用同一份快照下载，校验后解压内核、生成应用现有格式的manifest，再交给打包脚本复核。资源缺失、损坏或上游latest文件在构建期间发生变化均导致失败，不生成缺资源的包。内核采用官方稳定版，Geo采用应用默认来源；快照随Actions artifacts保留14天，重现当轮资源时使用该快照，不重新解析latest。
+所有正式包必须内置 **Mihomo、Country.mmdb、ASN.mmdb、geoip.dat、geosite.dat**。prepare job 在一台 Ubuntu runner 上执行`packaging/runtime.sh`：读取 MetaCubeX/mihomo 与 meta-rules-dat 的 latest 发行元数据，用 GitHub 提供的上游 SHA-256 生成`SHA256SUMS`，以`gh release download`下载四架构内核及四份 Geo（临时失败最多重试三次），再以`sha256sum -c`校验。校验通过后，为每个 Rust 目标解出内核（Windows 归档中唯一的`mihomo*.exe`统一命名为`mihomo.exe`，其他平台为`mihomo`），将 Geo 改为应用内文件名，并生成应用现有格式的manifest。结果按目标分目录作为`runtime` artifact 保留14天，各构建runner直接复制本目标目录，不再访问上游。资源缺失、摘要不符或内核归档条目不唯一均导致失败，不生成缺资源的包。内核采用官方稳定版，Geo采用应用默认来源。
 
-本地准备：`python packaging/runtime.py --resolve /tmp/runtime-lock.json`，然后执行`python packaging/runtime.py --lock /tmp/runtime-lock.json --target aarch64-apple-darwin --output /tmp/suki-runtime`；向打包脚本传入`--runtime-dir /tmp/suki-runtime`。首次启动复用现有bootstrap校验和安装，已有用户内核和数据库不被覆盖。源码开发运行仍允许没有随包资源。
+artifact 不保留文件权限；首次启动由现有bootstrap按manifest校验并安装到用户数据目录，同时设置内核执行权限，已有用户内核和数据库不被覆盖。源码开发运行仍允许没有随包资源；正式包只在GitHub runner上构建。
 
-工作流的checkout、Python、.NET和artifact Actions已切换到原生Node.js 24版本；MSVC使用Visual Studio自带Developer PowerShell，移除仍依赖Node.js 20的工具链Action。Linux密钥库oo7禁用默认Tokio后端，显式使用与GPUI门户相同的async-io后端，避免ashpd互斥feature冲突。
+工作流的checkout、.NET和artifact Actions已切换到原生Node.js 24版本；MSVC使用Visual Studio自带Developer PowerShell，移除仍依赖Node.js 20的工具链Action。Linux密钥库oo7禁用默认Tokio后端，显式使用与GPUI门户相同的async-io后端，避免ashpd互斥feature冲突。
 
 GitHub下载代理由共享HTTP规则处理，覆盖内核版本／归档、Geo手动下载、公开订阅／覆写／图标，以及应用更新清单和完整包；携带Authorization的请求不转交第三方代理。内核自身按geox-url发起的后台更新由Mihomo负责，不经过应用HTTP规则。CI从官方GitHub获取资源，不读取用户下载代理设置。
 
-Linux使用成熟linuxdeploy打包动态依赖，固定`1-alpha-20251107-1`及各架构SHA-256，再由vpk生成AppImage；不自己扫描／复制依赖协议。AppImage的可用性仍受目标glibc、Vulkan／图形驱动、桌面环境、服务授权工具和发行版限制，不能仅靠生成文件宣称所有Linux可运行。
+Linux使用成熟linuxdeploy打包动态依赖：`stage.sh`下载固定的`1-alpha-20251107-1` x86_64 AppImage，校验SHA-256后解包运行，再由vpk生成AppImage；不自己扫描／复制依赖协议。AppImage的可用性仍受目标glibc、Vulkan／图形驱动、桌面环境、服务授权工具和发行版限制，不能仅靠生成文件宣称所有Linux可运行。
 
-## 签名与草稿状态
+## 草稿状态
 
-没有签名secrets时，工作流允许生成**未签名草稿候选**，Actions artifact中的`build.{channel}.json`明确`signed:false`，Release描述按实际构建记录展示签名／公证状态，不会伪装成已签名／已公证发行版；人工发布前须完成正式签名和平台验收。
+当前所有包均未签名、未公证，工作流不读取任何签名secrets。Release说明提示 Windows 可能出现 SmartScreen 提示、macOS 首次打开需在系统设置中允许。
 
-Windows签名使用：`SUKI_WINDOWS_CERTIFICATE_P12`（base64）、`SUKI_WINDOWS_CERTIFICATE_PASSWORD`。临时导入当前runner证书库，用SHA1身份让vpk签程序及生成文件；签名密码不放CLI参数，任务末尾删除临时材料／导入私钥。
-
-macOS签名需要完整的一组secrets：`SUKI_MACOS_CERTIFICATE_P12`（包含Developer ID Application和Developer ID Installer的base64 p12）、`SUKI_MACOS_CERTIFICATE_PASSWORD`、`SUKI_MACOS_APPLICATION_IDENTITY`、`SUKI_MACOS_INSTALLER_IDENTITY`、`SUKI_APPLE_API_KEY_P8`（原始p8文本）、`SUKI_APPLE_API_KEY_ID`、`SUKI_APPLE_API_ISSUER`。CI创建临时keychain，给vpk指定该keychain和notary profile。使用空的hardened-runtime entitlements，不为GPUI／QuickJS额外开启JIT或关闭库验证。材料仅在runner临时目录，不进入源码或产物。配置不完整直接失败，不退回未签名成功。
-
-GitHub上传权限只给最终草稿job；不需要在仓库写PAT。更新源仓库通过构建环境`SUKI_UPDATE_REPOSITORY=${{ github.repository }}`写入程序；本地开发没有该值时不得猜GitHub地址或伪造可更新状态。Release描述包含平台／可点击下载的文件名表、必要使用说明，以及GitHub自动生成的版本变更记录，其中“完整变更”链接单独成行；实际签名状态见Actions产物的`build.{channel}.json`；重跑时同步更新草稿说明，并删除草稿中不属于当前下载文件、更新清单和完整包的旧附件。已公开的同名Release仍拒绝修改。
+GitHub上传权限只给最终草稿job；不需要在仓库写PAT。更新源仓库通过构建环境`SUKI_UPDATE_REPOSITORY=${{ github.repository }}`写入程序；本地开发没有该值时不得猜GitHub地址或伪造可更新状态。Release描述包含平台／可点击下载的文件名表、必要使用说明，以及GitHub自动生成的版本变更记录，其中“完整变更”链接单独成行；重跑时同步更新草稿说明，并删除草稿中不属于当前下载文件、更新清单和完整包的旧附件。已公开的同名Release仍拒绝修改。
 
 更新清单和完整包随Release公开，应用请求`releases/latest/download/releases.{channel}.json`并按清单下载完整包。v0.2.4与v0.2.6的Release未包含这些文件，对它们检查会报清单获取错误；自动更新从包含清单的版本开始生效，且需要用旧版本安装包升级到该版本后再验证。草稿不会成为普通用户的更新源。
 
@@ -54,7 +61,7 @@ GitHub上传权限只给最终草稿job；不需要在仓库写PAT。更新源�
 
 本地验证了Python语法、workflow YAML解析、plist与暂存结构；实际安装`vpk 1.2.161`检查CLI参数，并用隔离占位Mach-O二进制生成macOS pkg／Portable.zip／full.nupkg／channel feed，核对PackageId、版本、文件名、摘要和大小。该冒烟验证未运行／安装产物，也不是实际Suki发布验证。
 
-尚需在GitHub执行当前四平台构建，并验收真实签名／公证、安装／卸载、便携版、AppImage依赖、更新前系统代理与内核清理、服务协议升级后的显式修复及更新失败恢复。本机没有上传Release或操作真实系统服务。
+尚需在GitHub执行当前四平台构建，并验收安装／卸载、便携版、AppImage依赖、更新前系统代理与内核清理、服务协议升级后的显式修复及更新失败恢复。本机没有上传Release或操作真实系统服务。
 
 
 ## 应用内执行与开发运行

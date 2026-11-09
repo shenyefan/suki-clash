@@ -26,7 +26,7 @@ macOS服务会话通过鉴权代理命令执行系统代理读写、回滚和清
 
 ## 构建与交付
 
-运行 `packaging/build-service.sh OUTPUT_DIRECTORY [TARGET]` 只构建并复制 `suki-clash-service`（Windows 加 `.exe`），放在主程序可执行文件同级。macOS 放在 `.app/Contents/MacOS`，按正式签名／公证流程签名。服务程序无参数时运行 daemon，`--install`／`--uninstall` 执行受限平台维护；应用负责调用、暂存、提权及结果确认，不再交付独立安装／卸载程序。脚本只构建和复制，不安装服务。开发时仅 `cargo run` 不会自动构建服务，缺失时界面明确报错。服务维护命令见下文。
+在对应平台执行 `cargo build --locked --release --manifest-path platform-service/Cargo.toml --features standalone,client --bin suki-clash-service` 构建 `suki-clash-service`（Windows 为 `.exe`），放在主程序可执行文件同级。macOS 放在 `.app/Contents/MacOS`。服务程序无参数时运行 daemon，`--install`／`--uninstall` 执行受限平台维护；应用负责调用、暂存、提权及结果确认，不再交付独立安装／卸载程序。该命令只构建，不安装服务。开发时仅 `cargo run` 不会自动构建服务，缺失时界面明确报错。服务维护命令见下文。
 
 ## 验证边界
 

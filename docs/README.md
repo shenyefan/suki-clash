@@ -9,7 +9,7 @@
 | 目录 | 内容 |
 | --- | --- |
 | `features/` | 按功能维护的配置、执行契约与使用说明 |
-| `build/` | 本地构建、打包和应用更新 |
+| `build/` | 打包、分发和应用更新 |
 | `repairs/` | 修复清单、实施进度与持续维护的故障处理契约 |
 | `reviews/` | 组件、平台和日志审核及未验收项 |
 | `reference/cv/` | CV 功能差距、参考版本及源码阅读基线 |
@@ -26,7 +26,7 @@
 | 网络与平台 | [网络与私有通道](features/network/network.md)、[系统代理](features/network/system-proxy.md)、[TUN 与服务维护](features/network/tun-service.md) |
 | 日志与诊断 | [日志](features/logging/logging.md)、[诊断导出与托盘](features/logging/diagnostics-tray.md) |
 | 备份 | [Gist 备份](features/backup/gist-backup.md)、[本地备份及 Provider／DNS 边界](features/backup/local-backup-and-parity.md) |
-| 构建与交付 | [本地跨平台构建](build/local-cross-build.md)、[Velopack 打包与更新](build/velopack.md) |
+| 构建与交付 | [Velopack 打包与更新](build/velopack.md) |
 
 ## 修复与检查
 

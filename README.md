@@ -44,7 +44,7 @@ Suki Clash 使用 GPUI Kit 构建原生桌面界面，以 Mihomo 为代理内核
 
 正式包包含 Mihomo 和初始化所需的 Geo 数据。启动后导入订阅或本地配置，选择订阅并启动内核，再按需启用系统代理或 TUN。
 
-Windows 免安装版的用户数据仍保存在平台应用目录。TUN 与服务操作需要相应的平台权限；安装包的签名和公证状态以对应发布说明为准。
+Windows 免安装版的用户数据仍保存在平台应用目录。TUN 与服务操作需要相应的平台权限；当前安装包和压缩包未签名、未公证。
 
 ## 从源码构建
 
@@ -75,7 +75,6 @@ Windows PowerShell 可将第二条命令写成一行。主程序和平台服务�
 | 设置与数据存储 | [设置存储](docs/features/settings/settings.md) |
 | 订阅管理 | [订阅](docs/features/profiles/profiles.md) |
 | 配置合成与覆写 | [规则、覆写、DNS 与嗅探](docs/features/configuration/flow.md) |
-| 本地构建 | [本地跨平台构建](docs/build/local-cross-build.md) |
 | 分发与更新 | [Velopack 打包与更新](docs/build/velopack.md) |
 | 开发约定 | [AGENTS.md](AGENTS.md)、[DESIGN.md](DESIGN.md) |
 
@@ -100,7 +99,6 @@ Windows PowerShell 可将第二条命令写成一行。主程序和平台服务�
 | [Tree-sitter](https://github.com/tree-sitter/tree-sitter) | 编辑器语法解析与高亮 |
 | [Velopack](https://github.com/velopack/velopack) | 应用打包、分发与更新 |
 | [linuxdeploy](https://github.com/linuxdeploy/linuxdeploy)、[AppImage](https://github.com/AppImage/AppImageKit) | Linux 应用打包 |
-| [cargo-xwin](https://github.com/rust-cross/cargo-xwin)、[LLVM](https://github.com/llvm/llvm-project)、[Wine](https://gitlab.winehq.org/wine/wine) | 本地跨平台构建 |
 | [FontTools](https://github.com/fonttools/fonttools) | 旗帜字体裁剪与处理 |
 
 主程序及平台服务使用的 Rust 库，包括直接依赖、间接依赖、构建依赖、测试依赖和平台依赖，完整列于[第三方依赖清单](THIRD_PARTY.md)。版本与来源分别以根目录 [Cargo.lock](Cargo.lock) 和服务的 [Cargo.lock](platform-service/Cargo.lock) 为准。

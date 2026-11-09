@@ -10,7 +10,7 @@ HTTP 使用 reqwest 0.13，WebSocket 使用 tokio-tungstenite 0.30，网卡信�
 
 自动化覆盖分块大小限制、重定向鉴权隔离、错误脱敏、取消清理、ZIP 路径与重复文件、真实 WS 消息、Ping/Pong、重连与代次变化。CV 的 ws hooks、connections_stream、delay manager 和 icon cache 作为行为核对来源。没有旧格式转换、迁移或 curl 备用实现。
 
-跨平台构建范围见 [本地构建](../../build/local-cross-build.md)。系统证书、系统代理、PAC、真实窗口视觉与大数据性能仍须按平台验收，构建通过不代表集成验收完成。测试不修改本机系统代理、路由或服务；具体边界见 [CV 差距清单](../../reference/cv/cv-gap-checklist.md)及[系统代理验证记录](system-proxy.md#验证)。
+系统证书、系统代理、PAC、真实窗口视觉与大数据性能仍须按平台验收，构建通过不代表集成验收完成。测试不修改本机系统代理、路由或服务；具体边界见 [CV 差距清单](../../reference/cv/cv-gap-checklist.md)及[系统代理验证记录](system-proxy.md#验证)。
 
 ## 私有通道与请求重试
 

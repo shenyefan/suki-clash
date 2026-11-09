@@ -6,5 +6,6 @@ Geo databases: https://github.com/MetaCubeX/meta-rules-dat
 Database source and license notices: https://github.com/MetaCubeX/meta-rules-dat/blob/meta/README.md
 GeoLite2 ASN data created by MaxMind: https://www.maxmind.com
 
-The workflow's runtime-lock artifact records the exact upstream version,
-asset URLs, byte lengths and SHA-256 hashes used for all six packages.
+The workflow's runtime artifact contains SHA256SUMS, built from the GitHub
+release digests of the exact upstream files; every file is verified against it
+before it is unpacked into a per-target bundle.
