@@ -9,3 +9,5 @@ Suki Flag Emoji 由 Twemoji Mozilla v0.7.0 裁剪而成，只保留国家、地�
 - 许可：[代码 Apache 2.0 与图形 CC BY 4.0](Twemoji-LICENSE.md)。
 
 重建：`python3 packaging/flag_font.py /path/to/Twemoji.Mozilla.ttf assets/fonts/flags.ttf`，需要 `fonttools==4.68.0`。
+
+2026-11-07 检查：Windows 11 Parallels x64 GPUI 检查程序中，香港、日本、美国、新加坡、德国、英国、台湾、中国旗帜显示彩色图形，中英文、数字、其他 Emoji、Input 和 Select 正常回退。编辑器回退、macOS、Linux 与 Windows ARM64 尚未在正式应用中实机检查。原始名称、复制、搜索及内核请求不改写。
