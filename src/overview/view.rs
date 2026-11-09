@@ -117,6 +117,12 @@ impl Overview {
             .into_any_element()
         } else {
             let chart = LineChart::new(statistics.rates.clone())
+                .id(if upload {
+                    "upload-rate-chart"
+                } else {
+                    "download-rate-chart"
+                })
+                .appear(false)
                 .x(|point: &super::statistics::Point| point.time.clone())
                 .y(move |point: &super::statistics::Point| {
                     if upload {
@@ -131,7 +137,16 @@ impl Overview {
                     theme::download_color(cx)
                 })
                 .x_axis(false)
-                .y_axis(false)
+                .y_axis(true)
+                .y_axis_label_placement(AxisLabelPlacement::Inside)
+                .y_tick_count(3)
+                .y_tick_format(|value| {
+                    if value <= 0. {
+                        String::new()
+                    } else {
+                        format!("{}/s", bytes(value as u64))
+                    }
+                })
                 .grid(true);
             let frame = div()
                 .id(if upload {
@@ -169,14 +184,7 @@ impl Overview {
                     .min_h(space::NONE)
                     .px(space::XL)
                     .pb(space::LG)
-                    .gap(space::SM)
-                    .child(div().size_full().child(plot).flex_1())
-                    .child(
-                        h_flex()
-                            .justify_between()
-                            .child(ui::muted("较早", cx).text_size(text::CAPTION))
-                            .child(ui::muted("现在", cx).text_size(text::CAPTION)),
-                    ),
+                    .child(div().size_full().child(plot).flex_1()),
             )
     }
     fn latency_card(
@@ -376,7 +384,13 @@ impl Overview {
             .value_axis(true)
             .value_axis_label_placement(AxisLabelPlacement::Inside)
             .value_tick_count(3)
-            .value_tick_format(|value| bytes(value.max(0.) as u64))
+            .value_tick_format(|value| {
+                if value <= 0. {
+                    String::new()
+                } else {
+                    bytes(value as u64)
+                }
+            })
             .grid(true)
             .grid_dashed(true)
             .max_band_width(layout::OVERVIEW_HOURLY_BAR_WIDTH.to_pixels(window.rem_size()))
@@ -420,7 +434,7 @@ impl Overview {
                     .justify_between()
                     .items_center()
                     .gap(space::SM)
-                    .child(ui::muted("流量", cx))
+                    .child(ui::muted("历史流量", cx))
                     .child(
                         TabBar::new("traffic-scope")
                             .segmented()

@@ -6903,7 +6903,7 @@ dependencies = [
  "pico-args",
  "rgb",
  "svgtypes 0.15.3",
- "tiny-skia 0.11.4",
+ "tiny-skia",
  "usvg 0.45.1",
  "zune-jpeg 0.4.21",
 ]
@@ -6920,24 +6920,9 @@ dependencies = [
  "pico-args",
  "rgb",
  "svgtypes 0.16.1",
- "tiny-skia 0.11.4",
+ "tiny-skia",
  "usvg 0.46.0",
  "zune-jpeg 0.5.15",
-]
-
-[[package]]
-name = "resvg"
-version = "0.49.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1572844b6727a1bf842190e9947641a68ac44bed83f50afb4bd1407a2564bee8"
-dependencies = [
- "bytemuck",
- "log",
- "pico-args",
- "rgb",
- "svgtypes 0.16.1",
- "tiny-skia 0.12.0",
- "usvg 0.49.0",
 ]
 
 [[package]]
@@ -7911,7 +7896,7 @@ checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
 
 [[package]]
 name = "suki-clash"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "age",
  "anyhow",
@@ -7942,7 +7927,6 @@ dependencies = [
  "raw-window-handle",
  "regex",
  "reqwest",
- "resvg 0.49.0",
  "rquickjs",
  "security-framework",
  "security-framework-sys",
@@ -8335,21 +8319,6 @@ dependencies = [
  "log",
  "png 0.17.16",
  "tiny-skia-path 0.11.4",
-]
-
-[[package]]
-name = "tiny-skia"
-version = "0.12.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "47ffee5eaaf5527f630fb0e356b90ebdec84d5d18d937c5e440350f88c5a91ea"
-dependencies = [
- "arrayref",
- "arrayvec",
- "bytemuck",
- "cfg-if",
- "log",
- "png 0.18.1",
- "tiny-skia-path 0.12.0",
 ]
 
 [[package]]
