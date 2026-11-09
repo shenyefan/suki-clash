@@ -197,7 +197,7 @@ impl Ledger {
                     }));
                 } else {
                     // A new connection is attributed only when created in the observed interval.
-                    let initial = chrono::DateTime::parse_from_rfc3339(&connection.start)
+                    let initial = DateTime::parse_from_rfc3339(&connection.start)
                         .ok()
                         .is_some_and(|start| {
                             start.with_timezone(&Local)
@@ -603,7 +603,7 @@ mod tests {
         }
         let encoded = serde_json::to_vec(&document).unwrap();
         assert!(encoded.len() < 192 * 1024, "{} bytes", encoded.len());
-        assert!(std::mem::size_of::<Hour>() * 24 * 31 * 2 < 64 * 1024);
+        assert!(size_of::<Hour>() * 24 * 31 * 2 < 64 * 1024);
         document.prune(NaiveDate::from_ymd_opt(2026, 2, 1).unwrap());
         assert!(document.days.is_empty());
     }

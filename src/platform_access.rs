@@ -25,7 +25,7 @@ pub(crate) fn elevated() -> Result<bool, String> {
                 token,
                 TokenElevation,
                 (&mut elevation as *mut TOKEN_ELEVATION).cast(),
-                std::mem::size_of::<TOKEN_ELEVATION>() as u32,
+                size_of::<TOKEN_ELEVATION>() as u32,
                 &mut length,
             )
         };

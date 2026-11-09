@@ -101,7 +101,7 @@ impl ProxiesPage {
             if !direct && !self.groups.is_empty() {
                 content = content.child(
                     Button::new("clear-proxy-filters")
-                        .icon(gpui_kit::assets::IconName::X)
+                        .icon(IconName::X)
                         .outline()
                         .with_size(control::STANDARD)
                         .label("清除筛选")
@@ -131,13 +131,13 @@ impl ProxiesPage {
         for (group, nodes) in groups {
             let open = self.is_expanded(&group.id, !query.is_empty());
             let motion = cx.theme().motion_tokens();
-            let fraction = gpui_kit::base::motion::transition(
+            let fraction = base::motion::transition(
                 (
                     ElementId::from("proxy-group-body"),
                     SharedString::from(group.id.clone()),
                 ),
                 if open { 1. } else { 0. },
-                gpui_kit::base::motion::Transition::new(motion.duration_fast)
+                base::motion::Transition::new(motion.duration_fast)
                     .easing(motion.easing_move.clone()),
                 window,
                 cx,
@@ -244,7 +244,7 @@ impl ProxiesPage {
         };
         let open = self.is_expanded(&group.id, searching);
         let motion = cx.theme().motion_tokens();
-        let angle = gpui_kit::base::motion::transition(
+        let angle = base::motion::transition(
             (
                 ElementId::from("proxy-disclosure"),
                 SharedString::from(group.id.clone()),
@@ -254,8 +254,7 @@ impl ProxiesPage {
             } else {
                 0.
             },
-            gpui_kit::base::motion::Transition::new(motion.duration_fast)
-                .easing(motion.easing_move.clone()),
+            base::motion::Transition::new(motion.duration_fast).easing(motion.easing_move.clone()),
             window,
             cx,
         );

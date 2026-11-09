@@ -4,12 +4,19 @@ use crate::core::{Phase, Service, launch::Launch};
 use crate::storage::{AppPaths, DirectoryKind, Repository};
 use std::{path::Path, time::Duration};
 
+#[cfg(windows)]
+#[path = "tests/windows.rs"]
+mod windows;
+
 fn fixture(script: Option<&str>) -> (tempfile::TempDir, AppPaths) {
+    #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt as _;
-    let root = tempfile::Builder::new()
-        .prefix("suki-core-")
-        .tempdir_in("/tmp")
-        .unwrap();
+    let mut temporary = tempfile::Builder::new();
+    temporary.prefix("suki-core-");
+    #[cfg(unix)]
+    let root = temporary.tempdir_in("/tmp").unwrap();
+    #[cfg(windows)]
+    let root = temporary.tempdir().unwrap();
     let paths = AppPaths::isolated(root.path());
     Repository::open(paths.clone()).unwrap();
     core_settings(&paths, 0);
@@ -21,8 +28,11 @@ fn fixture(script: Option<&str>) -> (tempfile::TempDir, AppPaths) {
     )
     .unwrap();
     if let Some(script) = script {
-        let binary = paths.directory(DirectoryKind::Core).join("mihomo");
+        let binary = paths
+            .directory(DirectoryKind::Core)
+            .join(crate::bootstrap::core_name());
         std::fs::write(&binary, script).unwrap();
+        #[cfg(unix)]
         std::fs::set_permissions(binary, std::fs::Permissions::from_mode(0o700)).unwrap();
     }
     (root, paths)
@@ -35,6 +45,7 @@ fn actor(paths: AppPaths) -> Actor {
 
 const SLEEPING_CORE: &str = "#!/bin/sh\nfor arg do\nif [ \"$arg\" = -t ]; then exit 0; fi\ndone\n: > child-started\nexec /bin/sleep 30\n";
 
+#[cfg(unix)]
 #[tokio::test]
 async fn late_provider_selection_settles_without_overwriting_new_choices_and_expires() {
     use crate::proxies::runtime::{Action, Selections};
@@ -203,6 +214,7 @@ async fn late_provider_selection_settles_without_overwriting_new_choices_and_exp
     server.abort();
 }
 
+#[cfg(unix)]
 #[tokio::test]
 async fn provider_sync_is_queued_by_runtime_revision_and_stops_after_four_pending_attempts() {
     use std::sync::{
@@ -278,6 +290,7 @@ async fn provider_sync_is_queued_by_runtime_revision_and_stops_after_four_pendin
     server.abort();
 }
 
+#[cfg(unix)]
 #[tokio::test]
 async fn mode_and_system_proxy_disable_apply_auto_close_to_snapshot_connections() {
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
@@ -532,6 +545,7 @@ async fn override_credentials_and_partial_delete_use_the_same_commit_contract() 
     );
 }
 
+#[cfg(unix)]
 #[tokio::test]
 async fn restored_core_is_ready_before_proxy_recovery_and_reports_its_independent_failure() {
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
@@ -637,6 +651,7 @@ async fn exit_preparation_retains_failed_recovery_for_a_second_attempt() {
     assert!(actor.exit_prepared);
 }
 
+#[cfg(unix)]
 #[tokio::test]
 async fn owned_health_recovery_is_observed_and_stops_after_its_budget() {
     use std::sync::{
@@ -828,6 +843,7 @@ async fn commands_reject_conflicts_and_shutdown_closes_the_owner() {
     ));
 }
 
+#[cfg(unix)]
 #[tokio::test]
 async fn startup_configuration_can_settle_after_three_seconds_and_keeps_timeout_cause() {
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
@@ -913,6 +929,7 @@ async fn automatic_refresh_does_not_erase_startup_failure() {
         .unwrap();
 }
 
+#[cfg(unix)]
 #[tokio::test]
 async fn a_live_process_is_not_ready_and_cancelled_start_remains_owned_until_reaped() {
     let (_root, paths) = fixture(Some(SLEEPING_CORE));
@@ -1012,6 +1029,7 @@ async fn a_live_process_is_not_ready_and_cancelled_start_remains_owned_until_rea
     assert!(saved.contains("startup adapter failure"));
 }
 
+#[cfg(unix)]
 #[tokio::test]
 async fn failed_validation_preserves_the_old_process_and_source() {
     use std::os::unix::fs::PermissionsExt as _;
@@ -1072,6 +1090,7 @@ async fn failed_validation_preserves_the_old_process_and_source() {
     actor.stop().await.unwrap();
 }
 
+#[cfg(unix)]
 #[tokio::test]
 async fn shutdown_cancels_and_reaps_an_in_flight_validator() {
     let (_root, paths) = fixture(Some("#!/bin/sh\nexec /bin/sleep 30\n"));
@@ -1115,6 +1134,7 @@ async fn shutdown_cancels_and_reaps_an_in_flight_validator() {
     );
 }
 
+#[cfg(unix)]
 #[tokio::test]
 async fn unexpected_child_exit_invalidates_readiness_and_version() {
     let (_root, paths) = fixture(Some("#!/bin/sh\nexit 7\n"));
@@ -1145,6 +1165,7 @@ async fn unexpected_child_exit_invalidates_readiness_and_version() {
     assert!(actor.snapshot.error().unwrap().contains("意外退出"));
 }
 
+#[cfg(unix)]
 #[tokio::test]
 #[ignore = "requires an explicitly supplied official Mihomo binary; proxy ports stay disabled"]
 async fn real_mihomo_validates_starts_restarts_and_stops_over_private_ipc() {
@@ -1258,6 +1279,7 @@ async fn persisted_overrides_feed_private_candidate_without_mutating_source() {
     assert_eq!(std::fs::read(source).unwrap(), before);
 }
 
+#[cfg(unix)]
 #[tokio::test]
 async fn composition_failures_preserve_running_child_and_its_candidate() {
     let (_root, paths) = fixture(Some(SLEEPING_CORE));
@@ -1323,6 +1345,7 @@ fn save_profile(paths: &AppPaths, id: u64, content: &str) {
     store.save(&namespace, &values).unwrap();
 }
 
+#[cfg(unix)]
 #[tokio::test]
 #[ignore = "requires explicit SUKI_TEST_MIHOMO; no proxy ports or system network changes"]
 async fn real_profile_activation_apply_persistence_and_failed_commit_recovery() {
@@ -1418,6 +1441,7 @@ fn core_settings(paths: &AppPaths, port: u16) {
     .unwrap();
 }
 
+#[cfg(unix)]
 #[tokio::test]
 #[ignore = "requires explicit SUKI_TEST_MIHOMO; only isolated loopback listeners"]
 async fn real_startup_keeps_requested_port_and_invalid_configuration() {
@@ -1498,6 +1522,7 @@ async fn real_first_open_service_automatically_starts_base_runtime() {
     );
 }
 
+#[cfg(unix)]
 #[tokio::test]
 #[ignore = "requires explicit SUKI_TEST_MIHOMO and vendor network; isolated core and loopback only"]
 async fn real_core_page_settings_smart_switch_and_owned_shutdown() {
@@ -1828,6 +1853,7 @@ async fn first_start_without_core_reports_download_guidance_without_fallback() {
     assert!(owner.validation.is_none());
 }
 
+#[cfg(unix)]
 #[tokio::test]
 async fn missing_geodata_allows_validation_download_time_and_reports_network_recovery() {
     let (_root, paths) = fixture(Some("#!/bin/sh\nsleep 6\nexit 0\n"));
@@ -1847,6 +1873,7 @@ async fn missing_geodata_allows_validation_download_time_and_reports_network_rec
     assert!(owner.validation.is_none());
 }
 
+#[cfg(unix)]
 #[tokio::test]
 async fn first_install_validates_staged_core_without_requiring_managed_core() {
     let (root, paths) = fixture(None);
@@ -2102,6 +2129,7 @@ async fn real_single_database_update_validates_download_before_replacing_file() 
     server.await.unwrap();
 }
 
+#[cfg(unix)]
 #[tokio::test]
 #[ignore = "requires explicit SUKI_TEST_MIHOMO; isolated private control socket only"]
 async fn real_core_logs_are_parsed_published_and_saved() {
@@ -2155,7 +2183,7 @@ async fn profile_crud_is_serialized_rejects_stale_edits_and_removes_bodies() {
     let second = Document::new(2, DocumentKind::Profile);
     owner
         .profiles(super::super::ProfileCommand::Save {
-            expected: Default::default(),
+            expected: crate::profiles::repository::read(&owner.paths).unwrap().0,
             documents: vec![first.clone(), second.clone()],
         })
         .await
@@ -2254,7 +2282,7 @@ async fn remote_import_downloads_metadata_and_failed_update_keeps_previous_sourc
     remote.user_agent = "Subscription-Test/1".into();
     owner
         .profiles(super::super::ProfileCommand::Save {
-            expected: Default::default(),
+            expected: crate::profiles::repository::read(&owner.paths).unwrap().0,
             documents: vec![remote],
         })
         .await
@@ -2300,7 +2328,7 @@ async fn default_subscription_agent_identifies_clash_verge_before_suki() {
     document.content.clear();
     owner
         .profiles(super::super::ProfileCommand::Save {
-            expected: Default::default(),
+            expected: crate::profiles::repository::read(&owner.paths).unwrap().0,
             documents: vec![document],
         })
         .await
@@ -2389,6 +2417,7 @@ async fn automatic_subscription_update_uses_updated_deadline_and_disabled_flag()
     assert_eq!(repository::read(&paths).unwrap().1[0].updated_at, Some(1));
 }
 
+#[cfg(unix)]
 #[tokio::test]
 #[ignore = "requires explicit SUKI_TEST_MIHOMO; isolated private control socket only"]
 async fn real_subscription_edit_enhance_and_active_delete_apply_before_committing() {
@@ -2408,7 +2437,7 @@ async fn real_subscription_edit_enhance_and_active_delete_apply_before_committin
     second.content = first.content.clone();
     owner
         .profiles(super::super::ProfileCommand::Save {
-            expected: Default::default(),
+            expected: crate::profiles::repository::read(&owner.paths).unwrap().0,
             documents: vec![first, second],
         })
         .await
@@ -2540,7 +2569,7 @@ async fn force_subscription_proxy_does_not_silently_download_direct_when_core_is
     document.self_proxy = true;
     let error = owner
         .profiles(super::super::ProfileCommand::Save {
-            expected: Default::default(),
+            expected: crate::profiles::repository::read(&owner.paths).unwrap().0,
             documents: vec![document],
         })
         .await
@@ -2550,6 +2579,7 @@ async fn force_subscription_proxy_does_not_silently_download_direct_when_core_is
     assert!(owner.transfer.is_none());
 }
 
+#[cfg(unix)]
 #[tokio::test]
 #[ignore = "requires SUKI_TEST_MIHOMO"]
 async fn real_proxy_selection_modes_persistence_and_readback() {
@@ -2702,6 +2732,7 @@ async fn real_proxy_selection_modes_persistence_and_readback() {
     owner.stop().await.unwrap();
 }
 
+#[cfg(unix)]
 #[tokio::test]
 #[ignore = "requires SUKI_TEST_MIHOMO"]
 async fn real_websocket_traffic_connections_and_confirmed_close_use_private_ipc() {
@@ -2848,6 +2879,7 @@ async fn real_websocket_traffic_connections_and_confirmed_close_use_private_ipc(
         .unwrap();
 }
 
+#[cfg(unix)]
 #[tokio::test]
 #[ignore = "requires SUKI_TEST_MIHOMO"]
 async fn real_group_tests_keep_group_urls_and_results_separate() {
@@ -2974,6 +3006,7 @@ fn measurement_requests_do_not_reserve_the_lifecycle_lane() {
     service.shutdown().unwrap().join().unwrap().unwrap();
 }
 
+#[cfg(unix)]
 #[tokio::test]
 #[ignore = "requires SUKI_TEST_MIHOMO"]
 async fn real_chain_save_applies_links_selects_exit_restores_on_restart_and_disconnects() {
@@ -2981,6 +3014,7 @@ async fn real_chain_save_applies_links_selects_exit_restores_on_restart_and_disc
         chain_roundtrip(kind).await;
     }
 }
+#[cfg(unix)]
 async fn chain_roundtrip(kind: &str) {
     use crate::proxies::chain_config::{Change, Config};
     use std::os::unix::fs::PermissionsExt as _;
@@ -3173,6 +3207,7 @@ async fn stopped_overrides_import_update_schedule_and_reject_stale_changes() {
     assert_eq!(overrides::read(&paths).unwrap().1[0].content, original);
 }
 
+#[cfg(unix)]
 #[tokio::test]
 #[ignore = "requires SUKI_TEST_MIHOMO; isolated private control socket, DNS listener disabled"]
 async fn real_rules_overrides_dns_sniffer_apply_atomically_without_restarting() {
@@ -3194,7 +3229,7 @@ async fn real_rules_overrides_dns_sniffer_apply_atomically_without_restarting() 
     profile.content="dns: {enable: false, nameserver-policy: {'example.com': ['1.1.1.1']}}\nrules: ['MATCH,DIRECT']\n".into();
     owner
         .profiles(crate::core::ProfileCommand::Save {
-            expected: Default::default(),
+            expected: crate::profiles::repository::read(&owner.paths).unwrap().0,
             documents: vec![profile],
         })
         .await

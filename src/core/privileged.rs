@@ -24,9 +24,7 @@ pub(super) async fn require_ready() -> Result<(), String> {
 async fn await_protocol<F, Fut>(budget: std::time::Duration, mut probe: F) -> anyhow::Result<()>
 where
     F: FnMut() -> Fut,
-    Fut: std::future::Future<
-            Output = anyhow::Result<suki_service::Response<suki_service::ProtocolInfo>>,
-        >,
+    Fut: Future<Output = anyhow::Result<suki_service::Response<suki_service::ProtocolInfo>>>,
 {
     let deadline = tokio::time::Instant::now() + budget;
     let mut previous = None;

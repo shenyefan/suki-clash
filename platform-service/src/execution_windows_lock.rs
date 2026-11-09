@@ -92,7 +92,7 @@ impl MutexOwner {
                 .context("could not create core execution mutex permissions");
         }
         let attributes = SECURITY_ATTRIBUTES {
-            nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+            nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
             lpSecurityDescriptor: descriptor,
             bInheritHandle: 0,
         };

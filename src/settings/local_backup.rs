@@ -49,7 +49,7 @@ pub(super) fn open(window: &mut Window, cx: &mut App) {
                     .footer(
                         ui::modal_footer().child(
                             Button::new("local-backup-done")
-                                .icon(gpui_kit::assets::IconName::Check)
+                                .icon(assets::IconName::Check)
                                 .label("完成")
                                 .with_size(control::STANDARD)
                                 .on_click(|_, window, cx| window.close_dialog(cx)),
@@ -190,15 +190,15 @@ impl History {
         let date: chrono::DateTime<chrono::Local> = entry.modified.into();
         h_flex().w_full().gap(space::SM)
             .child(v_flex().flex_1().min_w(space::NONE).child(date.format("%Y-%m-%d %H:%M:%S %:z").to_string()).child(ui::muted(entry.id.name(),cx).truncate()))
-            .child(Button::new(SharedString::from(format!("export-{}",entry.id.name()))).outline().icon(gpui_kit::assets::IconName::FileOutput).label("导出").disabled(disabled).on_click(cx.listener(move|this,_,window,cx|this.export(export.clone(),window,cx))))
-            .child(Button::new(SharedString::from(format!("restore-{}",entry.id.name()))).outline().icon(gpui_kit::assets::IconName::RotateCcw).label("恢复").disabled(disabled).on_click(cx.listener(move|_,_,window,cx|{
+            .child(Button::new(SharedString::from(format!("export-{}",entry.id.name()))).outline().icon(assets::IconName::FileOutput).label("导出").disabled(disabled).on_click(cx.listener(move|this,_,window,cx|this.export(export.clone(),window,cx))))
+            .child(Button::new(SharedString::from(format!("restore-{}",entry.id.name()))).outline().icon(assets::IconName::RotateCcw).label("恢复").disabled(disabled).on_click(cx.listener(move|_,_,window,cx|{
                 let owner=cx.weak_entity();let restore=restore.clone();
                 window.open_alert_dialog(cx,move|dialog,window,cx|{
                     let owner=owner.clone();let restore=restore.clone();
                     ui::modal_alert(dialog,window,cx).title("恢复此本地备份？").description("替换当前配置、订阅与覆写；本机同步设置保留。确认后等待 5 秒，期间可撤销。").footer(ui::dialog_footer("恢复备份")).on_ok(move|_,window,cx|{let _=owner.update(cx,|this,cx|this.defer(Command::Restore(restore.clone()),window,cx));true})
                 });
             })))
-            .child(ui::icon_button(SharedString::from(format!("delete-{}",entry.id.name())),gpui_kit::assets::IconName::Trash,"删除备份").disabled(disabled).on_click(cx.listener(move|this,_,window,cx|this.defer(Command::Delete(delete.clone()),window,cx))))
+            .child(ui::icon_button(SharedString::from(format!("delete-{}",entry.id.name())),assets::IconName::Trash,"删除备份").disabled(disabled).on_click(cx.listener(move|this,_,window,cx|this.defer(Command::Delete(delete.clone()),window,cx))))
             .into_any_element()
     }
 }
@@ -215,7 +215,7 @@ impl Render for History {
                     .gap(space::SM)
                     .child(
                         Button::new("local-import")
-                            .icon(gpui_kit::assets::IconName::FileInput)
+                            .icon(assets::IconName::FileInput)
                             .outline()
                             .label("导入备份")
                             .disabled(disabled)
@@ -223,7 +223,7 @@ impl Render for History {
                     )
                     .child(
                         Button::new("local-create")
-                            .icon(gpui_kit::assets::IconName::Archive)
+                            .icon(assets::IconName::Archive)
                             .outline()
                             .label("创建备份")
                             .disabled(disabled)
@@ -234,7 +234,7 @@ impl Render for History {
             )
             .child(if self.state.entries.is_empty() {
                 ui::empty_inline(
-                    gpui_kit::assets::IconName::Archive,
+                    assets::IconName::Archive,
                     "暂无本地备份",
                     "创建备份或导入已有备份",
                     cx,
@@ -245,7 +245,7 @@ impl Render for History {
                     cx.entity(),
                     "local-backup-rows",
                     vec![
-                        crate::ui::theme::preferences::ROW_HEIGHT.to_pixels(window.rem_size());
+                        ui::theme::preferences::ROW_HEIGHT.to_pixels(window.rem_size());
                         self.state.entries.len()
                     ],
                     &self.scroll,

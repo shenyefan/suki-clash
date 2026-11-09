@@ -64,7 +64,7 @@ impl Editor {
                 ui::modal_footer()
                     .child(
                         Button::new("uwp-cancel")
-                            .icon(gpui_kit::assets::IconName::X)
+                            .icon(assets::IconName::X)
                             .label("取消")
                             .with_size(ui::theme::control::STANDARD)
                             .on_click({
@@ -77,7 +77,7 @@ impl Editor {
                     )
                     .child(
                         Button::new("uwp-save")
-                            .icon(gpui_kit::assets::IconName::Check)
+                            .icon(assets::IconName::Check)
                             .label("保存")
                             .primary()
                             .with_size(ui::theme::control::STANDARD)
@@ -178,7 +178,7 @@ impl Render for Editor {
                     .aria_label("搜索 UWP 应用"),
             )
             .child(
-                gpui_kit::component::h_flex()
+                component::h_flex()
                     .justify_between()
                     .child(
                         Checkbox::new("uwp-all")

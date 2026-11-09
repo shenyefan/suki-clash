@@ -182,7 +182,7 @@ fn installation_result(output: Output) -> Result<InstallationOutcome> {
             return Err(failure.into());
         }
     }
-    anyhow::bail!(
+    bail!(
         "service installation failed: {} {}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
@@ -496,7 +496,7 @@ fn elevate(installer: &Path, arguments: &[OsString], _prompt: &str) -> Result<bo
     let file = wide(installer.as_os_str());
     let parameters = wide(OsStr::new(&command_line));
     let mut info = SHELLEXECUTEINFOW {
-        cbSize: std::mem::size_of::<SHELLEXECUTEINFOW>() as u32,
+        cbSize: size_of::<SHELLEXECUTEINFOW>() as u32,
         fMask: SEE_MASK_NOCLOSEPROCESS | SEE_MASK_NOASYNC | SEE_MASK_FLAG_NO_UI,
         lpVerb: verb.as_ptr(),
         lpFile: file.as_ptr(),

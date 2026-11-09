@@ -147,14 +147,14 @@ impl TableDelegate for LogTable {
         let message = entry.message.clone();
         let text = entry.text();
         menu.item(
-            crate::ui::actions::menu("复制内容")
+            ui::actions::menu("复制内容")
                 .icon(IconName::Copy)
                 .on_click(move |_, _, cx| {
                     cx.write_to_clipboard(ClipboardItem::new_string(message.clone()))
                 }),
         )
         .item(
-            crate::ui::actions::menu("复制完整日志")
+            ui::actions::menu("复制完整日志")
                 .icon(IconName::Copy)
                 .on_click(move |_, _, cx| {
                     cx.write_to_clipboard(ClipboardItem::new_string(text.clone()))

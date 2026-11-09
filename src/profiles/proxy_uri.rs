@@ -186,7 +186,7 @@ fn parse(text: &str) -> Result<Value, String> {
     let params = url
         .query_pairs()
         .map(|(key, value)| (key.into_owned(), value.into_owned()))
-        .collect::<std::collections::BTreeMap<_, _>>();
+        .collect::<BTreeMap<_, _>>();
     for (key, value) in &params {
         let target = match key.as_str() {
             "sni" | "peer" => {
@@ -413,7 +413,7 @@ fn boolean(value: &str) -> Result<bool, String> {
 fn transport(
     map: &mut Map<String, Value>,
     network: Option<&str>,
-    params: &std::collections::BTreeMap<String, String>,
+    params: &BTreeMap<String, String>,
 ) -> Result<(), String> {
     if let Some(network) = network.filter(|network| !matches!(*network, "tcp" | "none" | "")) {
         let target = match network {

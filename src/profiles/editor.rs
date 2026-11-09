@@ -39,11 +39,11 @@ struct ScopeChoice {
 }
 impl SearchableListItem for ScopeChoice {
     type Value = Option<u64>;
-    fn value(&self) -> &Self::Value {
-        &self.id
-    }
     fn title(&self) -> SharedString {
         self.name.clone().into()
+    }
+    fn value(&self) -> &Self::Value {
+        &self.id
     }
 }
 pub(super) struct DocumentEditor {
@@ -386,7 +386,7 @@ impl Render for DocumentEditor {
                         .child(div().flex_1())
                         .child(
                             Button::new("validate-document-yaml")
-                                .icon(gpui_kit::assets::IconName::Check)
+                                .icon(IconName::Check)
                                 .outline()
                                 .with_size(control::STANDARD)
                                 .label("检查语法")
@@ -403,7 +403,7 @@ impl Render for DocumentEditor {
                         )
                         .child(
                             Button::new("copy-editor-file")
-                                .icon(gpui_kit::assets::IconName::Copy)
+                                .icon(IconName::Copy)
                                 .outline()
                                 .with_size(control::STANDARD)
                                 .label("复制")

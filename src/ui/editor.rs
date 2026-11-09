@@ -44,23 +44,20 @@ pub(crate) fn expand(
             window,
             cx,
         )
-        .content(ui::modal_panel(
-            crate::ui::theme::layout::EDITOR_HEIGHT,
-            move |_, _| {
-                Editor::new(&state)
-                    .w_full()
-                    .h_full()
-                    .readonly(readonly)
-                    .aria_label(label.clone())
-                    .into_any_element()
-            },
-        ))
+        .content(ui::modal_panel(layout::EDITOR_HEIGHT, move |_, _| {
+            Editor::new(&state)
+                .w_full()
+                .h_full()
+                .readonly(readonly)
+                .aria_label(label.clone())
+                .into_any_element()
+        }))
         .footer(
             ui::modal_footer()
                 .w_full()
                 .child(
                     Button::new("copy-source")
-                        .icon(gpui_kit::assets::IconName::Copy)
+                        .icon(assets::IconName::Copy)
                         .label("复制")
                         .outline()
                         .on_click(move |_, _, cx| {

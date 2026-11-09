@@ -101,7 +101,7 @@ mod windows_owner {
             return Err(std::io::Error::last_os_error())
                 .context("failed to size process SID buffer");
         }
-        let words = (required as usize).div_ceil(std::mem::size_of::<usize>());
+        let words = (required as usize).div_ceil(size_of::<usize>());
         let mut buffer = vec![0_usize; words];
         if unsafe {
             GetTokenInformation(
@@ -123,7 +123,7 @@ mod windows_owner {
         let token_path = app_data_root.join(OWNER_TOKEN_FILE_NAME);
         let descriptor = LocalSecurityDescriptor::from_sid(sid)?;
         let attributes = SECURITY_ATTRIBUTES {
-            nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+            nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
             lpSecurityDescriptor: descriptor.0,
             bInheritHandle: 0,
         };

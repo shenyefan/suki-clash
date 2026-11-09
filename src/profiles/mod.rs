@@ -41,7 +41,7 @@ pub(crate) struct ProfilesPage {
     import_task: Option<Task<()>>,
     url: Entity<InputState>,
     columns: u16,
-    list_scroll: gpui_kit::component::VirtualListScrollHandle,
+    list_scroll: component::VirtualListScrollHandle,
     card_focus: std::collections::BTreeMap<u64, FocusHandle>,
     import_token: Entity<InputState>,
     import_agent: Entity<InputState>,
@@ -139,7 +139,7 @@ impl ProfilesPage {
             .map(|doc| (doc.id, cx.focus_handle()))
             .collect();
         Self {
-            list_scroll: gpui_kit::component::VirtualListScrollHandle::new(),
+            list_scroll: component::VirtualListScrollHandle::new(),
             card_focus,
             overrides,
             batch: false,
@@ -563,14 +563,14 @@ impl ProfilesPage {
                     self.persist_documents(candidate, active, window, cx, move |_, window, cx| {
                         cx.notify();
                         let owner = cx.entity();
-                        crate::ui::notifications::push(
+                        ui::notifications::push(
                             window,
-                            gpui_kit::component::notification::Notification::new()
+                            component::notification::Notification::new()
                                 .message(format!("已移除“{}”", document.name))
                                 .action(move |_, _, _| {
                                     let owner = owner.clone();
                                     Button::new("undo-delete")
-                                        .icon(gpui_kit::assets::IconName::RotateCcw)
+                                        .icon(assets::IconName::RotateCcw)
                                         .with_size(control::STANDARD)
                                         .outline()
                                         .label("撤销")

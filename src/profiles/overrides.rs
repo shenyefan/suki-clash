@@ -55,7 +55,7 @@ impl ProfilesPage {
                         continue;
                     }
                     let owner = owner.clone();
-                    menu = menu.item(crate::ui::actions::menu(action).icon(icon).on_click(
+                    menu = menu.item(ui::actions::menu(action).icon(icon).on_click(
                         move |_, w, cx| {
                             owner.update(cx, |this, cx| this.document_action(id, action, w, cx));
                         },
@@ -147,7 +147,7 @@ impl ProfilesPage {
                     .gap(space::MD)
                     .child(
                         div().cursor_grab().child(
-                            gpui_kit::component::Icon::new(IconName::GripVertical)
+                            component::Icon::new(IconName::GripVertical)
                                 .size(layout::ICON)
                                 .text_color(cx.theme().muted_foreground),
                         ),
@@ -237,7 +237,7 @@ impl ProfilesPage {
                 ui::workspace_toolbar()
                     .child(
                         div().flex_1().min_w(space::NONE).child(
-                            gpui_kit::component::input::Input::new(&self.url)
+                            component::input::Input::new(&self.url)
                                 .aria_label("覆写导入地址")
                                 .with_size(control::STANDARD)
                                 .w_full()
@@ -283,7 +283,7 @@ impl ProfilesPage {
                         .into_any_element()
                     } else {
                         let height =
-                            crate::ui::theme::list::DETAIL_ROW_HEIGHT.to_pixels(window.rem_size());
+                            ui::theme::list::DETAIL_ROW_HEIGHT.to_pixels(window.rem_size());
                         let surface = div()
                             .id("override-list-surface")
                             .flex_1()

@@ -16,7 +16,7 @@ use model::{LogBuffer, LogEntry, LogSearch};
 
 use table::LogTable;
 
-gpui_kit::actions!(logs, [DismissLogDetails]);
+actions!(logs, [DismissLogDetails]);
 
 pub(crate) struct LogsPage {
     buffer: LogBuffer,

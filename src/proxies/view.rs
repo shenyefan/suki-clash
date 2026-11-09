@@ -40,7 +40,7 @@ impl ProxiesPage {
             .dropdown_menu(move |mut menu, _, _| {
                 for (key, label, checked) in options {
                     let owner = owner.clone();
-                    menu = menu.item(crate::ui::actions::menu(label).checked(checked).on_click(
+                    menu = menu.item(ui::actions::menu(label).checked(checked).on_click(
                         move |_, window, cx| {
                             owner.update(cx, |this, cx| {
                                 let setting = match key {
@@ -64,7 +64,7 @@ impl ProxiesPage {
                     let owner = owner.clone();
                     let id = id.clone();
                     menu = menu.item(
-                        crate::ui::actions::menu(format!("分组：{label}"))
+                        ui::actions::menu(format!("分组：{label}"))
                             .checked(*checked)
                             .on_click(move |_, window, cx| {
                                 owner.update(cx, |this, cx| {
@@ -112,7 +112,7 @@ impl ProxiesPage {
                 for order in SortOrder::ALL {
                     let owner = owner.clone();
                     menu = menu.item(
-                        crate::ui::actions::menu(order.label())
+                        ui::actions::menu(order.label())
                             .checked(order == sort)
                             .on_click(move |_, window, cx| {
                                 owner.update(cx, |this, cx| {
@@ -145,7 +145,7 @@ impl ProxiesPage {
                 let expand = owner.clone();
                 let collapse = owner.clone();
                 menu.item(
-                    crate::ui::actions::menu("仅显示可用节点")
+                    ui::actions::menu("仅显示可用节点")
                         .checked(available)
                         .on_click(move |_, window, cx| {
                             filter.update(cx, |this, cx| {
@@ -155,27 +155,25 @@ impl ProxiesPage {
                             })
                         }),
                 )
-                .item(
-                    crate::ui::actions::menu("紧凑列表")
-                        .checked(compact)
-                        .on_click(move |_, window, cx| {
-                            density.update(cx, |this, cx| {
-                                this.compact = !this.compact;
-                                this.refresh_list(window, cx);
-                                cx.notify();
-                            })
-                        }),
-                )
+                .item(ui::actions::menu("紧凑列表").checked(compact).on_click(
+                    move |_, window, cx| {
+                        density.update(cx, |this, cx| {
+                            this.compact = !this.compact;
+                            this.refresh_list(window, cx);
+                            cx.notify();
+                        })
+                    },
+                ))
                 .separator()
                 .item(
-                    crate::ui::actions::menu("展开全部分组")
+                    ui::actions::menu("展开全部分组")
                         .icon(IconName::ChevronsUpDown)
                         .on_click(move |_, window, cx| {
                             expand.update(cx, |this, cx| this.expand_all(true, window, cx))
                         }),
                 )
                 .item(
-                    crate::ui::actions::menu("收起全部分组")
+                    ui::actions::menu("收起全部分组")
                         .icon(IconName::ChevronsDownUp)
                         .on_click(move |_, window, cx| {
                             collapse.update(cx, |this, cx| this.expand_all(false, window, cx))
@@ -183,7 +181,7 @@ impl ProxiesPage {
                 )
                 .separator()
                 .item(
-                    crate::ui::actions::menu("刷新代理组")
+                    ui::actions::menu("刷新代理组")
                         .icon(IconName::RefreshCw)
                         .on_click(|_, window, cx| {
                             crate::core::request(
@@ -291,7 +289,7 @@ impl Render for ProxiesPage {
                         };
                         let gap = proxy_card::GAP.to_pixels(window.rem_size());
                         let min = proxy_card::MIN_WIDTH.to_pixels(window.rem_size());
-                        let inset = (crate::ui::theme::list::INSET_X + proxy_card::GROUP_INSET_X)
+                        let inset = (ui::theme::list::INSET_X + proxy_card::GROUP_INSET_X)
                             .to_pixels(window.rem_size());
                         let columns =
                             ui::adaptive_columns(bounds.size.width - inset * 2., min, gap);

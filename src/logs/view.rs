@@ -59,19 +59,17 @@ impl LogsPage {
             .dropdown_menu(move |mut menu, _, _| {
                 for (ix, label) in LABELS.into_iter().enumerate() {
                     let owner = owner.clone();
-                    menu = menu.item(
-                        crate::ui::actions::menu(label)
-                            .checked(ix == column)
-                            .on_click(move |_, w, cx| {
-                                owner.update(cx, |this, cx| {
-                                    this.table.update(cx, |table, cx| {
-                                        table.delegate_mut().sort = Some((ix, descending));
-                                        table.refresh(cx);
-                                    });
-                                    this.refresh(w, cx);
+                    menu = menu.item(ui::actions::menu(label).checked(ix == column).on_click(
+                        move |_, w, cx| {
+                            owner.update(cx, |this, cx| {
+                                this.table.update(cx, |table, cx| {
+                                    table.delegate_mut().sort = Some((ix, descending));
+                                    table.refresh(cx);
                                 });
-                            }),
-                    );
+                                this.refresh(w, cx);
+                            });
+                        },
+                    ));
                 }
                 menu
             })
@@ -93,7 +91,7 @@ impl LogsPage {
             .dropdown_menu(move |mut menu, _, _| {
                 for (key, label, enabled) in options {
                     let owner = owner.clone();
-                    menu = menu.item(crate::ui::actions::menu(label).checked(enabled).on_click(
+                    menu = menu.item(ui::actions::menu(label).checked(enabled).on_click(
                         move |_, w, cx| {
                             owner.update(cx, |this, cx| {
                                 let option = match key {

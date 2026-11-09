@@ -697,7 +697,7 @@ fn current_user_pipe_sddl() -> io::Result<String> {
         let mut length = 0;
         GetTokenInformation(token, TokenUser, std::ptr::null_mut(), 0, &mut length);
         // usize storage keeps TOKEN_USER aligned.
-        let mut buffer = vec![0usize; (length as usize).div_ceil(std::mem::size_of::<usize>())];
+        let mut buffer = vec![0usize; (length as usize).div_ceil(size_of::<usize>())];
         let success = GetTokenInformation(
             token,
             TokenUser,

@@ -109,13 +109,6 @@ impl ListDelegate for Delegate {
         }
         Some(surface)
     }
-    fn set_selected_index(
-        &mut self,
-        _: Option<IndexPath>,
-        _: &mut Window,
-        _: &mut Context<ListState<Self>>,
-    ) {
-    }
     fn render_empty(
         &mut self,
         _: &mut Window,
@@ -126,6 +119,13 @@ impl ListDelegate for Delegate {
             .text_size(text::BODY)
             .text_color(cx.theme().muted_foreground)
             .child("暂无项目")
+    }
+    fn set_selected_index(
+        &mut self,
+        _: Option<IndexPath>,
+        _: &mut Window,
+        _: &mut Context<ListState<Self>>,
+    ) {
     }
 }
 struct Layer {
@@ -441,7 +441,7 @@ impl Render for Panel {
                         })
                         .child(surface),
                 )
-                .with_priority(gpui_kit::base::POPUP_PRIORITY + depth),
+                .with_priority(base::POPUP_PRIORITY + depth),
             );
         }
         root

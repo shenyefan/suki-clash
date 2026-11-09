@@ -206,7 +206,7 @@ impl Overview {
                         Button::new("current-node-test")
                             .ghost()
                             .small()
-                            .icon(gpui_kit::assets::IconName::Gauge)
+                            .icon(assets::IconName::Gauge)
                             .accessibility_label("测试节点延迟")
                             .tooltip("测试节点延迟")
                             .disabled(test.is_none())
@@ -480,7 +480,7 @@ impl Overview {
                     .justify_center()
                     .child(if count == 0 {
                         ui::empty_inline(
-                            gpui_kit::assets::IconName::ChartNoAxesColumn,
+                            assets::IconName::ChartNoAxesColumn,
                             "暂无流量记录",
                             "",
                             cx,

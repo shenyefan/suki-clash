@@ -133,7 +133,7 @@ impl SettingsPage {
             };
         let mut rows = Vec::new();
         if !entries.is_empty() {
-            let height = crate::ui::theme::list::DETAIL_ROW_HEIGHT.to_pixels(window.rem_size());
+            let height = ui::theme::list::DETAIL_ROW_HEIGHT.to_pixels(window.rem_size());
             let count = entries.len();
             let entries = std::rc::Rc::new(entries);
             rows.push(ui::virtual_rows::panel(
@@ -203,7 +203,7 @@ impl SettingsPage {
 struct Inventory {
     session: Entity<Session>,
     ipv6: bool,
-    list_scroll: gpui_kit::component::VirtualListScrollHandle,
+    list_scroll: component::VirtualListScrollHandle,
     _subscription: Subscription,
 }
 impl Inventory {
@@ -212,7 +212,7 @@ impl Inventory {
         Self {
             session,
             ipv6: false,
-            list_scroll: gpui_kit::component::VirtualListScrollHandle::new(),
+            list_scroll: component::VirtualListScrollHandle::new(),
             _subscription: subscription,
         }
     }
@@ -231,7 +231,7 @@ impl Render for Inventory {
                     .gap(space::SM)
                     .child(
                         Button::new("interface-family")
-                            .icon(gpui_kit::assets::IconName::Network)
+                            .icon(IconName::Network)
                             .outline()
                             .label(if self.ipv6 { "IPv6" } else { "IPv4" })
                             .with_size(control::STANDARD)
@@ -273,7 +273,7 @@ impl Render for Inventory {
             }
             entries.push((interface.name.clone(), Some(("MAC", interface.mac.clone()))));
         }
-        let height = crate::ui::theme::list::DETAIL_ROW_HEIGHT.to_pixels(window.rem_size());
+        let height = ui::theme::list::DETAIL_ROW_HEIGHT.to_pixels(window.rem_size());
         let heights = entries
             .iter()
             .map(|(_, value)| {
@@ -662,7 +662,7 @@ impl Render for TunnelFooter {
         ui::modal_footer()
             .child(
                 Button::new("cancel-tunnel")
-                    .icon(gpui_kit::assets::IconName::X)
+                    .icon(IconName::X)
                     .with_size(control::STANDARD)
                     .label("取消")
                     .disabled(busy)
@@ -670,7 +670,7 @@ impl Render for TunnelFooter {
             )
             .child(
                 Button::new("save-tunnel")
-                    .icon(gpui_kit::assets::IconName::Save)
+                    .icon(IconName::Save)
                     .with_size(control::STANDARD)
                     .primary()
                     .label(label)

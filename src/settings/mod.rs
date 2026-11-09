@@ -89,7 +89,7 @@ pub(crate) struct SettingsPage {
     dns_source: Entity<EditorState>,
     dns_document: serde_yaml_ng::Value,
     error: Option<String>,
-    lists: BTreeMap<&'static str, gpui_kit::component::VirtualListScrollHandle>,
+    lists: BTreeMap<&'static str, component::VirtualListScrollHandle>,
     panels: Vec<(u64, String, String)>,
     next_panel_id: u64,
     _subscriptions: Vec<Subscription>,
@@ -322,13 +322,10 @@ impl SettingsPage {
                         window,
                         move |this,
                               state,
-                              event: &gpui_kit::component::select::SelectEvent<
-                            Vec<SharedString>,
-                        >,
+                              event: &component::select::SelectEvent<Vec<SharedString>>,
                               window,
                               cx| {
-                            if matches!(event, gpui_kit::component::select::SelectEvent::Confirm(_))
-                            {
+                            if matches!(event, component::select::SelectEvent::Confirm(_)) {
                                 if this.core_syncing {
                                     return;
                                 }
@@ -373,7 +370,7 @@ impl SettingsPage {
         Self {
             lists: ["panels", "tunnels", "providers"]
                 .into_iter()
-                .map(|name| (name, gpui_kit::component::VirtualListScrollHandle::new()))
+                .map(|name| (name, component::VirtualListScrollHandle::new()))
                 .collect(),
             kind,
             session,
@@ -565,7 +562,7 @@ impl SettingsPage {
             let values = crate::integration::read("core", cx);
             if let Some(value) = values.get(key) {
                 cx.write_to_clipboard(ClipboardItem::new_string(value.clone()));
-                crate::ui::notifications::push(window, "已复制", cx);
+                ui::notifications::push(window, "已复制", cx);
             }
             return;
         }
@@ -707,13 +704,13 @@ impl SettingsPage {
                 } else {
                     "添加 WebUI"
                 },
-                crate::ui::theme::layout::DIALOG_WIDTH,
+                ui::theme::layout::DIALOG_WIDTH,
                 window,
                 cx,
             )
             .content(ui::modal_content(
                 "webui-editor-body",
-                crate::ui::theme::layout::DIALOG_COMPACT_HEIGHT,
+                ui::theme::layout::DIALOG_COMPACT_HEIGHT,
                 move |_, _| {
                     ui::form()
                         .child(ui::field_label(
@@ -737,14 +734,14 @@ impl SettingsPage {
                 ui::modal_footer()
                     .child(
                         Button::new("cancel-panel")
-                            .icon(gpui_kit::assets::IconName::X)
+                            .icon(IconName::X)
                             .with_size(control::STANDARD)
                             .label("取消")
                             .on_click(|_, w, cx| w.close_dialog(cx)),
                     )
                     .child(
                         Button::new("save-panel")
-                            .icon(gpui_kit::assets::IconName::Save)
+                            .icon(IconName::Save)
                             .with_size(control::STANDARD)
                             .primary()
                             .label(if id.is_some() { "保存" } else { "添加" })

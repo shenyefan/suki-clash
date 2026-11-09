@@ -45,7 +45,7 @@ mod native {
         if code != 0 {
             log::error!(
                 "{}",
-                super::network_failure(
+                network_failure(
                     Some(code),
                     &std::io::Error::from_raw_os_error(code as i32).to_string()
                 )

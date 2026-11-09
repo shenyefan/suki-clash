@@ -1,4 +1,5 @@
 use super::SettingsPage;
+use crate::storage::Values;
 use crate::{integration as storage, ui};
 use gpui_kit::*;
 
@@ -131,7 +132,7 @@ pub(crate) fn copy_environment(window: &mut Window, cx: &mut App) {
         Err(error) => ui::show_error(error, window, cx),
     }
 }
-fn environment(host: &str, ports: &crate::storage::Values, shell: &str) -> Result<String, String> {
+fn environment(host: &str, ports: &Values, shell: &str) -> Result<String, String> {
     let port = |name: &str| {
         ports
             .get(name)
@@ -178,7 +179,7 @@ mod tests {
     use super::*;
     #[::core::prelude::v1::test]
     fn environment_uses_available_protocol_ports_and_clears_unavailable_variables() {
-        let ports = crate::storage::Values::from([
+        let ports = Values::from([
             ("MixedPort".into(), "0".into()),
             ("HttpPort".into(), "8080".into()),
             ("SocksPort".into(), "0".into()),
@@ -194,7 +195,7 @@ mod tests {
                     .contains(":0")
             );
         }
-        let ports = crate::storage::Values::from([("SocksPort".into(), "1080".into())]);
+        let ports = Values::from([("SocksPort".into(), "1080".into())]);
         let text = environment("localhost", &ports, "Fish").unwrap();
         assert!(text.contains("socks5://localhost:1080"));
         assert!(text.contains("set -e http_proxy"));

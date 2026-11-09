@@ -240,7 +240,7 @@ impl Actor {
         let store = crate::storage::Repository::open(self.paths.clone())
             .map_err(|error| crate::logging::diagnostic_error("无法打开订阅恢复存储", error))?;
         let vault = crate::profiles::CredentialStore::new(&self.paths);
-        let mut previous = std::collections::BTreeMap::new();
+        let mut previous = BTreeMap::new();
         let result = async {
             for entry in &entries {
                 let id = entry.document.id;

@@ -37,7 +37,7 @@ impl TrafficPage {
             .dropdown_menu(move |mut menu, _, _| {
                 for (key, label, checked) in options {
                     let table = table.clone();
-                    menu = menu.item(crate::ui::actions::menu(label).checked(checked).on_click(
+                    menu = menu.item(ui::actions::menu(label).checked(checked).on_click(
                         move |_, window, cx| {
                             let error = table.update(cx, |table, cx| {
                                 let search = &mut table.delegate_mut().search;
@@ -131,16 +131,14 @@ impl TrafficPage {
             .dropdown_menu(move |mut menu, _, _| {
                 for (index, label) in labels.iter().copied().enumerate() {
                     let owner = owner.clone();
-                    menu = menu.item(
-                        crate::ui::actions::menu(label)
-                            .checked(index == sort)
-                            .on_click(move |_, _, cx| {
-                                owner.update(cx, |this, cx| {
-                                    this.reverse = reverse;
-                                    this.apply_sort(index, cx)
-                                })
-                            }),
-                    );
+                    menu = menu.item(ui::actions::menu(label).checked(index == sort).on_click(
+                        move |_, _, cx| {
+                            owner.update(cx, |this, cx| {
+                                this.reverse = reverse;
+                                this.apply_sort(index, cx)
+                            })
+                        },
+                    ));
                 }
                 menu
             })

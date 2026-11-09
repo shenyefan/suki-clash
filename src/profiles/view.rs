@@ -40,7 +40,7 @@ impl ProfilesPage {
                     ("打开文件", IconName::FolderOpen),
                 ] {
                     let owner = owner.clone();
-                    menu = menu.item(crate::ui::actions::menu(action).icon(icon).on_click(
+                    menu = menu.item(ui::actions::menu(action).icon(icon).on_click(
                         move |_, w, cx| {
                             owner.update(cx, |this, cx| this.document_action(id, action, w, cx));
                         },
@@ -52,7 +52,7 @@ impl ProfilesPage {
                         ("复制链接", IconName::Copy),
                     ] {
                         let owner = owner.clone();
-                        menu = menu.item(crate::ui::actions::menu(action).icon(icon).on_click(
+                        menu = menu.item(ui::actions::menu(action).icon(icon).on_click(
                             move |_, w, cx| {
                                 owner.update(cx, |this, cx| this.document_action(id, action, w, cx))
                             },
@@ -62,7 +62,7 @@ impl ProfilesPage {
                 if !home.is_empty() {
                     let home = home.clone();
                     menu = menu.item(
-                        crate::ui::actions::menu("订阅主页")
+                        ui::actions::menu("订阅主页")
                             .icon(IconName::Link)
                             .on_click(move |_, _, cx| cx.open_url(&home)),
                     );
@@ -70,7 +70,7 @@ impl ProfilesPage {
                 if !overrides {
                     let owner = owner.clone();
                     menu = menu.item(
-                        crate::ui::actions::menu("订阅增强")
+                        ui::actions::menu("订阅增强")
                             .icon(IconName::SlidersHorizontal)
                             .on_click(move |_, w, cx| {
                                 owner.update(cx, |this, cx| {
@@ -81,24 +81,20 @@ impl ProfilesPage {
                 }
                 if js {
                     let owner = owner.clone();
-                    menu = menu.item(
-                        crate::ui::actions::menu("执行日志")
-                            .icon(IconName::Info)
-                            .on_click(move |_, w, cx| {
-                                owner.update(cx, |this, cx| {
-                                    this.document_action(id, "执行日志", w, cx)
-                                });
-                            }),
-                    );
+                    menu = menu.item(ui::actions::menu("执行日志").icon(IconName::Info).on_click(
+                        move |_, w, cx| {
+                            owner
+                                .update(cx, |this, cx| this.document_action(id, "执行日志", w, cx));
+                        },
+                    ));
                 }
                 let owner = owner.clone();
-                menu.separator().item(
-                    crate::ui::actions::menu("删除")
-                        .icon(IconName::Trash)
-                        .on_click(move |_, w, cx| {
+                menu.separator()
+                    .item(ui::actions::menu("删除").icon(IconName::Trash).on_click(
+                        move |_, w, cx| {
                             owner.update(cx, |this, cx| this.document_action(id, "删除", w, cx))
-                        }),
-                )
+                        },
+                    ))
             });
         let source = if document.is_remote() {
             url::Url::parse(&document.url)
@@ -369,7 +365,7 @@ impl ProfilesPage {
                 let yaml = owner.clone();
                 let js = owner.clone();
                 menu.item(
-                    crate::ui::actions::menu("从文件导入")
+                    ui::actions::menu("从文件导入")
                         .icon(IconName::FolderOpen)
                         .on_click(move |_, w, cx| {
                             file.update(cx, |this, cx| this.import_file(w, cx))
@@ -377,7 +373,7 @@ impl ProfilesPage {
                 )
                 .separator()
                 .item(
-                    crate::ui::actions::menu("新建 YAML 配置")
+                    ui::actions::menu("新建 YAML 配置")
                         .icon(IconName::FileCode)
                         .on_click(move |_, w, cx| {
                             yaml.update(cx, |this, cx| {
@@ -395,7 +391,7 @@ impl ProfilesPage {
                 )
                 .when(overrides, |menu| {
                     menu.item(
-                        crate::ui::actions::menu("新建 JavaScript")
+                        ui::actions::menu("新建 JavaScript")
                             .icon(IconName::FileCode)
                             .on_click(move |_, w, cx| {
                                 js.update(cx, |this, cx| {
@@ -452,7 +448,7 @@ impl Render for ProfilesPage {
                     .when(!self.batch, |header| {
                         header.child(
                             Button::new("profile-batch")
-                                .icon(gpui_kit::assets::IconName::ListChecks)
+                                .icon(IconName::ListChecks)
                                 .outline()
                                 .with_size(control::STANDARD)
                                 .label("批量管理")
@@ -506,7 +502,7 @@ impl Render for ProfilesPage {
                     ui::workspace_toolbar()
                         .child(
                             Button::new("select-all-profiles")
-                                .icon(gpui_kit::assets::IconName::CheckCheck)
+                                .icon(IconName::CheckCheck)
                                 .outline()
                                 .with_size(control::STANDARD)
                                 .label("全选")
@@ -518,7 +514,7 @@ impl Render for ProfilesPage {
                         )
                         .child(
                             Button::new("clear-profile-selection")
-                                .icon(gpui_kit::assets::IconName::X)
+                                .icon(IconName::X)
                                 .outline()
                                 .with_size(control::STANDARD)
                                 .label("取消选择")
@@ -534,7 +530,7 @@ impl Render for ProfilesPage {
                         .child(div().flex_1())
                         .child(
                             Button::new("update-selected-profiles")
-                                .icon(gpui_kit::assets::IconName::RefreshCw)
+                                .icon(IconName::RefreshCw)
                                 .outline()
                                 .with_size(control::STANDARD)
                                 .label("更新所选")
@@ -546,7 +542,7 @@ impl Render for ProfilesPage {
                         )
                         .child(
                             Button::new("delete-selected-profiles")
-                                .icon(gpui_kit::assets::IconName::Trash)
+                                .icon(IconName::Trash)
                                 .outline()
                                 .with_size(control::STANDARD)
                                 .label("移除所选")

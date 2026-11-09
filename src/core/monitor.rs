@@ -422,7 +422,7 @@ async fn read_control(
     });
     Ok((mode, dns, proxies, port))
 }
-#[cfg(test)]
+#[cfg(all(test, unix))]
 pub(super) async fn sample(
     target: &Target,
 ) -> Result<(Connections, ProxyMode, Option<String>, Proxies, Option<u16>), String> {

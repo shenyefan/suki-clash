@@ -35,7 +35,7 @@ fn query(connection: Option<&str>) -> Result<(OsSnapshot, ConnectionSettings), S
         pszConnection: name
             .as_mut()
             .map_or(std::ptr::null_mut(), |name| name.as_mut_ptr()),
-        dwSize: std::mem::size_of::<INTERNET_PER_CONN_OPTION_LISTW>() as u32,
+        dwSize: size_of::<INTERNET_PER_CONN_OPTION_LISTW>() as u32,
         dwOptionCount: options.len() as u32,
         pOptions: options.as_mut_ptr(),
         ..Default::default()
@@ -171,7 +171,7 @@ fn restore_connection(
         pszConnection: name
             .as_mut()
             .map_or(std::ptr::null_mut(), |name| name.as_mut_ptr()),
-        dwSize: std::mem::size_of::<INTERNET_PER_CONN_OPTION_LISTW>() as u32,
+        dwSize: size_of::<INTERNET_PER_CONN_OPTION_LISTW>() as u32,
         dwOptionCount: options.len() as u32,
         pOptions: options.as_mut_ptr(),
         ..Default::default()
@@ -213,9 +213,9 @@ fn connections() -> Result<Vec<Option<String>>, String> {
     if result != ERROR_BUFFER_TOO_SMALL {
         return Err(format!("无法枚举 RAS 代理连接（{result}）"));
     }
-    let length = (size as usize).div_ceil(std::mem::size_of::<RASENTRYNAMEW>());
+    let length = (size as usize).div_ceil(size_of::<RASENTRYNAMEW>());
     let mut buffer = vec![RASENTRYNAMEW::default(); length];
-    buffer[0].dwSize = std::mem::size_of::<RASENTRYNAMEW>() as u32;
+    buffer[0].dwSize = size_of::<RASENTRYNAMEW>() as u32;
     let result = unsafe {
         RasEnumEntriesW(
             std::ptr::null(),
@@ -393,6 +393,22 @@ impl Adapter {
 }
 impl Backend for Adapter {
     type Checkpoint = Checkpoint;
+    fn matches(&self, target: &Target, _: &OsSnapshot) -> Result<bool, String> {
+        for name in connections()? {
+            if !target.matches(&query(name.as_deref())?.0) {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+    fn checkpoint_matches(&self, checkpoint: &Checkpoint, _: &OsSnapshot) -> Result<bool, String> {
+        for (name, saved) in &checkpoint.connections {
+            if query(name.as_deref())?.1 != *saved {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
     fn capture(&mut self) -> Result<(OsSnapshot, Checkpoint), String> {
         self.pending = connections()?;
         let mut saved = Vec::new();
@@ -411,22 +427,6 @@ impl Backend for Adapter {
     }
     fn read(&self) -> Result<OsSnapshot, String> {
         read()
-    }
-    fn matches(&self, target: &Target, _: &OsSnapshot) -> Result<bool, String> {
-        for name in connections()? {
-            if !target.matches(&query(name.as_deref())?.0) {
-                return Ok(false);
-            }
-        }
-        Ok(true)
-    }
-    fn checkpoint_matches(&self, checkpoint: &Checkpoint, _: &OsSnapshot) -> Result<bool, String> {
-        for (name, saved) in &checkpoint.connections {
-            if query(name.as_deref())?.1 != *saved {
-                return Ok(false);
-            }
-        }
-        Ok(true)
     }
     fn write(&mut self, target: &Target) -> Result<(), String> {
         if !target.system.enable && !target.auto.enable {

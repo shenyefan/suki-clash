@@ -25,10 +25,10 @@ use gpui_kit::{
 pub(crate) use theme::{configure_theme, window_tint, workspace_tint};
 
 /// Live refresh restores identity without invoking the table's navigation scroll.
-pub(crate) fn retain_table_selection<D: gpui_kit::component::table::TableDelegate>(
-    table: &mut gpui_kit::component::table::TableState<D>,
+pub(crate) fn retain_table_selection<D: component::table::TableDelegate>(
+    table: &mut component::table::TableState<D>,
     selected: Option<usize>,
-    cx: &mut Context<gpui_kit::component::table::TableState<D>>,
+    cx: &mut Context<component::table::TableState<D>>,
 ) {
     if table.selected_row() == selected {
         return;
@@ -196,7 +196,7 @@ pub(crate) fn detail_rows(details: &str, cx: &App) -> Div {
 pub(crate) fn show_error(message: String, window: &mut Window, cx: &mut App) {
     notifications::push(
         window,
-        gpui_kit::component::notification::Notification::error(message),
+        component::notification::Notification::error(message),
         cx,
     );
 }
@@ -225,7 +225,7 @@ pub(crate) fn detail_dialog(
         modal(dialog, title.clone(), layout::DIALOG_WIDTH, window, cx)
             .content(modal_content(
                 "detail-scroll",
-                crate::ui::theme::layout::DIALOG_FORM_HEIGHT,
+                layout::DIALOG_FORM_HEIGHT,
                 move |_, cx| {
                     if body.trim().is_empty() {
                         empty_inline(IconName::ScrollText, "暂无记录", "有记录后会显示在这里", cx)
@@ -280,7 +280,7 @@ pub(crate) fn dialog_footer_pending(commit: &str, pending: bool) -> impl IntoEle
     modal_footer()
         .child(
             Button::new("dialog-cancel")
-                .icon(gpui_kit::assets::IconName::X)
+                .icon(IconName::X)
                 .with_size(control::STANDARD)
                 .label("取消")
                 .on_click(|_, window, cx| window.close_dialog(cx)),

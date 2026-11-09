@@ -199,8 +199,7 @@ impl SettingsPage {
             if section.title == "WebUI" {
                 if query.is_empty() || "webui 面板".contains(query) {
                     found = true;
-                    let height =
-                        crate::ui::theme::list::DETAIL_ROW_HEIGHT.to_pixels(window.rem_size());
+                    let height = ui::theme::list::DETAIL_ROW_HEIGHT.to_pixels(window.rem_size());
                     let mut rows = Vec::new();
                     if !self.panels.is_empty() {
                         rows.push(ui::virtual_rows::panel(

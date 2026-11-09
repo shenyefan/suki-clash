@@ -62,9 +62,9 @@ pub(crate) fn modal_close(label: &str) -> DialogFooter {
     modal_footer().child(
         Button::new("modal-close")
             .icon(if label == "完成" {
-                gpui_kit::assets::IconName::Check
+                assets::IconName::Check
             } else {
-                gpui_kit::assets::IconName::X
+                assets::IconName::X
             })
             .with_size(super::theme::control::STANDARD)
             .label(label.to_owned())
@@ -184,7 +184,7 @@ mod motion_tests {
                         },
                     ))
                     .footer(
-                        gpui_kit::div()
+                        div()
                             .id(ElementId::from("modal-fit-footer"))
                             .w_full()
                             .test_support()

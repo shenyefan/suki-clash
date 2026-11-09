@@ -220,11 +220,8 @@ impl Tray {
                     let view = cx.new(|cx| popup::Panel::new(main, anchor, window, cx));
                     panel = Some(view.downgrade());
                     use gpui_kit::component::ActiveTheme;
-                    let transparent = cx
-                        .theme()
-                        .popover
-                        .opacity(crate::ui::theme::opacity::TRANSPARENT);
-                    cx.new(|cx| gpui_kit::base::Root::new(view, window, cx).bg(transparent))
+                    let transparent = cx.theme().popover.opacity(ui::theme::opacity::TRANSPARENT);
+                    cx.new(|cx| base::Root::new(view, window, cx).bg(transparent))
                 })
                 .map_err(crate::logging::error_message)?;
             Ok((handle.into(), panel))

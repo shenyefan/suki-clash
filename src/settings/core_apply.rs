@@ -278,17 +278,13 @@ impl SettingsPage {
         {
             if appearance_changed("ThemeIndex") {
                 match values.get("ThemeIndex").map(String::as_str) {
-                    Some("深色") => gpui_kit::component::Theme::change(
-                        gpui_kit::component::ThemeMode::Dark,
-                        Some(window),
-                        cx,
-                    ),
-                    Some("浅色") => gpui_kit::component::Theme::change(
-                        gpui_kit::component::ThemeMode::Light,
-                        Some(window),
-                        cx,
-                    ),
-                    _ => gpui_kit::component::Theme::sync_system_appearance(Some(window), cx),
+                    Some("深色") => {
+                        component::Theme::change(component::ThemeMode::Dark, Some(window), cx)
+                    }
+                    Some("浅色") => {
+                        component::Theme::change(component::ThemeMode::Light, Some(window), cx)
+                    }
+                    _ => component::Theme::sync_system_appearance(Some(window), cx),
                 }
             }
             ui::configure_theme(cx);

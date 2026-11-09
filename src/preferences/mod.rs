@@ -181,8 +181,7 @@ mod tests {
         }
         assert_eq!(std::fs::read_dir(paths.settings()).unwrap().count(), 4);
         let program: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(crate::preferences::app::path(&paths)).unwrap())
-                .unwrap();
+            serde_json::from_slice(&std::fs::read(app::path(&paths)).unwrap()).unwrap();
         for section in [
             "general",
             "core",

@@ -33,7 +33,7 @@ pub(crate) mod text {
 }
 
 /// Register the flag-only font; characters it lacks use the platform fallback.
-pub(crate) fn load_fonts(cx: &App) -> anyhow::Result<()> {
+pub(crate) fn load_fonts(cx: &App) -> Result<()> {
     cx.text_system()
         .add_fonts(vec![std::borrow::Cow::Borrowed(include_bytes!(
             "../../assets/fonts/flags.ttf"

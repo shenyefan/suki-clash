@@ -11,7 +11,7 @@ pub(crate) struct Overview {
     breakdown: usize,
     proxy_only: bool,
     month: bool,
-    ranking_scroll: gpui_kit::component::VirtualListScrollHandle,
+    ranking_scroll: component::VirtualListScrollHandle,
     _subscription: Subscription,
 }
 impl Overview {
@@ -22,7 +22,7 @@ impl Overview {
             breakdown: 0,
             proxy_only: false,
             month: false,
-            ranking_scroll: gpui_kit::component::VirtualListScrollHandle::new(),
+            ranking_scroll: component::VirtualListScrollHandle::new(),
             _subscription: subscription,
         }
     }

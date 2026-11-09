@@ -71,7 +71,7 @@ pub(crate) async fn startup_script(paths: &crate::storage::AppPaths) -> Result<(
 use gpui_kit::*;
 struct Instance {
     service: instance::Service,
-    main: WindowHandle<gpui_kit::base::Root>,
+    main: WindowHandle<base::Root>,
     app: Entity<crate::app::SukiApp>,
     _task: Task<()>,
     _quit: Subscription,
@@ -173,7 +173,7 @@ pub(crate) fn reopen(cx: &mut App) {
 }
 pub(crate) fn install(
     service: instance::Service,
-    main: WindowHandle<gpui_kit::base::Root>,
+    main: WindowHandle<base::Root>,
     app: Entity<crate::app::SukiApp>,
     cx: &mut App,
 ) {

@@ -833,7 +833,7 @@ mod startup_notice_tests {
                 assert!(window.find("service-修复服务").visible());
                 assert!(!super::controller(cx).read(cx).is_busy());
                 assert_eq!(super::controller(cx).read(cx).snapshot().request_id(), None);
-                assert!(super::controller(cx).read(cx).snapshot().tun() != Some(true));
+                assert_ne!(super::controller(cx).read(cx).snapshot().tun(), Some(true));
                 assert_eq!(
                     crate::ui::notifications::current(window, cx).len(),
                     index + 1

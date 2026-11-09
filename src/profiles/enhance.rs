@@ -1,5 +1,6 @@
 //! Local subscription enhancement drafts. No runtime configuration is generated here.
 use super::model::Document;
+use crate::storage::Values;
 use crate::{
     integration as storage, ui,
     ui::theme::{control, layout, space, stroke},
@@ -29,7 +30,7 @@ const PARTS: [&str; 3] = ["prepend", "append", "delete"];
 const LIST_PARTS: [&str; 4] = ["original", "prepend", "delete", "append"];
 const PART_LABELS: [&str; 4] = ["原始", "前置", "已排除", "追加"];
 
-fn saved_enhancement_text(saved: &crate::storage::Values) -> String {
+fn saved_enhancement_text(saved: &Values) -> String {
     PROPERTIES
         .iter()
         .map(|key| {
@@ -111,10 +112,9 @@ pub(super) fn open(
             window,
             cx,
         )
-        .content(ui::modal_panel(
-            crate::ui::theme::layout::FORM_MAX_HEIGHT,
-            move |_, _| body.clone().into_any_element(),
-        ))
+        .content(ui::modal_panel(layout::FORM_MAX_HEIGHT, move |_, _| {
+            body.clone().into_any_element()
+        }))
         .footer(footer.clone())
         .on_ok(move |_, w, cx| save.update(cx, |editor, cx| editor.save(w, cx)))
     });
@@ -127,8 +127,8 @@ pub(super) struct EnhancementEditor {
     part: usize,
     saving: bool,
     saved: bool,
-    expected: crate::storage::Values,
-    lists: BTreeMap<&'static str, gpui_kit::component::VirtualListScrollHandle>,
+    expected: Values,
+    lists: BTreeMap<&'static str, component::VirtualListScrollHandle>,
     source: Value,
     drafts: [Value; 3],
     code: Entity<EditorState>,
@@ -158,15 +158,15 @@ impl EnhancementEditor {
         };
         let code = cx.new(|cx| ui::editor::state("yaml", text, true, window, cx));
         let query = cx.new(|cx| InputState::new(window, cx).placeholder("搜索名称或规则"));
-        let subscriptions = vec![cx.subscribe(
-            &query,
-            |this, _, _: &gpui_kit::component::input::InputEvent, cx| {
-                for handle in this.lists.values() {
-                    handle.set_offset(Point::default());
-                }
-                cx.notify();
-            },
-        )];
+        let subscriptions =
+            vec![
+                cx.subscribe(&query, |this, _, _: &component::input::InputEvent, cx| {
+                    for handle in this.lists.values() {
+                        handle.set_offset(Point::default());
+                    }
+                    cx.notify();
+                }),
+            ];
         Self {
             profile_id: document.id,
             property,
@@ -177,7 +177,7 @@ impl EnhancementEditor {
             expected: saved,
             lists: ["prepend", "original", "append", "delete"]
                 .into_iter()
-                .map(|name| (name, gpui_kit::component::VirtualListScrollHandle::new()))
+                .map(|name| (name, component::VirtualListScrollHandle::new()))
                 .collect(),
             source: serde_yaml_ng::from_str(&document.content).unwrap_or_default(),
             drafts,
@@ -406,7 +406,7 @@ impl EnhancementEditor {
                 ui::modal_footer()
                     .child(
                         Button::new("proxy-import-cancel")
-                            .icon(gpui_kit::assets::IconName::X)
+                            .icon(IconName::X)
                             .label("取消")
                             .with_size(control::STANDARD)
                             .on_click({
@@ -517,7 +517,7 @@ impl EnhancementEditor {
             )
             .content(ui::modal_content(
                 "enhancement-entry-body",
-                crate::ui::theme::layout::FORM_MAX_HEIGHT,
+                layout::FORM_MAX_HEIGHT,
                 move |_, _| body.clone().into_any_element(),
             ))
             .footer(ui::dialog_footer("保存"))
@@ -629,7 +629,7 @@ impl EnhancementEditor {
             })
             .child(
                 Button::new(SharedString::from(format!("remove-{identity}")))
-                    .icon(gpui_kit::assets::IconName::Minus)
+                    .icon(IconName::Minus)
                     .outline()
                     .small()
                     .disabled(self.saving)
@@ -925,7 +925,7 @@ impl Render for EnhancementEditor {
                         .when(self.property == 1, |row| {
                             row.child(
                                 Button::new("enhancement-import")
-                                    .icon(gpui_kit::assets::IconName::FileInput)
+                                    .icon(IconName::FileInput)
                                     .outline()
                                     .with_size(control::STANDARD)
                                     .label("批量导入")

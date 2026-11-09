@@ -279,7 +279,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let paths = crate::storage::AppPaths::isolated(temp.path());
         let repository = crate::storage::Repository::open(paths.clone()).unwrap();
-        crate::preferences::initialize(&repository).unwrap();
+        preferences::initialize(&repository).unwrap();
         let namespace = crate::storage::Namespace::parse("tun").unwrap();
         repository
             .save(&namespace, &Values::from([("Mtu".into(), "1400".into())]))

@@ -26,7 +26,7 @@ impl TrafficPage {
                     let table = table.clone();
                     let visible = !hidden.contains(&index);
                     menu = menu.item(
-                        crate::ui::actions::menu(*label)
+                        ui::actions::menu(*label)
                             .checked(visible)
                             .disabled(visible && hidden.len() + 1 == CONNECTION_COLUMNS.len())
                             .on_click(move |_, _, cx| {

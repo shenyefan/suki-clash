@@ -231,14 +231,14 @@ pub(crate) fn request_with(
     } else {
         let message = format!("{command}尚未接入实际执行逻辑");
         announce_module("WARNING", "application", message.clone(), cx);
-        crate::ui::notifications::push(window, message, cx);
+        ui::notifications::push(window, message, cx);
     }
 }
 
 /// Test contexts do not perform the native app's awaited quit flow. Stop the
 /// actual workers before destroying their foreground dispatcher or temp storage.
 #[cfg(test)]
-pub(crate) fn finish_test_services(cx: &mut gpui_kit::TestAppContext) {
+pub(crate) fn finish_test_services(cx: &mut TestAppContext) {
     let core = cx.update(|cx| {
         crate::core::controller(cx).update(cx, |owner, _| owner.shutdown_test_worker())
     });

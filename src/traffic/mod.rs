@@ -18,7 +18,7 @@ use gpui_kit::{
 };
 use table::RecordsTable;
 
-gpui_kit::actions!(connections, [DismissConnectionDetails]);
+actions!(connections, [DismissConnectionDetails]);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum TrafficKind {

@@ -140,15 +140,15 @@ impl ProfilesPage {
             self.persist_documents(remaining, active, window, cx, move |this, window, cx| {
                 this.selected.clear();
                 let owner = cx.entity();
-                crate::ui::notifications::push(
+                ui::notifications::push(
                     window,
-                    gpui_kit::component::notification::Notification::new()
+                    component::notification::Notification::new()
                         .message(format!("已移除 {} 项配置", removed.len()))
                         .action(move |_, _, _| {
                             let owner = owner.clone();
                             let removed = removed.clone();
                             Button::new("undo-batch-delete")
-                                .icon(gpui_kit::assets::IconName::RotateCcw)
+                                .icon(assets::IconName::RotateCcw)
                                 .with_size(control::STANDARD)
                                 .label("撤销")
                                 .on_click(move |_, w, cx| {
@@ -193,7 +193,7 @@ impl ProfilesPage {
             ui::modal(dialog, title.clone(), layout::DIALOG_WIDTH, window, cx)
                 .content(ui::modal_content(
                     "subscription-qr-body",
-                    crate::ui::theme::layout::DIALOG_FORM_HEIGHT,
+                    layout::DIALOG_FORM_HEIGHT,
                     move |_, cx| {
                         v_flex()
                             .gap(space::LG)
@@ -212,7 +212,7 @@ impl ProfilesPage {
                         .child(
                             Button::new("copy-subscription-url")
                                 .outline()
-                                .icon(gpui_kit::assets::IconName::Copy)
+                                .icon(assets::IconName::Copy)
                                 .with_size(control::STANDARD)
                                 .label("复制链接")
                                 .on_click(move |_, _, cx| {
@@ -222,7 +222,7 @@ impl ProfilesPage {
                         .child(div().flex_1())
                         .child(
                             Button::new("close-subscription-qr")
-                                .icon(gpui_kit::assets::IconName::X)
+                                .icon(assets::IconName::X)
                                 .with_size(control::STANDARD)
                                 .label("关闭")
                                 .on_click(|_, w, cx| w.close_dialog(cx)),

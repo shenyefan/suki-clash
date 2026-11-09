@@ -25,7 +25,7 @@ impl Lifetime {
                     job,
                     JobObjectExtendedLimitInformation,
                     (&limits as *const JOBOBJECT_EXTENDED_LIMIT_INFORMATION).cast(),
-                    std::mem::size_of_val(&limits) as u32,
+                    size_of_val(&limits) as u32,
                 ) == 0
                 {
                     return Err("无法配置内核退出保护".into());

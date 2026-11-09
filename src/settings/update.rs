@@ -42,7 +42,7 @@ fn checked(state: State, window: &mut Window, cx: &mut App) {
             Notification::info("当前安装方式需前往发布页检查更新").action(move |_, _, _| {
                 let url = url.clone();
                 Button::new("app-update-release-page")
-                    .icon(gpui_kit::assets::IconName::ExternalLink)
+                    .icon(IconName::ExternalLink)
                     .outline()
                     .label("查看发布页")
                     .on_click(move |_, _, cx| cx.open_url(&url))
@@ -96,7 +96,7 @@ fn show(state: State, window: &mut Window, cx: &mut App) {
                 .child(div().flex_1())
                 .child(
                     Button::new("app-update-close")
-                        .icon(gpui_kit::assets::IconName::X)
+                        .icon(IconName::X)
                         .label("关闭")
                         .with_size(control::STANDARD)
                         .on_click(|_, window, cx| window.close_dialog(cx)),

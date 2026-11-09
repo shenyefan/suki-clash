@@ -69,6 +69,14 @@ impl Native {
 }
 impl Backend for Native {
     type Checkpoint = platform::Checkpoint;
+    fn allow_interaction(&mut self, allowed: bool) {
+        #[cfg(target_os = "macos")]
+        {
+            self.adapter.allow_interaction(allowed);
+        }
+        #[cfg(not(target_os = "macos"))]
+        let _ = allowed;
+    }
     fn available(&self) -> Result<bool, String> {
         #[cfg(target_os = "macos")]
         {
@@ -147,14 +155,6 @@ impl Backend for Native {
             }
             platform::write(target)
         }
-    }
-    fn allow_interaction(&mut self, allowed: bool) {
-        #[cfg(target_os = "macos")]
-        {
-            self.adapter.allow_interaction(allowed);
-        }
-        #[cfg(not(target_os = "macos"))]
-        let _ = allowed;
     }
     fn restore(&mut self, checkpoint: &Self::Checkpoint) -> Result<(), String> {
         #[cfg(any(target_os = "macos", windows))]

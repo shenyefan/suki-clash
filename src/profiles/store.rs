@@ -1,6 +1,7 @@
 //! Document metadata is separate from UI entities; subscription secrets use the credential store.
 use super::model::{Document, DocumentKind, TrafficUsage};
 use crate::integration as storage;
+use crate::storage::Values;
 use std::{collections::BTreeMap, fs, path::PathBuf};
 
 pub(super) fn key(overrides: bool) -> &'static str {
@@ -28,9 +29,9 @@ pub(super) fn load(overrides: bool, cx: &gpui_kit::App) -> Option<(Vec<Document>
 /// Read current body files into an immutable operation snapshot. The stored
 /// index contains metadata only; missing files are errors, never inline fallbacks.
 pub(crate) fn hydrate(
-    paths: &crate::storage::AppPaths,
+    paths: &storage::AppPaths,
     overrides: bool,
-    values: &mut crate::storage::Values,
+    values: &mut Values,
 ) -> Result<(), String> {
     if values.is_empty() {
         return Ok(());
@@ -63,9 +64,9 @@ pub(crate) fn hydrate(
 }
 
 pub(crate) fn validate_metadata(
-    paths: &crate::storage::AppPaths,
+    paths: &storage::AppPaths,
     overrides: bool,
-    values: &crate::storage::Values,
+    values: &Values,
 ) -> Result<(), String> {
     if values.keys().any(|key| key.ends_with("/content")) {
         let path = if overrides {

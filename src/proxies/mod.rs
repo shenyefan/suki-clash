@@ -33,7 +33,7 @@ pub(crate) struct ProxiesPage {
     only_available: bool,
     compact: bool,
     columns: usize,
-    list_scroll: gpui_kit::component::VirtualListScrollHandle,
+    list_scroll: component::VirtualListScrollHandle,
     locate_task: Option<Task<()>>,
     card_focus: BTreeMap<(String, String), FocusHandle>,
     _subscriptions: Vec<Subscription>,
@@ -226,7 +226,7 @@ impl ProxiesPage {
             only_available: false,
             compact: false,
             columns: 2,
-            list_scroll: gpui_kit::component::VirtualListScrollHandle::new(),
+            list_scroll: component::VirtualListScrollHandle::new(),
             locate_task: None,
             card_focus,
             _subscriptions: subscriptions,
@@ -318,7 +318,7 @@ impl ProxiesPage {
                     ui::modal_footer()
                         .child(
                             Button::new("cancel-group-url")
-                                .icon(gpui_kit::assets::IconName::X)
+                                .icon(assets::IconName::X)
                                 .with_size(control::STANDARD)
                                 .outline()
                                 .label("取消")
@@ -326,7 +326,7 @@ impl ProxiesPage {
                         )
                         .child(
                             Button::new("save-group-url")
-                                .icon(gpui_kit::assets::IconName::Check)
+                                .icon(assets::IconName::Check)
                                 .with_size(control::STANDARD)
                                 .primary()
                                 .label("保存")

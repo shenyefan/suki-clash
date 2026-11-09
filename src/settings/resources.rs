@@ -116,7 +116,7 @@ impl SettingsPage {
                 .child(
                     Button::new(SharedString::from(format!("resource-update-{key}")))
                         .outline()
-                        .icon(gpui_kit::assets::IconName::RefreshCw)
+                        .icon(IconName::RefreshCw)
                         .with_size(control::STANDARD)
                         .label("现在更新")
                         .disabled(disabled)
@@ -168,7 +168,7 @@ impl SettingsPage {
                 cx,
             );
         }
-        let row_height = crate::ui::theme::list::DETAIL_ROW_HEIGHT.to_pixels(window.rem_size());
+        let row_height = ui::theme::list::DETAIL_ROW_HEIGHT.to_pixels(window.rem_size());
         let heights = providers
             .iter()
             .map(|provider| {
@@ -223,7 +223,7 @@ impl SettingsPage {
                             "provider-update-{}-{name}",
                             this.runtime_tab
                         )))
-                        .icon(gpui_kit::assets::IconName::RefreshCw)
+                        .icon(IconName::RefreshCw)
                         .with_size(control::STANDARD)
                         .label("更新")
                         .accessibility_label(format!("更新 {name}"))

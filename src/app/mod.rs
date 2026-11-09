@@ -23,7 +23,7 @@ use gpui_kit::{
     *,
 };
 
-gpui_kit::actions!(
+actions!(
     suki,
     [
         Quit,
@@ -95,7 +95,7 @@ impl SukiApp {
             &general,
             window,
             |_, _, event: &SettingsSaved, window, cx| {
-                self::window::set_background(event.backdrop(), window);
+                window::set_background(event.backdrop(), window);
                 ui::configure_theme(cx);
                 cx.notify();
             },
@@ -201,12 +201,12 @@ impl SukiApp {
 
     fn page_weights(&self, window: &mut Window, cx: &mut Context<Self>) -> Vec<(Page, f32)> {
         let motion = cx.theme().motion_tokens();
-        let policy = gpui_kit::base::motion::Transition::new(motion.duration_normal)
+        let policy = base::motion::Transition::new(motion.duration_normal)
             .easing(motion.easing_move.clone());
         let mut layers: Vec<_> = Page::ALL
             .into_iter()
             .map(|page| {
-                let weight = gpui_kit::base::motion::transition(
+                let weight = base::motion::transition(
                     (ElementId::from("page-handoff"), page.id()),
                     if page == self.page { 1.0 } else { 0.0 },
                     policy.clone(),
@@ -259,10 +259,10 @@ impl SukiApp {
 
     fn sidebar(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let motion = cx.theme().motion_tokens();
-        let expanded = gpui_kit::base::motion::transition(
+        let expanded = base::motion::transition(
             "sidebar-expanded",
             if self.collapsed { 0.0_f32 } else { 1.0 },
-            gpui_kit::base::motion::Transition::new(motion.duration_normal)
+            base::motion::Transition::new(motion.duration_normal)
                 .easing(motion.easing_move.clone()),
             window,
             cx,

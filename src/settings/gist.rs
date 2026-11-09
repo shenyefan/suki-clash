@@ -44,7 +44,7 @@ pub(super) fn configure(window: &mut Window, cx: &mut App) {
                 .footer(
                     ui::modal_footer().child(
                         Button::new("gist-done")
-                            .icon(gpui_kit::assets::IconName::Check)
+                            .icon(assets::IconName::Check)
                             .label("完成")
                             .with_size(control::STANDARD)
                             .on_click(|_, window, cx| window.close_dialog(cx)),
@@ -223,13 +223,11 @@ impl Render for Configuration {
                     .w_full()
                     .aria_label("GitHub Token")
                     .suffix(
-                        ui::icon_button(
-                            "gist-token-clear",
-                            gpui_kit::assets::IconName::Trash,
-                            "清除令牌",
-                        )
-                        .disabled(self.busy || self.pending.is_some() || !self.token_saved)
-                        .on_click(cx.listener(|this, _, window, cx| this.clear(true, window, cx))),
+                        ui::icon_button("gist-token-clear", assets::IconName::Trash, "清除令牌")
+                            .disabled(self.busy || self.pending.is_some() || !self.token_saved)
+                            .on_click(
+                                cx.listener(|this, _, window, cx| this.clear(true, window, cx)),
+                            ),
                     ),
             ))
             .child(ui::muted(
@@ -260,7 +258,7 @@ impl Render for Configuration {
                             .child(
                                 ui::icon_button(
                                     "gist-age-generate",
-                                    gpui_kit::assets::IconName::KeyRound,
+                                    assets::IconName::KeyRound,
                                     "生成密钥",
                                 )
                                 .disabled(self.busy || self.pending.is_some())
@@ -285,7 +283,7 @@ impl Render for Configuration {
                             .child(
                                 ui::icon_button(
                                     "gist-key-clear",
-                                    gpui_kit::assets::IconName::Trash,
+                                    assets::IconName::Trash,
                                     "清除私钥",
                                 )
                                 .disabled(self.busy || self.pending.is_some() || !self.key_saved)
@@ -356,7 +354,7 @@ pub(super) fn history(window: &mut Window, cx: &mut App) {
                 .footer(
                     ui::modal_footer().child(
                         Button::new("gist-history-done")
-                            .icon(gpui_kit::assets::IconName::Check)
+                            .icon(assets::IconName::Check)
                             .label("完成")
                             .with_size(control::STANDARD)
                             .on_click(|_, window, cx| window.close_dialog(cx)),
@@ -439,15 +437,15 @@ impl History {
         let disabled = self.busy || self.pending.is_some();
         h_flex().w_full().gap(space::SM)
             .child(v_flex().flex_1().min_w(space::NONE).child(entry.created_at.clone()).child(ui::muted(entry.description.clone(), cx).truncate()))
-            .child(ui::icon_button(SharedString::from(format!("gist-download-{}", entry.id)), gpui_kit::assets::IconName::Download, "下载备份").disabled(disabled).on_click(cx.listener(move |this, _, window, cx| this.run(Command::Download(download.clone()), window, cx))))
-            .child(Button::new(SharedString::from(format!("gist-restore-{}", entry.id))).outline().icon(gpui_kit::assets::IconName::RotateCcw).label("恢复备份").disabled(disabled).on_click(cx.listener(move |_, _, window, cx| {
+            .child(ui::icon_button(SharedString::from(format!("gist-download-{}", entry.id)), assets::IconName::Download, "下载备份").disabled(disabled).on_click(cx.listener(move |this, _, window, cx| this.run(Command::Download(download.clone()), window, cx))))
+            .child(Button::new(SharedString::from(format!("gist-restore-{}", entry.id))).outline().icon(assets::IconName::RotateCcw).label("恢复备份").disabled(disabled).on_click(cx.listener(move |_, _, window, cx| {
                 let owner = cx.weak_entity(); let restore = restore.clone();
                 window.open_alert_dialog(cx, move |dialog, window, cx| {
                     let owner = owner.clone(); let restore = restore.clone();
                     ui::modal_alert(dialog, window, cx).title("恢复此 Gist 备份？").description("替换当前配置、订阅与覆写；Gist凭据和本机同步设置保留；换源的订阅鉴权需重新填写。确认后等待 5 秒，期间可撤销。").footer(ui::dialog_footer("恢复备份")).on_ok(move |_, window, cx| { let _ = owner.update(cx, |this, cx| this.defer(Command::Restore(restore.clone()), window, cx)); true })
                 });
             })))
-            .child(ui::icon_button(SharedString::from(format!("gist-delete-{}", entry.id)), gpui_kit::assets::IconName::Trash, "删除备份").disabled(disabled).on_click(cx.listener(move |this, _, window, cx| this.defer(Command::Delete(delete.clone()), window, cx))))
+            .child(ui::icon_button(SharedString::from(format!("gist-delete-{}", entry.id)), assets::IconName::Trash, "删除备份").disabled(disabled).on_click(cx.listener(move |this, _, window, cx| this.defer(Command::Delete(delete.clone()), window, cx))))
             .into_any_element()
     }
 }
@@ -461,7 +459,7 @@ impl Render for History {
                     .gap(space::SM)
                     .child(
                         Button::new("gist-history-refresh")
-                            .icon(gpui_kit::assets::IconName::RefreshCw)
+                            .icon(assets::IconName::RefreshCw)
                             .outline()
                             .label("刷新")
                             .disabled(disabled)
@@ -477,7 +475,7 @@ impl Render for History {
                     )
                     .child(
                         Button::new("gist-history-previous")
-                            .icon(gpui_kit::assets::IconName::ArrowLeft)
+                            .icon(assets::IconName::ArrowLeft)
                             .outline()
                             .label("上一页")
                             .disabled(disabled || self.state.page <= 1)
@@ -493,7 +491,7 @@ impl Render for History {
                     )
                     .child(
                         Button::new("gist-history-next")
-                            .icon(gpui_kit::assets::IconName::ArrowRight)
+                            .icon(assets::IconName::ArrowRight)
                             .outline()
                             .label("下一页")
                             .disabled(disabled || !self.state.has_more)
@@ -511,7 +509,7 @@ impl Render for History {
             .child(if self.state.entries.is_empty() {
                 ui::muted("暂无 Gist 备份", cx).into_any_element()
             } else {
-                let height = crate::ui::theme::preferences::ROW_HEIGHT.to_pixels(window.rem_size());
+                let height = ui::theme::preferences::ROW_HEIGHT.to_pixels(window.rem_size());
                 ui::virtual_rows::panel(
                     cx.entity(),
                     "gist-history-rows",

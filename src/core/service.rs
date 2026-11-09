@@ -153,7 +153,7 @@ pub(crate) struct Service {
     busy: Arc<AtomicBool>,
     next_id: u64,
     worker: Option<JoinHandle<Result<(), String>>>,
-    runtime_events: async_channel::Receiver<std::sync::Arc<super::Runtime>>,
+    runtime_events: async_channel::Receiver<Arc<super::Runtime>>,
     probe_refresh: watch::Sender<super::monitor::ProbeControl>,
     autostart_queries: watch::Sender<u64>,
 }
@@ -267,7 +267,7 @@ impl Service {
             control.proxies = control.proxies.wrapping_add(1);
         });
     }
-    pub(crate) fn runtime_events(&self) -> async_channel::Receiver<std::sync::Arc<super::Runtime>> {
+    pub(crate) fn runtime_events(&self) -> async_channel::Receiver<Arc<super::Runtime>> {
         self.runtime_events.clone()
     }
     pub(crate) fn events(&self) -> async_channel::Receiver<Snapshot> {
@@ -337,16 +337,16 @@ impl Process {
             Self::Service(session) => session.id(),
         }
     }
-    pub(super) fn try_wait(&mut self) -> std::io::Result<Option<std::process::ExitStatus>> {
+    pub(super) fn try_wait(&mut self) -> io::Result<Option<std::process::ExitStatus>> {
         match self {
             Self::Local(child) => child.try_wait(),
             Self::Service(_) => Ok(None),
         }
     }
-    async fn wait(&mut self) -> std::io::Result<std::process::ExitStatus> {
+    async fn wait(&mut self) -> io::Result<std::process::ExitStatus> {
         match self {
             Self::Local(child) => child.wait().await,
-            Self::Service(_) => Err(std::io::Error::other("服务进程由后台服务持有")),
+            Self::Service(_) => Err(io::Error::other("服务进程由后台服务持有")),
         }
     }
     async fn stop(&mut self) -> Result<(), String> {
@@ -358,7 +358,7 @@ impl Process {
 }
 pub(super) struct Running {
     child: Process,
-    pub(super) pipe_suppressed: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    pub(super) pipe_suppressed: Arc<AtomicBool>,
     pub(super) launch: Launch,
     output: Option<tokio::task::JoinHandle<Result<(), String>>>,
     pub(super) log_settings: Option<watch::Sender<super::output::LogSettings>>,
@@ -1037,7 +1037,7 @@ impl Actor {
             .as_ref()
             .filter(|_| self.snapshot.phase == Phase::Ready)
             .ok_or("内核未就绪，无法读取规则")?;
-        self.snapshot.rules = std::sync::Arc::new(
+        self.snapshot.rules = Arc::new(
             running
                 .launch
                 .client
@@ -1083,7 +1083,7 @@ impl Actor {
                     .as_ref()
                     .ok_or("内核日志设置尚未读取")?
                     .log_limits(),
-                std::sync::Arc::clone(&pipe_suppressed),
+                Arc::clone(&pipe_suppressed),
             )),
             _ => None,
         };
@@ -1203,7 +1203,7 @@ impl Actor {
         Ok(())
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     async fn apply(&mut self) -> Result<(), String> {
         let source = self
             .running
@@ -1306,7 +1306,7 @@ impl Actor {
                     })?)
                 }
                 Ok(_) => return Err("数据库路径或大小无效".into()),
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => None,
                 Err(error) => {
                     return Err(crate::logging::diagnostic_error(
                         "无法检查原数据库".into(),
@@ -2442,7 +2442,7 @@ impl Actor {
                     stderr,
                     launch.redactions(),
                     limits,
-                    std::sync::Arc::clone(&pipe_suppressed),
+                    Arc::clone(&pipe_suppressed),
                 )),
                 _ => None,
             };
@@ -2711,7 +2711,7 @@ pub(super) async fn terminate(child: &mut Child) -> Result<(), String> {
         .map_err(|error| format!("停止本应用内核失败：{error}"))
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 #[path = "tests.rs"]
 mod tests;
 

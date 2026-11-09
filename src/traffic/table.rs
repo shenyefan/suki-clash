@@ -215,13 +215,9 @@ impl TableDelegate for RecordsTable {
         if self.kind == TrafficKind::Rules {
             if let Some(record) = self.visible.get(row).map(|index| &self.records[*index]) {
                 let value = rule_text(record);
-                return menu.item(
-                    crate::ui::actions::menu("复制规则")
-                        .icon(IconName::Copy)
-                        .on_click(move |_, _, cx| {
-                            cx.write_to_clipboard(ClipboardItem::new_string(value.clone()))
-                        }),
-                );
+                return menu.item(ui::actions::menu("复制规则").icon(IconName::Copy).on_click(
+                    move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(value.clone())),
+                ));
             }
             return menu;
         }
@@ -238,7 +234,7 @@ impl TableDelegate for RecordsTable {
         let id = record.id;
         let owner = cx.entity();
         menu = menu.item(
-            crate::ui::actions::menu("查看连接详情")
+            ui::actions::menu("查看连接详情")
                 .icon(IconName::Info)
                 .on_click(move |_, _, cx| {
                     owner.update(cx, |table, cx| {
@@ -256,17 +252,13 @@ impl TableDelegate for RecordsTable {
             ("复制规则", 6),
         ] {
             let value = record.cells[index].clone();
-            menu = menu.item(
-                crate::ui::actions::menu(label)
-                    .icon(IconName::Copy)
-                    .on_click(move |_, _, cx| {
-                        cx.write_to_clipboard(ClipboardItem::new_string(value.clone()))
-                    }),
-            );
+            menu = menu.item(ui::actions::menu(label).icon(IconName::Copy).on_click(
+                move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(value.clone())),
+            ));
         }
         let details = record.details.clone();
         menu = menu.item(
-            crate::ui::actions::menu("复制全部详情")
+            ui::actions::menu("复制全部详情")
                 .icon(IconName::Copy)
                 .on_click(move |_, _, cx| {
                     cx.write_to_clipboard(ClipboardItem::new_string(details.clone()))
@@ -274,7 +266,7 @@ impl TableDelegate for RecordsTable {
         );
         let target = record.connection.clone();
         menu.separator().item(
-            crate::ui::actions::menu("关闭连接")
+            ui::actions::menu("关闭连接")
                 .icon(IconName::X)
                 .disabled(!record.active || !self.live)
                 .on_click(move |_, window, cx| super::close_connection(target.clone(), window, cx)),

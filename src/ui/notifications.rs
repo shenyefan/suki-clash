@@ -74,7 +74,7 @@ pub(crate) fn undo(
                 let action = action.clone();
                 let note = cx.weak_entity();
                 Button::new("undo-action")
-                    .icon(gpui_kit::assets::IconName::Undo2)
+                    .icon(assets::IconName::Undo2)
                     .small()
                     .label("撤销")
                     .on_click(move |_, window, cx| {

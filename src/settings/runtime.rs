@@ -136,7 +136,7 @@ impl SettingsPage {
             });
         let body = if matches!(self.kind, SettingsKind::Dns | SettingsKind::Sniffer) && self.dns_raw
         {
-            gpui_kit::component::v_flex()
+            component::v_flex()
                 .size_full()
                 .min_h(space::NONE)
                 .min_w(space::NONE)

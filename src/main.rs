@@ -39,7 +39,7 @@ fn main() {
         .set_auto_apply_on_startup(false)
         .run();
     let (instance, instance_error) = match integration::AppPaths::discover()
-        .map_err(crate::logging::error_message)
+        .map_err(logging::error_message)
         .and_then(|paths| {
             desktop::instance::Service::acquire(
                 &paths,
@@ -90,7 +90,7 @@ fn main() {
         integration::init(service, instance_error, cx);
         init(cx);
         let font_error = ui::theme::load_fonts(cx).err();
-        gpui_kit::component::set_locale("zh-CN");
+        component::set_locale("zh-CN");
         match integration::read("settings", cx)
             .get("ThemeIndex")
             .map(String::as_str)
@@ -135,7 +135,7 @@ fn main() {
             let _ = main_window.update(cx, |_, window, cx| {
                 ui::notifications::push(
                     window,
-                    gpui_kit::component::notification::Notification::error(message),
+                    component::notification::Notification::error(message),
                     cx,
                 );
             });
