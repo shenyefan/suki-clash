@@ -10,16 +10,16 @@
 
 四个原生runner（`windows-latest`、`macos-latest`、`ubuntu-latest`）分别构建主程序及集成维护的服务程序，使用Cargo.lock；不把整个target目录加入包。矩阵全部成功后才汇总，产物不会由并行job抢写同一Release。手动运行只保留Actions artifacts；标签运行创建／更新**一个草稿Release**，不会自动公开发布，不修改已发布同名版本。用户检查草稿后再发布。普通分支推送不自动发布。
 
-工作流默认使用bash，较长的步骤放在`packaging/`下的脚本中，各脚本只在GitHub runner上运行：
+工作流默认使用bash，较长的步骤放在`packaging/`下的脚本中，各脚本只在GitHub runner上运行。只在Ubuntu上运行的步骤用shell；三个平台都要运行的暂存和打包用Python，避免Git Bash改写Windows路径和参数：
 
 | 脚本 | 运行位置 | 职责 |
 | --- | --- | --- |
 | `runtime.sh` | prepare（ubuntu-latest） | 下载并校验全部平台的内核与Geo，生成各目标的离线资源及manifest |
-| `stage.sh` | 各平台构建runner | 按平台目录结构暂存程序和离线资源；macOS生成图标并写入版本，Linux运行linuxdeploy |
-| `pack.sh` | 各平台构建runner | 调用官方`dotnet vpk pack`，写入`build.{channel}.json` |
+| `stage.py` | 各平台构建runner | 按平台目录结构暂存程序和离线资源；macOS生成图标并写入版本，Linux运行linuxdeploy |
+| `pack.py` | 各平台构建runner | 调用官方`dotnet vpk pack`，写入`build.{channel}.json` |
 | `release.sh` | release（ubuntu-latest） | 汇总下载文件与更新清单，生成发布说明并创建／更新草稿Release |
 
-Windows仅“选择MSVC工具链”一步使用PowerShell，因为它调用Visual Studio自带的`Launch-VsDevShell.ps1`。当前不签名、不公证。
+选择MSVC工具链和两个`cargo build`步骤使用PowerShell：前者调用Visual Studio自带的`Launch-VsDevShell.ps1`；后者避免Git Bash的`/usr/bin/link`遮挡MSVC的`link.exe`（pwsh在所有runner上可用）。当前不签名、不公证。
 
 | 平台／架构 | 更新channel | 用户下载文件 |
 | --- | --- | --- |
@@ -33,7 +33,7 @@ Windows便携版是**免安装程序包**，用户配置仍沿当前平台应用
 
 ## 文件结构与资源
 
-`packaging/stage.sh`读取`target/<目标>/release`与`platform-service/target/<目标>/release`中的两个可执行文件：`suki-clash`、`suki-clash-service`（Windows 使用 `.exe`），构建目录内其他工具不会随包。安装／卸载由服务程序自身承接。macOS放入Contents/MacOS，资源在Contents/Resources；其他平台资源相对实际可执行文件为resources/。打包作者／公司为 Moenya，Windows 两个可执行文件的公司与版权属性、macOS 应用版权同步使用 Moenya；`pack.sh`直接调用官方`dotnet vpk`。各可执行文件版本来自所属 Cargo 包。
+`packaging/stage.py`读取`target/<目标>/release`与`platform-service/target/<目标>/release`中的两个可执行文件：`suki-clash`、`suki-clash-service`（Windows 使用 `.exe`），构建目录内其他工具不会随包。安装／卸载由服务程序自身承接。macOS放入Contents/MacOS，资源在Contents/Resources；其他平台资源相对实际可执行文件为resources/。打包作者／公司为 Moenya，Windows 两个可执行文件的公司与版权属性、macOS 应用版权同步使用 Moenya；`pack.py`直接调用官方`dotnet vpk`。各可执行文件版本来自所属 Cargo 包。
 
 resources 仅保留离线运行资源与必要的平台图标，不再复制 licenses 目录、协议／来源说明或 logo.png。界面及托盘使用编译进主程序的图片；macOS 保留供 Finder／Dock 使用的 suki-clash.icns，Linux 保留 AppDir 根目录下供桌面入口使用的 suki-clash.png，Windows 图标嵌入可执行文件及安装器。仓库中的原始协议文件保留。
 
@@ -47,7 +47,7 @@ artifact 不保留文件权限；首次启动由现有bootstrap按manifest校验
 
 GitHub下载代理由共享HTTP规则处理，覆盖内核版本／归档、Geo手动下载、公开订阅／覆写／图标，以及应用更新清单和完整包；携带Authorization的请求不转交第三方代理。内核自身按geox-url发起的后台更新由Mihomo负责，不经过应用HTTP规则。CI从官方GitHub获取资源，不读取用户下载代理设置。
 
-Linux使用成熟linuxdeploy打包动态依赖：`stage.sh`下载固定的`1-alpha-20251107-1` x86_64 AppImage，校验SHA-256后解包运行，再由vpk生成AppImage；不自己扫描／复制依赖协议。AppImage的可用性仍受目标glibc、Vulkan／图形驱动、桌面环境、服务授权工具和发行版限制，不能仅靠生成文件宣称所有Linux可运行。
+Linux使用成熟linuxdeploy打包动态依赖：`stage.py`下载固定的`1-alpha-20251107-1` x86_64 AppImage，校验SHA-256后解包运行，再由vpk生成AppImage；不自己扫描／复制依赖协议。AppImage的可用性仍受目标glibc、Vulkan／图形驱动、桌面环境、服务授权工具和发行版限制，不能仅靠生成文件宣称所有Linux可运行。
 
 ## 草稿状态
 

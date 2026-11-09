@@ -82,6 +82,9 @@ jobs:
         if: runner.os == 'Windows'
         run: git config --global core.longpaths true
       - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
@@ -118,15 +121,18 @@ jobs:
           name: runtime
           path: ${{ runner.temp }}/runtime
       - name: Build application
-        run: cargo build --locked --release --target "$BUILD_TARGET" --bin suki-clash
+        # Git Bash puts its coreutils link.exe ahead of the MSVC linker on PATH.
+        shell: pwsh
+        run: cargo build --locked --release --target $env:BUILD_TARGET --bin suki-clash
       - name: Build service with integrated maintenance
-        run: cargo build --locked --release --manifest-path platform-service/Cargo.toml --target "$BUILD_TARGET" --features standalone,client --bin suki-clash-service
+        shell: pwsh
+        run: cargo build --locked --release --manifest-path platform-service/Cargo.toml --target $env:BUILD_TARGET --features standalone,client --bin suki-clash-service
       - name: Stage application files
         env:
           GH_TOKEN: ${{ github.token }}
-        run: bash packaging/stage.sh "$BUILD_TARGET" "$BUILD_VERSION" "$RUNNER_TEMP/runtime/$BUILD_TARGET" "$RUNNER_TEMP/package/stage"
+        run: python packaging/stage.py "$BUILD_TARGET" "$BUILD_VERSION" "$RUNNER_TEMP/runtime/$BUILD_TARGET" "$RUNNER_TEMP/package/stage"
       - name: Pack with official Velopack CLI
-        run: bash packaging/pack.sh "$BUILD_VERSION" "$BUILD_TARGET" "$BUILD_CHANNEL" "$RUNNER_TEMP/package/stage" "$RUNNER_TEMP/package/Releases"
+        run: python packaging/pack.py "$BUILD_VERSION" "$BUILD_TARGET" "$BUILD_CHANNEL" "$RUNNER_TEMP/package/stage" "$RUNNER_TEMP/package/Releases"
       - name: Upload packages and isolated release feed
         uses: actions/upload-artifact@v7
         with:
