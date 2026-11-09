@@ -50,7 +50,14 @@ pub(crate) fn read<T: DeserializeOwned + Default>(
     paths: &AppPaths,
     section: &str,
 ) -> Result<T, String> {
-    let root = document(paths, LIMIT)?;
+    read_limited(paths, section, LIMIT)
+}
+pub(crate) fn read_limited<T: DeserializeOwned + Default>(
+    paths: &AppPaths,
+    section: &str,
+    limit: u64,
+) -> Result<T, String> {
+    let root = document(paths, limit)?;
     match root.get(section) {
         Some(value) => serde_json::from_value(value.clone()).map_err(|error| {
             crate::logging::rejected(
@@ -163,7 +170,7 @@ mod tests {
             )
             .unwrap();
         }
-        let before = capture(&paths, &["runtime", "core"]).unwrap();
+        let before = capture(&paths, &["profiles", "core"]).unwrap();
         write_values(
             &paths,
             "general",
@@ -172,7 +179,7 @@ mod tests {
         .unwrap();
         write(
             &paths,
-            "runtime",
+            "profiles",
             &serde_json::json!({"selected_profile_id": 7}),
         )
         .unwrap();
@@ -182,7 +189,7 @@ mod tests {
         assert_eq!(root["core"]["enable_external_controller"], true);
         assert_eq!(root["dns"]["dns_override_enabled"], true);
         assert_eq!(root["sniffer"]["sniffer_override_enabled"], true);
-        assert!(!root.contains_key("runtime"));
+        assert!(!root.contains_key("profiles"));
         assert_eq!(std::fs::read_dir(paths.settings()).unwrap().count(), 1);
     }
     #[test]
@@ -198,7 +205,7 @@ mod tests {
         );
         write(
             &paths,
-            "runtime",
+            "profiles",
             &serde_json::json!({"selected_profile_id":7}),
         )
         .unwrap();

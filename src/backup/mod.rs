@@ -53,14 +53,12 @@ fn managed(name: &str) -> bool {
             parts[1],
             "settings.json" | "mihomo.yaml" | "dns.yaml" | "sniffer.yaml"
         ),
-        "records" => {
-            matches!(
-                parts[1],
-                "profile-index.json" | "override-index.json" | "proxy-selections.json"
-            ) || parts[1]
-                .strip_prefix("profile-enhance-")
-                .and_then(|name| name.strip_suffix(".json"))
-                .is_some_and(|id| id.parse::<u64>().is_ok())
+        "indexes" => {
+            parts[1] == "override-index.json"
+                || parts[1]
+                    .strip_prefix("profile-enhance-")
+                    .and_then(|name| name.strip_suffix(".json"))
+                    .is_some_and(|id| id.parse::<u64>().is_ok())
         }
         "profiles" => parts[1]
             .strip_suffix(".yaml")
@@ -129,7 +127,7 @@ fn sanitized_settings(bytes: &[u8], local: Option<&[u8]>) -> Result<Vec<u8>, Str
 fn collect(paths: &AppPaths) -> Result<BTreeMap<String, Vec<u8>>, String> {
     let mut files = BTreeMap::new();
     let mut total = 0usize;
-    for directory in ["settings", "records", "profiles", "overrides"] {
+    for directory in ["settings", "indexes", "profiles", "overrides"] {
         let root = if directory == "settings" {
             paths.settings()
         } else {
@@ -423,10 +421,10 @@ impl Archive {
         for name in self
             .files
             .keys()
-            .filter(|name| name.starts_with("records/profile-enhance-"))
+            .filter(|name| name.starts_with("indexes/profile-enhance-"))
         {
             let namespace = name
-                .strip_prefix("records/")
+                .strip_prefix("indexes/")
                 .and_then(|name| name.strip_suffix(".json"))
                 .ok_or("增强备份路径无效")?;
             let values = repository
@@ -507,6 +505,13 @@ mod tests {
         general.insert("GitHubToken".into(), "never-backup".into());
         general.insert("AutoRun".into(), "true".into());
         crate::preferences::app::write_values(&source, "general", &general).unwrap();
+        let document =
+            crate::profiles::model::Document::new(7, crate::profiles::model::DocumentKind::Profile);
+        crate::profiles::repository::commit(&source, &[], &[document], Some(7)).unwrap();
+        let mut selections = crate::proxies::runtime::Selections::load(&source).unwrap();
+        selections.update(Some(7), "group", Some("node"));
+        selections.save(&source).unwrap();
+        atomic_write(&source.traffic_record(), b"cache excluded from backup").unwrap();
         let archive = Archive::capture(&source).unwrap();
         let settings = std::str::from_utf8(&archive.files["settings/settings.json"]).unwrap();
         assert!(!settings.contains("never-backup"));
@@ -526,6 +531,23 @@ mod tests {
         let settings = fs::read_to_string(crate::preferences::app::path(&destination)).unwrap();
         assert!(settings.contains("keep-local"));
         assert!(!settings.contains("private-sync"));
+        assert_eq!(
+            crate::configuration::selected_profile(&destination).unwrap(),
+            Some(7)
+        );
+        assert_eq!(
+            crate::profiles::repository::read(&destination).unwrap().1[0].id,
+            7
+        );
+        assert_eq!(
+            crate::proxies::runtime::Selections::load(&destination)
+                .unwrap()
+                .for_profile(Some(7))["group"],
+            "node"
+        );
+        assert!(!destination.traffic_record().exists());
+        assert!(archive.files.keys().all(|name| !name.starts_with("cache/")));
+
         assert!(
             !crate::preferences::app::read_values(&destination, "general", 8 * 1024 * 1024)
                 .unwrap()
@@ -582,7 +604,7 @@ mod tests {
             "settings/../x",
             "profiles/../../x",
             "settings/credentials.json",
-            "records/system-proxy.json",
+            "indexes/system-proxy.json",
             "profiles/1.yaml/x",
             "core/mihomo",
         ] {

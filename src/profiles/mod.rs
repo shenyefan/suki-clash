@@ -7,6 +7,7 @@ pub(crate) mod override_repository;
 mod proxy_uri;
 pub(crate) mod remote;
 pub(crate) mod repository;
+pub(crate) mod settings;
 pub(crate) use credentials::SecretEdit;
 pub(crate) use credentials::{CredentialEdits, CredentialStore};
 mod organize;

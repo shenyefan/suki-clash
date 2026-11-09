@@ -95,7 +95,7 @@ impl Recovery {
                 Some(
                     serde_json::to_vec(&crate::preferences::app::capture(
                         paths,
-                        &["core", "runtime"],
+                        &["core", "profiles"],
                     )?)
                     .map_err(|error| {
                         crate::logging::diagnostic_error("无法保存内核设置恢复材料", error)

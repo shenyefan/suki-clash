@@ -6,7 +6,7 @@
 
 - `settings/settings.json`：完整程序设置分组，包括通用／外观、系统代理、内核、DNS、嗅探及备份偏好。
 - `settings/mihomo.yaml`、`dns.yaml`、`sniffer.yaml`：实际持久化的内核原生设置。
-- `records/`：订阅／覆写索引、代理选择和订阅增强。当前格式中增强片段为 YAML 字符串，先按其已定义格式处理，再写回脱敏 JSON。
+- `settings/settings.json`：订阅元数据和代理选择；`indexes/`：覆写索引和订阅增强。当前格式中增强片段为 YAML 字符串，先按其已定义格式处理，再写回脱敏 JSON。
 - `profiles/`、`overrides/`：订阅和 YAML 覆写；安全凭据文件与任意 JavaScript 正文不进入包。
 - `runtime/`：当前可读取的本地 `core/run-*/candidate.yaml`；另包含存在时的 `runtime-source.yaml`。不越权读取系统服务的受限目录，不把本地候选文件描述为内核 API 的实际回读。
 

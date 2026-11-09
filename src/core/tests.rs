@@ -2493,12 +2493,12 @@ async fn real_subscription_edit_enhance_and_active_delete_apply_before_committin
         Some(2)
     );
     assert!(!repository::body_path(&paths, 1).exists());
-    assert!(!paths.records().join("profile-enhance-1.json").exists());
+    assert!(!paths.indexes().join("profile-enhance-1.json").exists());
     owner
         .profiles(super::super::ProfileCommand::Restore { ids: vec![1] })
         .await
         .unwrap();
-    assert!(paths.records().join("profile-enhance-1.json").exists());
+    assert!(paths.indexes().join("profile-enhance-1.json").exists());
     assert_eq!(owner.snapshot.profile().unwrap().id(), 2);
     let (expected, _) = repository::read(&paths).unwrap();
     owner

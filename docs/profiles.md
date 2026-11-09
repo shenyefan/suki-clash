@@ -32,7 +32,7 @@ macOS钥匙串、Windows Credential Manager、Linux Secret Service分别提供�
 
 活动来源变化经过合成、目标内核校验、热加载和端口回读，随后提交正文文件、索引、选择记录及私有运行文件。失败恢复旧运行配置和已捕获的文件。恢复失败与原始错误同时报告。更新批次逐项提交，失败项目保留旧内容，已成功项目保留成功结果。
 
-元数据在数据目录 `records/profile-index.json`，正文唯一存于 `profiles/<id>.yaml`，覆写唯一存于 `overrides/<id>.<ext>`，索引不含正文；外部文件修改进入下次读取／合成，元数据保存不重写未修改正文。内存快照含正文用于版本比较，磁盘不双读回退。增强在 `records/profile-enhance-<id>.json`。`settings/settings.json` 的 `runtime` 分组只保存选中的订阅 ID。不生成 `applied.json`，不读取其他版本的格式。
+元数据在程序设置 `settings/settings.json` 的 `profiles.items`，正文唯一存于 `profiles/<id>.yaml`，覆写唯一存于 `overrides/<id>.<ext>`，索引不含正文；外部文件修改进入下次读取／合成，元数据保存不重写未修改正文。内存快照含正文用于版本比较，磁盘不双读回退。增强在 `indexes/profile-enhance-<id>.json`。`settings/settings.json` 的 `profiles.selected_profile_id` 字段只保存选中的订阅 ID。不生成 `applied.json`，不读取其他版本的格式。
 
 所有下载在同一个持续 toast 中显示进度，持续到解析、应用和提交结束。toast 使用原生 NotificationList，并在弹窗上层绘制；位置默认「顶部居中」，可在设置中更改。
 

@@ -226,11 +226,11 @@ async fn selected_profile_reloads_current_source_and_bad_selection_never_falls_b
     let selection = paths.settings().join("settings.json");
     let bytes = std::fs::read(&selection).unwrap();
     let record: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(record["runtime"]["selected_profile_id"], 7);
+    assert_eq!(record["profiles"]["selected_profile_id"], 7);
     assert!(record.get("content").is_none());
     std::fs::write(
         &selection,
-        br#"{"schema_version":1,"runtime":{"selected_profile_id":99}}"#,
+        br#"{"schema_version":1,"profiles":{"selected_profile_id":99}}"#,
     )
     .unwrap();
     std::fs::write(

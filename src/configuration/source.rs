@@ -26,31 +26,17 @@ pub(crate) struct Source {
     profile: Option<ProfileIdentity>,
     content: String,
 }
-#[derive(Default, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Selection {
-    selected_profile_id: Option<u64>,
-}
-impl Selection {
-    fn load(paths: &AppPaths) -> Result<Self, String> {
-        crate::preferences::app::read(paths, "runtime")
-    }
-    fn save(&self, paths: &AppPaths) -> Result<(), String> {
-        crate::preferences::app::write(paths, "runtime", self)
-    }
-}
 pub(crate) fn initialize_selection(paths: &AppPaths) -> Result<(), String> {
-    let selection = Selection::load(paths)?;
+    let selection = crate::profiles::settings::Settings::load(paths)?;
     selection.save(paths)
 }
 pub(crate) fn selected_profile(paths: &AppPaths) -> Result<Option<u64>, String> {
-    Ok(Selection::load(paths)?.selected_profile_id)
+    Ok(crate::profiles::settings::Settings::load(paths)?.selected_profile_id)
 }
 pub(crate) fn select_profile(paths: &AppPaths, id: Option<u64>) -> Result<(), String> {
-    Selection {
-        selected_profile_id: id,
-    }
-    .save(paths)
+    let mut settings = crate::profiles::settings::Settings::load(paths)?;
+    settings.selected_profile_id = id;
+    settings.save(paths)
 }
 impl Source {
     pub(crate) fn base() -> Self {
@@ -123,7 +109,7 @@ impl Source {
 
     pub(crate) async fn load(paths: &AppPaths) -> Result<Self, String> {
         initialize_selection(paths)?;
-        let selection = Selection::load(paths)?;
+        let selection = crate::profiles::settings::Settings::load(paths)?;
         if let Some(id) = selection.selected_profile_id {
             return Self::from_profile(paths, id);
         }
@@ -172,10 +158,7 @@ impl Source {
 
     /// Commit only the selected subscription after the core confirms loading.
     pub(crate) fn commit(&self, paths: &AppPaths) -> Result<(), String> {
-        Selection {
-            selected_profile_id: self.profile.as_ref().map(ProfileIdentity::id),
-        }
-        .save(paths)
+        select_profile(paths, self.profile.as_ref().map(ProfileIdentity::id))
     }
 }
 #[cfg(test)]

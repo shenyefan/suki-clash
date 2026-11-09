@@ -166,6 +166,7 @@ mod tests {
             "sysproxy":{"mode":"manual","proxy_guard":true},
             "dns":{"dns_override_enabled":true},
             "backup":{"encrypt":true,"recipient":"private-recipient"},
+            "profiles":{"selected_profile_id":1,"items":[{"id":1,"name":"private subscription","url":"https://subscription.test/private-path?token=url-private"}]},
             "core":{"enable_external_controller":true}
         });
         std::fs::write(
@@ -192,14 +193,13 @@ mod tests {
             "const credential = 'script-private';",
         )
         .unwrap();
-        std::fs::write(paths.records().join("profile-index.json"), br#"{"version":1,"values":{"format":"1","ids":"1","1/url":"https://subscription.test/private-path?token=url-private","1/token":"subscription-private"}}"#).unwrap();
         let enhance = serde_json::json!({"version":1,"values":{"proxies":"prepend: [{name: extra, type: trojan, password: enhance-private}]"}});
         std::fs::write(
-            paths.records().join("profile-enhance-1.json"),
+            paths.indexes().join("profile-enhance-1.json"),
             serde_json::to_vec(&enhance).unwrap(),
         )
         .unwrap();
-        std::fs::write(paths.records().join("service-owner.token"), "owner-private").unwrap();
+        std::fs::write(paths.indexes().join("service-owner.token"), "owner-private").unwrap();
         let runtime = paths.directory(DirectoryKind::Core).join("run-test");
         std::fs::create_dir(&runtime).unwrap();
         std::fs::write(runtime.join("candidate.yaml"), mihomo).unwrap();
@@ -250,6 +250,7 @@ mod tests {
         assert_eq!(app["general"]["auto_run"], true);
         assert_eq!(app["general"]["theme_index"], "dark");
         assert_eq!(app["sysproxy"]["proxy_guard"], true);
+        assert_eq!(app["profiles"]["items"][0]["id"], 1);
         let native: serde_yaml_ng::Value =
             serde_yaml_ng::from_str(&files["configuration/settings/mihomo.yaml"]).unwrap();
         assert_eq!(native["mixed-port"], 7890);
@@ -260,7 +261,7 @@ mod tests {
             "configuration/settings/sniffer.yaml",
             "configuration/profiles/1.yaml",
             "configuration/overrides/2.yaml",
-            "configuration/records/profile-enhance-1.json",
+            "configuration/indexes/profile-enhance-1.json",
             "configuration/runtime/run-test/candidate.yaml",
         ] {
             assert!(files.contains_key(name), "{name}");

@@ -68,12 +68,14 @@ pub(crate) fn validate_metadata(
     values: &crate::storage::Values,
 ) -> Result<(), String> {
     if values.keys().any(|key| key.ends_with("/content")) {
+        let path = if overrides {
+            paths.indexes().join("override-index.json")
+        } else {
+            crate::preferences::app::path(paths)
+        };
         return Err(format!(
             "{}：文档索引不得包含正文；请修正索引，保留独立正文文件",
-            paths
-                .records()
-                .join(format!("{}.json", key(overrides)))
-                .display()
+            path.display()
         ));
     }
     Ok(())
@@ -142,8 +144,12 @@ pub(crate) fn load_values(
             doc.enabled = get("enabled") == "true";
             doc.scope_profile = get("scope-profile").parse().ok();
             doc.scope_name = get("scope-name");
-            doc.interval = get("interval");
-            doc.timeout = get("timeout");
+            if let Some(value) = values.get(&format!("{id}/interval")) {
+                doc.interval = value.clone();
+            }
+            if let Some(value) = values.get(&format!("{id}/timeout")) {
+                doc.timeout = value.clone();
+            }
             doc.user_agent = get("agent");
             doc.with_proxy = get("with-proxy") == "true";
             doc.self_proxy = get("self-proxy") == "true";

@@ -189,7 +189,7 @@ mod tests {
             "dns",
             "sniffer",
             "sysproxy",
-            "runtime",
+            "profiles",
             "proxy_chain",
         ] {
             assert!(program[section].is_object(), "{section}");
@@ -281,7 +281,7 @@ mod current_format_tests {
             serde_json::from_slice(&std::fs::read(paths.settings().join("settings.json")).unwrap())
                 .unwrap();
         assert_eq!(
-            selection["runtime"]["selected_profile_id"],
+            selection["profiles"]["selected_profile_id"],
             serde_json::Value::Null
         );
         assert!(

@@ -89,13 +89,15 @@ impl Repository {
         self.document_path(namespace)
     }
     pub(crate) fn document_path(&self, namespace: &Namespace) -> PathBuf {
-        if namespace.is_setting() && !matches!(namespace.name(), "dns" | "sniffer") {
+        if namespace.name() == "profile-index"
+            || (namespace.is_setting() && !matches!(namespace.name(), "dns" | "sniffer"))
+        {
             return crate::preferences::app::path(&self.paths);
         }
         let directory = if namespace.is_setting() {
             self.paths.settings()
         } else {
-            self.paths.records()
+            self.paths.indexes()
         };
         directory.join(format!(
             "{}.{}",
@@ -115,6 +117,10 @@ impl Repository {
         namespace: &Namespace,
         limit: u64,
     ) -> Result<Values, StorageError> {
+        if namespace.name() == "profile-index" {
+            return crate::profiles::settings::read_values(&self.paths, limit)
+                .map_err(StorageError::Settings);
+        }
         if namespace.name() == "tun" {
             return crate::configuration::Preferences::load(&self.paths)
                 .and_then(|preferences| crate::configuration::tun::project(preferences.native()))
@@ -173,7 +179,9 @@ impl Repository {
                 snapshot.insert(namespace, values);
             }
         }
-        for entry in fs::read_dir(self.paths.records())? {
+        let profiles = Namespace::parse("profile-index")?;
+        snapshot.insert(profiles.clone(), self.read(&profiles)?);
+        for entry in fs::read_dir(self.paths.indexes())? {
             let path = entry?.path();
             let Some(name) = path.file_stem().and_then(|name| name.to_str()) else {
                 continue;
@@ -208,7 +216,12 @@ impl Repository {
                 snapshot.insert(namespace, values);
             }
         }
-        if let Ok(entries) = fs::read_dir(self.paths.records()) {
+        if let Ok(profiles) = Namespace::parse("profile-index")
+            && let Ok(values) = self.read(&profiles)
+        {
+            snapshot.insert(profiles, values);
+        }
+        if let Ok(entries) = fs::read_dir(self.paths.indexes()) {
             for entry in entries.flatten() {
                 let path = entry.path();
                 let Some(name) = path.file_stem().and_then(|name| name.to_str()) else {
@@ -229,6 +242,10 @@ impl Repository {
     }
     pub(crate) fn save(&self, namespace: &Namespace, values: &Values) -> Result<(), StorageError> {
         let values = persistent_values(values);
+        if namespace.name() == "profile-index" {
+            return crate::profiles::settings::write_values(&self.paths, &values)
+                .map_err(StorageError::Settings);
+        }
         if namespace.name() == "tun" {
             let previous = crate::configuration::Preferences::load(&self.paths)
                 .map_err(StorageError::Settings)?;

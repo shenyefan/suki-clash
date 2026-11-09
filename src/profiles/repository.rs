@@ -93,7 +93,7 @@ pub(crate) fn body_path(paths: &AppPaths, id: u64) -> PathBuf {
 }
 pub(crate) struct Recovery {
     paths: AppPaths,
-    runtime: crate::preferences::app::Sections,
+    settings: crate::preferences::app::Sections,
     files: Vec<(PathBuf, Option<Vec<u8>>)>,
 }
 impl Recovery {
@@ -107,9 +107,8 @@ impl Recovery {
         let mut targets = Vec::new();
         for id in ids {
             targets.push(body_path(paths, id));
-            targets.push(paths.records().join(format!("profile-enhance-{id}.json")));
+            targets.push(paths.indexes().join(format!("profile-enhance-{id}.json")));
         }
-        targets.push(paths.records().join("profile-index.json"));
         for path in targets {
             match std::fs::symlink_metadata(&path) {
                 Ok(metadata)
@@ -142,13 +141,13 @@ impl Recovery {
         }
         Ok(Self {
             paths: paths.clone(),
-            runtime: crate::preferences::app::capture(paths, &["runtime"])?,
+            settings: crate::preferences::app::capture(paths, &["profiles"])?,
             files,
         })
     }
     pub(crate) fn restore(&self) -> Result<(), String> {
         let mut errors = Vec::new();
-        if let Err(error) = crate::preferences::app::restore(&self.paths, &self.runtime) {
+        if let Err(error) = crate::preferences::app::restore(&self.paths, &self.settings) {
             errors.push(error);
         }
         for (path, content) in &self.files {
@@ -217,7 +216,7 @@ pub(crate) fn commit(
         for path in [
             body_path(paths, document.id),
             paths
-                .records()
+                .indexes()
                 .join(format!("profile-enhance-{}.json", document.id)),
         ] {
             match std::fs::remove_file(path) {
@@ -288,11 +287,11 @@ mod tests {
     }
 
     #[test]
-    fn inline_index_content_is_rejected_instead_of_used_as_a_fallback() {
+    fn inline_index_content_is_rejected_before_writing_settings() {
         let root = tempfile::tempdir().unwrap();
         let paths = AppPaths::isolated(root.path());
         let repository = Repository::open(paths.clone()).unwrap();
-        repository
+        let error = repository
             .save(
                 &namespace().unwrap(),
                 &Values::from([
@@ -302,21 +301,9 @@ mod tests {
                     ("7/content".into(), "mode: rule".into()),
                 ]),
             )
-            .unwrap();
-        assert!(read(&paths).err().unwrap().contains("索引不得包含正文"));
+            .unwrap_err();
+        assert!(error.to_string().contains("索引不得包含正文"));
+        assert!(!crate::preferences::app::path(&paths).exists());
         assert!(!body_path(&paths, 7).exists());
-        let index = paths.records().join("profile-index.json");
-        let original = std::fs::read(&index).unwrap();
-        atomic_write(&body_path(&paths, 7), b"mode: rule").unwrap();
-        let read_error = read(&paths).err().unwrap();
-        let source_error = crate::configuration::Source::from_profile(&paths, 7)
-            .err()
-            .unwrap();
-        assert_eq!(read_error, source_error);
-        assert!(read_error.contains(&index.display().to_string()));
-        assert!(read_error.contains("保留独立正文文件"));
-        assert!(!read_error.contains("mode: rule"));
-        assert_eq!(std::fs::read(index).unwrap(), original);
-        assert_eq!(std::fs::read(body_path(&paths, 7)).unwrap(), b"mode: rule");
     }
 }

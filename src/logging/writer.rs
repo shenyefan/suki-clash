@@ -328,7 +328,10 @@ mod tests {
         for id in 0..5 {
             std::fs::write(directory.join(format!("{id}.json")), b"{}").unwrap();
         }
-        let old = std::fs::File::open(directory.join("0.json")).unwrap();
+        let old = std::fs::File::options()
+            .write(true)
+            .open(directory.join("0.json"))
+            .unwrap();
         old.set_modified(std::time::SystemTime::now() - Duration::from_secs(10 * 86400))
             .unwrap();
         prune_script_logs(&paths, 7, 3).unwrap();

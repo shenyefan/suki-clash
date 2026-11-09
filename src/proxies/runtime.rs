@@ -16,7 +16,7 @@ impl ProxyMode {
         }
     }
 }
-use crate::storage::{AppPaths, atomic_write};
+use crate::storage::AppPaths;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 #[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
@@ -413,42 +413,39 @@ pub(crate) struct Test {
     pub(crate) generation: u64,
     pub(crate) epoch: u64,
 }
-#[derive(Default, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Default)]
 pub(crate) struct Selections {
-    schema_version: u32,
     profiles: BTreeMap<u64, BTreeMap<String, String>>,
 }
+#[derive(Default, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct ProfileSelections {
+    profile_id: Option<u64>,
+    groups: BTreeMap<String, String>,
+}
 impl Selections {
-    fn path(paths: &AppPaths) -> std::path::PathBuf {
-        paths.records().join("proxy-selections.json")
-    }
     pub(crate) fn load(paths: &AppPaths) -> Result<Self, String> {
-        let path = Self::path(paths);
-        let bytes = match std::fs::read(path) {
-            Ok(bytes) => bytes,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                return Ok(Self {
-                    schema_version: 1,
-                    ..Self::default()
-                });
-            }
-            Err(error) => {
-                return Err(crate::logging::diagnostic_error(
-                    "无法读取代理选择记录".into(),
-                    error,
+        let entries: Vec<ProfileSelections> =
+            crate::preferences::app::read(paths, "proxy_selections")?;
+        let mut profiles = BTreeMap::new();
+        for entry in entries {
+            if entry.profile_id == Some(0) {
+                return Err(format!(
+                    "{}：代理选择订阅 ID 无效",
+                    crate::preferences::app::path(paths).display()
                 ));
             }
-        };
-        if bytes.len() > 1024 * 1024 {
-            return Err("代理选择记录超过上限".into());
+            if profiles
+                .insert(entry.profile_id.unwrap_or(0), entry.groups)
+                .is_some()
+            {
+                return Err(format!(
+                    "{}：代理选择包含重复订阅",
+                    crate::preferences::app::path(paths).display()
+                ));
+            }
         }
-        let result: Self = serde_json::from_slice(&bytes)
-            .map_err(|error| crate::logging::rejected("代理选择记录无效", error))?;
-        if result.schema_version != 1 {
-            return Err("代理选择记录版本无效".into());
-        }
-        Ok(result)
+        Ok(Self { profiles })
     }
     pub(crate) fn for_profile(&self, id: Option<u64>) -> BTreeMap<String, String> {
         self.profiles
@@ -465,13 +462,15 @@ impl Selections {
         }
     }
     pub(crate) fn save(&self, paths: &AppPaths) -> Result<(), String> {
-        let bytes = serde_json::to_vec_pretty(self)
-            .map_err(|error| crate::logging::diagnostic_error("无法编码代理选择记录", error))?;
-        if bytes.len() > 1024 * 1024 {
-            return Err("代理选择记录超过上限".into());
-        }
-        atomic_write(&Self::path(paths), &bytes)
-            .map_err(|error| crate::logging::diagnostic_error("代理选择记录保存失败".into(), error))
+        let entries: Vec<_> = self
+            .profiles
+            .iter()
+            .map(|(id, groups)| ProfileSelections {
+                profile_id: (*id != 0).then_some(*id),
+                groups: groups.clone(),
+            })
+            .collect();
+        crate::preferences::app::write(paths, "proxy_selections", &entries)
     }
 }
 
@@ -512,7 +511,7 @@ mod tests {
     fn selections_are_isolated_by_profile_and_survive_reload() {
         let root = tempfile::tempdir().unwrap();
         let paths = AppPaths::isolated(root.path());
-        std::fs::create_dir_all(paths.records()).unwrap();
+        paths.create().unwrap();
         let mut selections = Selections::load(&paths).unwrap();
         selections.update(Some(1), "group", Some("a"));
         selections.update(Some(2), "group", Some("b"));

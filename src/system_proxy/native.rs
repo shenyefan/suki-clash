@@ -25,7 +25,11 @@ impl Native {
         {
             Ok(Self {
                 adapter: platform::Adapter::new(
-                    paths.map(|paths| paths.records().join("system-proxy-owner.json")),
+                    paths.map(|paths| {
+                        paths
+                            .directory(crate::storage::DirectoryKind::Runtime)
+                            .join("system-proxy-owner.json")
+                    }),
                     interactive,
                 )?,
             })
@@ -33,7 +37,11 @@ impl Native {
         #[cfg(target_os = "linux")]
         {
             let _ = interactive;
-            let journal = paths.map(|paths| paths.records().join("system-proxy-owner.json"));
+            let journal = paths.map(|paths| {
+                paths
+                    .directory(crate::storage::DirectoryKind::Runtime)
+                    .join("system-proxy-owner.json")
+            });
             let mut native = Self {
                 journal,
                 owned: Vec::new(),

@@ -65,7 +65,7 @@ impl Recovery {
         new: &[Document],
     ) -> Result<Self, String> {
         let mut targets: BTreeSet<_> = old.iter().chain(new).map(|doc| path(paths, doc)).collect();
-        targets.insert(paths.records().join("override-index.json"));
+        targets.insert(paths.indexes().join("override-index.json"));
         let mut entries = vec![];
         for path in targets {
             if let Ok(metadata) = std::fs::symlink_metadata(&path)
@@ -212,13 +212,13 @@ mod tests {
         let index = Namespace::parse("override-index").unwrap();
         repository.save(&index, &values).unwrap();
         atomic_write(&path(&paths, &document), document.content.as_bytes()).unwrap();
-        let original = std::fs::read(paths.records().join("override-index.json")).unwrap();
+        let original = std::fs::read(paths.indexes().join("override-index.json")).unwrap();
         let error = read(&paths).err().unwrap();
         assert!(error.contains("override-index.json"));
         assert!(error.contains("保留独立正文文件"));
         assert!(!error.contains("mode: direct"));
         assert_eq!(
-            std::fs::read(paths.records().join("override-index.json")).unwrap(),
+            std::fs::read(paths.indexes().join("override-index.json")).unwrap(),
             original
         );
         assert_eq!(

@@ -29,7 +29,8 @@ impl DocumentKind {
         }
     }
 }
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct TrafficUsage {
     pub(crate) used_bytes: u64,
     pub(crate) total_bytes: u64,

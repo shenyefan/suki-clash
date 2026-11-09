@@ -37,7 +37,8 @@
   "sniffer": {"sniffer_override_enabled": false},
   "sysproxy": {},
   "tun": {},
-  "runtime": {"selected_profile_id": null},
+  "profiles": {"selected_profile_id": null, "items": []},
+  "proxy_selections": [],
   "proxy_chain": {
     "enabled": false,
     "group": "",
@@ -61,7 +62,7 @@ hosts: {}
 
 表单和 YAML 编辑器共用原生文档；修改已知字段保留其他字段。编辑器不包含程序总开关或其他应用标记；代码编辑不会改变程序总开关。DNS 和嗅探的总开关位于标题旁，只显示开关，保留无障碍名称。总开关关闭时 YAML 编辑器禁用，内容保留；开启后恢复编辑。
 
-订阅、覆写及增强索引在数据目录 `records/`，正文在 `profiles/`、`overrides/`；节点选择记录属于用户数据。当前订阅 ID 在程序设置的 `runtime` 分组，启动时重新读取订阅并合成，不保存或依赖 `applied.json`。
+订阅元数据和节点选择在程序设置中，覆写及增强索引在数据目录 `indexes/`，正文在 `profiles/`、`overrides/`。当前订阅 ID 在程序设置的 `profiles.selected_profile_id` 字段，启动时重新读取订阅并合成，不保存或依赖 `applied.json`。
 
 ## 更新与失败
 
@@ -79,21 +80,42 @@ hosts: {}
 
 DNS、嗅探与完整文档编辑的热应用和布局规则见 [flow.md](flow.md)。
 
-## records 目录核对
+## 用户状态与缓存
 
-当前路径名称是 `records/`，没有 `recoards/`。它是用户数据的索引/元数据目录，不是日志或可丢弃缓存：
+订阅元数据和当前选择统一保存在 `settings/settings.json`：
 
-| 内容 | 使用方 |
-| --- | --- |
-| `profile-index.json` | 订阅身份、顺序、来源及调度元数据 |
-| `override-index.json` | 覆写身份、顺序、启用状态与订阅作用域 |
-| `profile-enhance-<id>.json` | 对应订阅的增强配置 |
-| `proxy-selections.json` | 按订阅隔离的已确认节点选择 |
+```json
+{
+  "profiles": {
+    "selected_profile_id": 1794184021508,
+    "items": [
+      {
+        "id": 1794184021508,
+        "name": "Meow",
+        "url": "",
+        "enabled": true,
+        "update_interval_minutes": 1440,
+        "request_timeout_seconds": 30,
+        "user_agent": "",
+        "with_proxy": false,
+        "self_proxy": false,
+        "accept_invalid_certs": false,
+        "updated_at": null,
+        "home": "",
+        "usage": null
+      }
+    ]
+  },
+  "proxy_selections": [
+    {"profile_id": 1794184021508, "groups": {"AI": "Land"}}
+  ]
+}
+```
 
-`storage::Repository`、订阅/覆写事务、备份快照和节点恢复都直接使用该目录。直接删除会丢失索引、增强和选择；保留下来的 YAML 正文不能自动恢复这些关系。当前保留该目录。若以后取消这层目录，应直接修改当前格式及全部调用方，不增加旧路径回退或自动迁移，也不自动搬动/删除现有用户文件。
+`items` 数组顺序就是订阅顺序。代理选择的 `profile_id: null` 表示未选订阅的基础配置。流量历史唯一保存到缓存目录 `traffic.json`，不进入配置备份。覆写索引 `override-index.json` 和订阅增强 `profile-enhance-<id>.json` 使用数据目录 `indexes/`。系统代理恢复记录使用运行目录。不再创建或读取 `records/`，不兼容、迁移或自动删除旧文件。
 
 ## 重置程序
 
-设置 → 维护提供唯一全局重置入口，确认后先停止内核／系统代理并等待存储线程结束。随后删除 `settings/`、数据目录中的 `records/`、`profiles/`、`overrides/` 及配置目录中的 `runtime-source.yaml`，成功后退出。下次启动重新生成默认设置。内核、资源数据库、日志、备份与统计历史不属于配置删除范围。部分删除失败会明确报告重置未完成，不执行自动迁移或备份。仅具有程序默认值的设置多行文本可恢复默认；订阅、覆写、增强和自定义代理链属于用户内容，不提供恢复默认。其他页面不再提供重置入口。
+设置 → 维护提供唯一全局重置入口，确认后先停止内核／系统代理并等待存储线程结束。随后删除 `settings/`、数据目录中的 `indexes/`、`profiles/`、`overrides/` 及配置目录中的 `runtime-source.yaml`，成功后退出。下次启动重新生成默认设置。内核、资源数据库、日志、备份与统计历史不属于配置删除范围。部分删除失败会明确报告重置未完成，不执行自动迁移或备份。仅具有程序默认值的设置多行文本可恢复默认；订阅、覆写、增强和自定义代理链属于用户内容，不提供恢复默认。其他页面不再提供重置入口。
 
 删除与恢复默认提供可自动关闭的撤销通知。重置程序确认后先等待 5 秒，点击撤销会取消执行；等待结束后才停止后台任务并删除配置。Fake-IP 清理采用相同的执行前撤销窗口。

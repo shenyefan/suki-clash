@@ -19,7 +19,7 @@ pub(super) fn export(
     )];
     for (area, root) in [
         ("settings", paths.settings()),
-        ("records", paths.records()),
+        ("indexes", paths.indexes()),
         ("profiles", paths.data().join("profiles")),
         ("overrides", paths.data().join("overrides")),
     ] {
@@ -28,14 +28,12 @@ pub(super) fn export(
                 name,
                 "settings.json" | "mihomo.yaml" | "dns.yaml" | "sniffer.yaml"
             ),
-            "records" => {
-                matches!(
-                    name,
-                    "profile-index.json" | "override-index.json" | "proxy-selections.json"
-                ) || name
-                    .strip_prefix("profile-enhance-")
-                    .and_then(|name| name.strip_suffix(".json"))
-                    .is_some_and(numeric_id)
+            "indexes" => {
+                name == "override-index.json"
+                    || name
+                        .strip_prefix("profile-enhance-")
+                        .and_then(|name| name.strip_suffix(".json"))
+                        .is_some_and(numeric_id)
             }
             _ => name.strip_suffix(".yaml").is_some_and(numeric_id),
         });
@@ -80,7 +78,7 @@ pub(super) fn export(
     files.sort_by_key(|(name, _)| {
         let priority = match name.split('/').next() {
             Some("settings") => 0,
-            Some("records") => 2,
+            Some("indexes") => 2,
             Some("profiles") => 3,
             Some("overrides") => 4,
             _ => 1,
@@ -201,8 +199,8 @@ pub(super) fn sanitize(
     };
     match parsed {
         Ok(mut value) => {
-            // Enhancement fragments are YAML strings in the current records JSON format.
-            if name.starts_with("records/profile-enhance-")
+            // Enhancement fragments are YAML strings in the current index JSON format.
+            if name.starts_with("indexes/profile-enhance-")
                 && let Some(values) = value.get_mut("values").and_then(Value::as_mapping_mut)
             {
                 for key in ["proxies", "proxy-groups", "rules"] {

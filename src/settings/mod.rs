@@ -891,7 +891,14 @@ mod tests {
                         .is_none()
                 );
                 window.click(scope, cx);
-                window.press("cmd-a", cx);
+                window.press(
+                    if cfg!(target_os = "macos") {
+                        "cmd-a"
+                    } else {
+                        "ctrl-a"
+                    },
+                    cx,
+                );
                 window.input("25", cx);
                 assert_eq!(state.read(cx).value(), "25");
             })

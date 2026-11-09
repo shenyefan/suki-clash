@@ -96,10 +96,10 @@ impl AppPaths {
         self.config.join("settings")
     }
     pub(crate) fn traffic_record(&self) -> PathBuf {
-        self.records().join("traffic.json")
+        self.cache.join("traffic.json")
     }
-    pub(crate) fn records(&self) -> PathBuf {
-        self.data.join("records")
+    pub(crate) fn indexes(&self) -> PathBuf {
+        self.data.join("indexes")
     }
     pub(crate) fn data(&self) -> &Path {
         &self.data
@@ -108,7 +108,7 @@ impl AppPaths {
     pub(crate) fn reset_configuration(&self) -> Result<(), String> {
         for path in [
             self.settings(),
-            self.records(),
+            self.indexes(),
             self.data.join("profiles"),
             self.data.join("overrides"),
         ] {
@@ -152,11 +152,11 @@ impl AppPaths {
             }
         }
         fs::create_dir_all(self.settings())?;
-        fs::create_dir_all(self.records())?;
+        fs::create_dir_all(self.indexes())?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt as _;
-            for directory in [self.settings(), self.records()] {
+            for directory in [self.settings(), self.indexes()] {
                 fs::set_permissions(directory, fs::Permissions::from_mode(0o700))?;
             }
         }
@@ -174,7 +174,7 @@ mod reset_tests {
         paths.create().unwrap();
         let deleted = [
             paths.settings(),
-            paths.records(),
+            paths.indexes(),
             paths.data.join("profiles"),
             paths.data.join("overrides"),
         ];
@@ -205,7 +205,7 @@ mod reset_tests {
         let repository = crate::storage::Repository::open(paths.clone()).unwrap();
         crate::preferences::initialize(&repository).unwrap();
         assert!(paths.settings().join("settings.json").is_file());
-        assert!(!paths.records().join("profile-index.json").exists());
+        assert!(!paths.indexes().join("profile-index.json").exists());
     }
     #[test]
     fn deletion_error_reports_incomplete_reset() {
