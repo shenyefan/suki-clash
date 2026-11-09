@@ -2,7 +2,7 @@ mod model;
 mod table;
 mod view;
 
-use crate::{session::Session, ui};
+use crate::ui;
 use gpui_kit::{
     component::{
         IndexPath,
@@ -30,13 +30,10 @@ pub(crate) struct LogsPage {
     _subscriptions: Vec<Subscription>,
     _reception: Task<()>,
     cleared: [u64; 2],
+    visible: bool,
 }
 impl LogsPage {
-    pub(crate) fn new(
-        session: Entity<Session>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Self {
+    pub(crate) fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let source = 0;
         let descending = true;
         let query = cx.new(|cx| InputState::new(window, cx).placeholder("搜索时间、级别或内容"));
@@ -108,8 +105,10 @@ impl LogsPage {
                     this.refresh(w, cx);
                 },
             ),
-            cx.observe_in(&session, window, |this, _, w, cx| {
-                this.refresh(w, cx);
+            cx.observe_window_visibility(window, |this, visibility, window, cx| {
+                if visibility.is_visible() {
+                    this.refresh(window, cx);
+                }
             }),
         ];
         let feed = crate::integration::logs(cx);
@@ -168,11 +167,29 @@ impl LogsPage {
             _subscriptions: subscriptions,
             _reception: reception,
             cleared: [0; 2],
+            visible: true,
         };
         page.refresh(window, cx);
         page
     }
+    pub(crate) fn set_visible(
+        &mut self,
+        visible: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.visible == visible {
+            return;
+        }
+        self.visible = visible;
+        if visible {
+            self.refresh(window, cx);
+        }
+    }
     fn refresh(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.visible || !window.is_visible() {
+            return;
+        }
         self.search.compile(self.query.read(cx).value().as_ref());
         let level = self
             .level
@@ -206,7 +223,6 @@ impl LogsPage {
             ui::retain_table_selection(table, selected, cx);
             cx.notify();
         });
-        let _ = window;
         cx.notify();
     }
     // The runtime adapter delivers batches here.
@@ -216,13 +232,16 @@ impl LogsPage {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.buffer.append(entries);
+        if !self.visible || !window.is_visible() {
+            return;
+        }
         let near_bottom = self
             .table
             .read(cx)
             .vertical_scroll_handle
             .is_scrolled_to_end()
             .unwrap_or(true);
-        self.buffer.append(entries);
         self.refresh(window, cx);
         if !self.descending && near_bottom {
             self.jump_to_latest(window, cx);
@@ -258,15 +277,74 @@ impl LogsPage {
 #[cfg(test)]
 mod tests {
     use super::LogsPage;
-    use crate::session::Session;
     use crate::{
         integration::{AppPaths, Repository, Service},
         logging::{Level, Record, Source},
     };
     use gpui_kit::base::ScrollbarHandle as _;
     use gpui_kit::test::TestWindowExt;
-    use gpui_kit::{AppContext, Bounds, TestAppContext, WindowBounds, WindowOptions, px, size};
+    use gpui_kit::{
+        AppContext, Bounds, TestAppContext, WindowBounds, WindowOptions, WindowVisibility, px, size,
+    };
     use std::time::Duration;
+
+    #[gpui_kit::test]
+    fn hidden_page_and_window_keep_collecting_without_refreshing_the_table(
+        cx: &mut TestAppContext,
+    ) {
+        let root = tempfile::tempdir().unwrap();
+        let paths = AppPaths::isolated(root.path());
+        let service = Service::start(Repository::open(paths).unwrap()).unwrap();
+        let feed = service.logs();
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            crate::integration::init(service, None, cx);
+            cx.set_reduce_motion(true);
+        });
+        let (handle, page) = cx.update(|cx| {
+            gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
+                cx.new(|cx| LogsPage::new(window, cx))
+            })
+            .unwrap()
+        });
+        handle
+            .update(cx, |_, window, cx| {
+                page.update(cx, |page, cx| page.set_visible(false, window, cx));
+            })
+            .unwrap();
+        let mut record = Record::program(Level::Info, "TCP", "hidden page");
+        record.source = Source::Core;
+        feed.publish(record);
+        cx.executor().advance_clock(Duration::from_millis(160));
+        cx.run_until_parked();
+        page.update(cx, |page, cx| {
+            assert_eq!(page.buffer.entries.len(), 1);
+            assert!(page.table.read(cx).delegate().entries.is_empty());
+        });
+        handle
+            .update(cx, |_, window, cx| {
+                page.update(cx, |page, cx| page.set_visible(true, window, cx));
+            })
+            .unwrap();
+        page.update(cx, |page, cx| {
+            assert_eq!(page.table.read(cx).delegate().entries.len(), 1)
+        });
+        cx.simulate_window_visibility_change(handle, WindowVisibility::Hidden);
+        let mut record = Record::program(Level::Info, "TCP", "hidden window");
+        record.source = Source::Core;
+        feed.publish(record);
+        cx.executor().advance_clock(Duration::from_millis(160));
+        cx.run_until_parked();
+        page.update(cx, |page, cx| {
+            assert_eq!(page.buffer.entries.len(), 2);
+            assert_eq!(page.table.read(cx).delegate().entries.len(), 1);
+        });
+        cx.simulate_window_visibility_change(handle, WindowVisibility::Visible);
+        page.update(cx, |page, cx| {
+            assert_eq!(page.table.read(cx).delegate().entries.len(), 2)
+        });
+        crate::integration::finish_test_services(cx);
+    }
 
     #[gpui_kit::test]
     fn live_tabs_descending_details_and_view_state_stay_separate_from_settings(
@@ -299,10 +377,7 @@ mod tests {
                     ..Default::default()
                 },
                 cx,
-                |window, cx| {
-                    let session = cx.new(|_| Session::default());
-                    cx.new(|cx| LogsPage::new(session, window, cx))
-                },
+                |window, cx| cx.new(|cx| LogsPage::new(window, cx)),
             )
             .unwrap()
         });

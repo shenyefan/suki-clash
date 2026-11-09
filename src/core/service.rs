@@ -180,6 +180,7 @@ impl Service {
         let (runtime_updates, runtime_events) = async_channel::bounded(1);
         let runtime_observer = runtime_events.clone();
         let control_refresh = probe_refresh.clone();
+        let foreground = probe_receiver.clone();
         let worker = std::thread::Builder::new()
             .name("suki-core".into())
             .spawn(move || {
@@ -206,7 +207,9 @@ impl Service {
                         Some(test_requests),
                         Some(probe_receiver),
                     ));
-                    let result = actor.run(receiver, cancellation, autostart_receiver).await;
+                    let result = actor
+                        .run(receiver, cancellation, autostart_receiver, foreground)
+                        .await;
                     if let Err(error) = &result {
                         Actor::send_snapshot(
                             &Snapshot {
@@ -265,6 +268,15 @@ impl Service {
         self.probe_refresh.send_modify(|control| {
             control.revision = control.revision.wrapping_add(1);
             control.proxies = control.proxies.wrapping_add(1);
+        });
+    }
+    pub(super) fn set_visible(&self, visible: bool) {
+        self.probe_refresh.send_if_modified(|control| {
+            if control.visible == visible {
+                return false;
+            }
+            control.visible = visible;
+            true
         });
     }
     pub(crate) fn runtime_events(&self) -> async_channel::Receiver<Arc<super::Runtime>> {
@@ -420,7 +432,9 @@ pub(super) struct Actor {
     pub(super) deleted_profiles: std::collections::BTreeMap<u64, super::profiles::DeletedProfile>,
     pub(super) system_proxy: crate::system_proxy::Controller,
     exit_prepared: bool,
-    health_recovery_remaining: u8,
+    health_failures: u8,
+    owner_failures: u8,
+    missing_core_failures: u8,
     pub(super) selection_recovery: Option<super::proxy_control::SelectionRecovery>,
     provider_sync: Option<ProviderSyncPlan>,
     provider_sync_identity: Option<(u64, u64)>,
@@ -466,7 +480,9 @@ impl Actor {
             runtime_warning: None,
             system_proxy: crate::system_proxy::Controller::new(paths),
             exit_prepared: false,
-            health_recovery_remaining: 0,
+            health_failures: 0,
+            owner_failures: 0,
+            missing_core_failures: 0,
             selection_recovery: None,
             provider_sync: None,
             provider_sync_identity: None,
@@ -561,6 +577,7 @@ impl Actor {
         receiver: async_channel::Receiver<Request>,
         mut shutdown: watch::Receiver<bool>,
         mut autostart_queries: watch::Receiver<u64>,
+        mut foreground: watch::Receiver<super::monitor::ProbeControl>,
     ) -> Result<(), String> {
         let ownership = std::fs::OpenOptions::new()
             .create(true)
@@ -586,7 +603,19 @@ impl Actor {
         let _ownership = ownership;
         let mut polling = tokio::time::interval(Duration::from_millis(250));
         let mut health = tokio::time::interval(Duration::from_secs(2));
+        let mut state_poll = tokio::time::interval(Duration::from_secs(30));
+        let mut owner_poll = tokio::time::interval(Duration::from_secs(5));
         let mut subscription_timer = tokio::time::interval(Duration::from_secs(30));
+        for timer in [
+            &mut polling,
+            &mut health,
+            &mut state_poll,
+            &mut owner_poll,
+            &mut subscription_timer,
+        ] {
+            timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        }
+        let mut visible = foreground.borrow().visible;
         if let Err(error) = self.refresh_profiles() {
             self.publish(Phase::Failed, Some(error));
         }
@@ -642,6 +671,12 @@ impl Actor {
             tokio::select! {
                 biased;
                 _ = shutdown.changed() => break,
+                changed = foreground.changed() => {
+                    if changed.is_err() { break; }
+                    let next_visible = foreground.borrow_and_update().visible;
+                    if !visible && next_visible { state_poll.reset_immediately(); }
+                    visible = next_visible;
+                }
                 changed = autostart_queries.changed(), if !self.exit_prepared => {
                     if changed.is_err() { break; }
                     autostart_queries.borrow_and_update();
@@ -666,7 +701,9 @@ impl Actor {
                         self.exit_prepared = false;
                     }
                     if matches!(&request.command, Command::Start | Command::Stop | Command::Restart | Command::PlatformService(_)) {
-                        self.health_recovery_remaining = 0;
+                        self.health_failures = 0;
+                        self.owner_failures = 0;
+                        self.missing_core_failures = 0;
                     }
                     self.snapshot.request_id = Some(request.id);
                     let operation_name = request.command.operation();
@@ -816,21 +853,33 @@ impl Actor {
                     else {self.publish_snapshot(self.snapshot.phase,self.snapshot.error.clone(),self.snapshot.error_logged);}
                 },
                 _ = polling.tick() => self.observe_exit().await,
+                _ = owner_poll.tick(), if !self.exit_prepared => {
+                    tokio::select! { biased; _=shutdown.changed()=>break, _=self.observe_service_owner()=>{} }
+                },
+                _ = state_poll.tick(), if visible && !self.exit_prepared => {
+                    tokio::select! { biased; _=shutdown.changed()=>break, _=self.observe_health()=>{} }
+                },
                 _ = health.tick(), if !self.exit_prepared => {
                     if let Err(error) = self.poll_system_proxy().await
                         && self.snapshot.error.as_ref() != Some(&error) {
                             self.publish(self.snapshot.phase, Some(error));
+                    }
+                    if visible && self.resources_requested
+                        && self.resources_refreshed.elapsed() >= Duration::from_secs(10)
+                        && self.snapshot.phase == Phase::Ready {
+                        match self.refresh_resources().await {
+                            Ok(()) => self.publish(self.snapshot.phase, None),
+                            Err(error) => {
+                                self.resources_requested = false;
+                                self.publish(self.snapshot.phase, Some(error));
+                            }
+                        }
                     }
                     if self.snapshot.phase == Phase::Ready && self.rules_attempted != Some((self.snapshot.generation,self.snapshot.monitor_epoch)) && (self.snapshot.rules.generation, self.snapshot.rules.epoch) != (self.snapshot.generation, self.snapshot.monitor_epoch) {
                         self.rules_attempted = Some((self.snapshot.generation,self.snapshot.monitor_epoch));
                         let result=tokio::select! { biased; _=shutdown.changed()=>break, result=self.refresh_rules()=>result };
                         if let Err(error)=result { self.publish(self.snapshot.phase,Some(error)); }
                         else { self.publish(self.snapshot.phase,None); }
-                    }
-                    tokio::select! {
-                        biased;
-                        _ = shutdown.changed() => break,
-                        _ = self.observe_health() => {},
                     }
                     if self.snapshot.phase == Phase::Ready {
                         if self.provider_sync.as_ref().is_some_and(|plan| std::time::Instant::now() >= plan.next) {
@@ -895,73 +944,134 @@ impl Actor {
         result
     }
 
-    async fn observe_health(&mut self) {
-        if (self.snapshot.phase == Phase::Ready || self.health_recovery_remaining > 0)
-            && let Some(running) = &mut self.running
-        {
-            let recovering = self.snapshot.phase == Phase::Failed;
-            if recovering {
-                self.health_recovery_remaining -= 1;
-            }
-            let mut service_rejected = false;
-            let result = async {
-                if let Process::Service(session) = &mut running.child
-                    && let Err(error) = session.status().await
-                {
-                    service_rejected = !suki_service::is_unreachable(&error);
-                    return Err(error.to_string());
+    async fn observe_service_owner(&mut self) {
+        if self.snapshot.phase != Phase::Ready {
+            return;
+        }
+        let Some(running) = &mut self.running else {
+            return;
+        };
+        let Process::Service(session) = &mut running.child else {
+            return;
+        };
+        let result = match session.status().await {
+            Ok(status) => {
+                self.owner_failures = 0;
+                let settling = matches!(
+                    status.service_state,
+                    suki_service::ServiceLifecycleState::Starting
+                        | suki_service::ServiceLifecycleState::RecoveringCore
+                );
+                self.missing_core_failures = if status.core_pid.is_none() && !settling {
+                    self.missing_core_failures + 1
+                } else {
+                    0
+                };
+                if self.missing_core_failures < 3 {
+                    Ok(status)
+                } else {
+                    Err(super::privileged::SessionFailure::CoreStopped(
+                        status
+                            .last_core_exit_reason
+                            .unwrap_or_else(|| format!("{:?}", status.service_state)),
+                    )
+                    .into())
                 }
-                let version = running.launch.client.version().await?;
-                let tun = running.launch.client.tun_enabled().await?;
-                Ok::<_, String>((version, tun))
             }
-            .await;
-            self.observe_exit().await;
-            if self.resources_requested
-                && self.resources_refreshed.elapsed() >= Duration::from_secs(10)
-                && self.snapshot.phase == Phase::Ready
-            {
-                match self.refresh_resources().await {
-                    Ok(()) => self.publish(self.snapshot.phase, None),
-                    Err(error) => {
-                        self.resources_requested = false;
-                        self.publish(self.snapshot.phase, Some(error));
+            Err(error) => Err(error),
+        };
+        match result {
+            Ok(_) => {
+                self.owner_failures = 0;
+                let pid = running.child.id();
+                if self.snapshot.pid != pid {
+                    self.snapshot.pid = pid;
+                    self.publish_snapshot(
+                        self.snapshot.phase,
+                        self.snapshot.error.clone(),
+                        self.snapshot.error_logged,
+                    );
+                }
+            }
+            Err(error) => {
+                let unreadable = error
+                    .downcast_ref::<super::privileged::SessionFailure>()
+                    .is_none();
+                self.owner_failures = (self.owner_failures + 1).min(3);
+                let mut error = error.to_string();
+                if unreadable {
+                    log::debug!("服务状态读取失败：{error:#}");
+                    if self.owner_failures < 3 {
+                        return;
                     }
-                }
-            }
-            if self.running.is_some() {
-                match result {
-                    Ok((version, tun)) if self.snapshot.phase != Phase::Ready => {
-                        self.health_recovery_remaining = 0;
-                        self.snapshot.version = Some(version);
-                        self.snapshot.tun = Some(tun);
-                        self.publish(Phase::Ready, None);
-                        if let Err(error) = self.sync_system_proxy().await {
-                            self.publish(Phase::Ready, Some(error));
+                    // Like CV's owner watch, an unreadable service is not proof that
+                    // its owned core has stopped. Verify the private endpoint first.
+                    match running.launch.client.version().await {
+                        Ok(_) => {
+                            self.owner_failures = 0;
+                            return;
+                        }
+                        Err(core_error) => {
+                            error = crate::failure::scoped([
+                                ("服务状态", error),
+                                ("内核端点", core_error),
+                            ]);
                         }
                     }
-                    Err(error) if !recovering && self.snapshot.phase == Phase::Ready => {
-                        // Observe the same owned process for at most 15 further health probes.
-                        self.health_recovery_remaining = if service_rejected { 0 } else { 15 };
-                        self.snapshot.tun = None;
-                        let error = match self.mark_runtime_failed().await {
-                            Ok(()) => error,
-                            Err(cleanup) => format!("{error}；{cleanup}"),
-                        };
-                        self.publish(Phase::Failed, Some(error));
-                    }
-                    Err(error)
-                        if recovering
-                            && (service_rejected || self.health_recovery_remaining == 0) =>
-                    {
-                        self.health_recovery_remaining = 0;
-                        self.publish(
-                            Phase::Failed,
-                            Some(format!("内核恢复观察已停止，请停止后重试：{error}")),
-                        );
-                    }
-                    _ => {}
                 }
+                let error = match self.mark_runtime_failed().await {
+                    Ok(()) => error,
+                    Err(cleanup) => crate::failure::join([error, cleanup]),
+                };
+                self.publish(Phase::Failed, Some(error));
+            }
+        }
+    }
+
+    async fn observe_health(&mut self) {
+        if self.snapshot.phase != Phase::Ready {
+            return;
+        }
+        let Some(running) = &self.running else {
+            return;
+        };
+        let result = async {
+            let version = running.launch.client.version().await?;
+            let tun = running.launch.client.tun_enabled().await?;
+            Ok::<_, String>((version, tun))
+        }
+        .await;
+        self.observe_exit().await;
+        if self.snapshot.phase != Phase::Ready {
+            return;
+        }
+        match result {
+            Ok((version, tun)) => {
+                self.health_failures = 0;
+                if self.snapshot.version.as_ref() != Some(&version)
+                    || self.snapshot.tun != Some(tun)
+                {
+                    self.snapshot.version = Some(version);
+                    self.snapshot.tun = Some(tun);
+                    self.publish_snapshot(
+                        self.snapshot.phase,
+                        self.snapshot.error.clone(),
+                        self.snapshot.error_logged,
+                    );
+                }
+            }
+            Err(error) => {
+                self.health_failures += 1;
+                if self.health_failures < 3 {
+                    log::debug!("内核状态读取失败：{error}");
+                    return;
+                }
+                self.snapshot.tun = None;
+                let error = match self.mark_runtime_failed().await {
+                    Ok(()) => format!("{error}；已停止自动检查，请停止后重试"),
+                    Err(cleanup) => crate::failure::join([error, cleanup]),
+                };
+                self.publish(Phase::Failed, Some(error));
             }
         }
     }

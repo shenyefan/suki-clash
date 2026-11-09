@@ -166,16 +166,12 @@ async fn run(
         };
         failures += 1;
         if let Err(error) = result {
-            let error = if failures >= 3 {
-                format!("{error}；已停止自动重连")
-            } else {
-                error
-            };
+            log::debug!("内核流 {path} 连接失败（{failures}/3）：{error}");
             sender.send_replace(State {
                 generation: current.generation,
                 epoch: current.epoch,
                 packet: None,
-                error: Some(error),
+                error: (failures >= 3).then(|| format!("{error}；已停止自动重连")),
             });
         }
         if failures >= 3 {

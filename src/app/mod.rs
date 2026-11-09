@@ -75,7 +75,7 @@ impl SukiApp {
         let connections =
             cx.new(|cx| TrafficPage::new(TrafficKind::Connections, session.clone(), window, cx));
         let rules = cx.new(|cx| TrafficPage::new(TrafficKind::Rules, session.clone(), window, cx));
-        let logs = cx.new(|cx| LogsPage::new(session.clone(), window, cx));
+        let logs = cx.new(|cx| LogsPage::new(window, cx));
         let settings: Vec<(SettingsKind, Entity<SettingsPage>)> = SettingsKind::ALL
             .into_iter()
             .map(|kind| {
@@ -134,20 +134,27 @@ impl SukiApp {
             KeyBinding::new(settings_shortcut, Settings, Some("Suki")),
             KeyBinding::new(sidebar, ToggleSidebar, Some("Suki")),
         ]);
+        let page = match saved.get("StartPage").map(String::as_str) {
+            Some("代理组") => Page::Proxies,
+            Some("订阅") => Page::Profiles,
+            Some("连接") => Page::Connections,
+            Some("规则") => Page::Rules,
+            Some("日志") => Page::Logs,
+            Some("设置") => Page::Settings,
+            _ => Page::Overview,
+        };
+        overview.update(cx, |overview, cx| {
+            overview.set_visible(page == Page::Overview, cx)
+        });
+        logs.update(cx, |logs, cx| {
+            logs.set_visible(page == Page::Logs, window, cx)
+        });
         Self {
             logo: std::sync::Arc::new(Image::from_bytes(
                 ImageFormat::Png,
                 include_bytes!("../../assets/logo.png").to_vec(),
             )),
-            page: match saved.get("StartPage").map(String::as_str) {
-                Some("代理组") => Page::Proxies,
-                Some("订阅") => Page::Profiles,
-                Some("连接") => Page::Connections,
-                Some("规则") => Page::Rules,
-                Some("日志") => Page::Logs,
-                Some("设置") => Page::Settings,
-                _ => Page::Overview,
-            },
+            page,
             collapsed: false,
             focus,
             session,
@@ -180,6 +187,19 @@ impl SukiApp {
             });
         }
         if self.page != page {
+            if let Some(window) = cx.active_window() {
+                let logs = self.logs.clone();
+                cx.defer(move |cx| {
+                    let _ = window.update(cx, |_, window, cx| {
+                        logs.update(cx, |logs, cx| {
+                            logs.set_visible(page == Page::Logs, window, cx)
+                        });
+                    });
+                });
+            }
+            self.overview.update(cx, |overview, cx| {
+                overview.set_visible(page == Page::Overview, cx)
+            });
             if page == Page::Override {
                 self.overrides.update(cx, |page, cx| page.reopen(cx));
             }

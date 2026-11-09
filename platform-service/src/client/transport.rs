@@ -21,9 +21,17 @@ pub(super) async fn send(
             .map_err(RequestError::from)?;
         #[cfg(windows)]
         let stream = {
-            let stream = tokio::net::windows::named_pipe::ClientOptions::new()
-                .open(path)
-                .map_err(RequestError::from)?;
+            // CV's kode-bridge transport waits through the accept/create-next
+            // listener gap. Only retry opening: the request has not been sent.
+            let stream = loop {
+                match tokio::net::windows::named_pipe::ClientOptions::new().open(path) {
+                    Ok(stream) => break stream,
+                    Err(error) if error.raw_os_error() == Some(231) => {
+                        tokio::time::sleep(Duration::from_millis(5)).await;
+                    }
+                    Err(error) => return Err(RequestError::from(error)),
+                }
+            };
             #[cfg(not(feature = "test"))]
             super::windows_identity::verify_pipe(&stream)?;
             stream
@@ -83,5 +91,118 @@ fn transport_error(error: hyper::Error) -> RequestError {
         RequestError::InvalidResponse(error.to_string())
     } else {
         RequestError::Unreachable(error.to_string())
+    }
+}
+
+#[cfg(all(test, windows, feature = "test"))]
+mod windows_tests {
+    use super::*;
+    use tokio::{
+        io::{AsyncReadExt as _, AsyncWriteExt as _},
+        net::windows::named_pipe::{ClientOptions, ServerOptions},
+    };
+
+    fn request() -> Request<Body> {
+        Request::builder()
+            .method("PUT")
+            .uri("/stop")
+            .header("Host", "localhost")
+            .header("Connection", "close")
+            .body(Body::new(Bytes::from_static(b"{}")))
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn busy_pipe_waits_for_the_next_listener_before_sending_once() {
+        let pipe = format!(r"\\.\pipe\suki-busy-open-test-{}", std::process::id());
+        let first = ServerOptions::new()
+            .first_pipe_instance(true)
+            .create(&pipe)
+            .unwrap();
+        let occupied = ClientOptions::new().open(&pipe).unwrap();
+        first.connect().await.unwrap();
+        assert_eq!(
+            ClientOptions::new().open(&pipe).unwrap_err().raw_os_error(),
+            Some(231)
+        );
+        let pending = tokio::spawn({
+            let pipe = pipe.clone();
+            async move { send(Path::new(&pipe), request(), Duration::from_secs(1)).await }
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(
+            !pending.is_finished(),
+            "a busy listener must not fail the operation immediately"
+        );
+        let mut next = ServerOptions::new().create(&pipe).unwrap();
+        tokio::time::timeout(Duration::from_secs(1), next.connect())
+            .await
+            .unwrap()
+            .unwrap();
+        let mut bytes = [0; 2048];
+        let count = next.read(&mut bytes).await.unwrap();
+        assert!(bytes[..count].starts_with(b"PUT /stop "));
+        next.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}")
+            .await
+            .unwrap();
+        let (status, body) = pending.await.unwrap().unwrap();
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body, b"{}");
+        let unused = ServerOptions::new().create(&pipe).unwrap();
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), unused.connect())
+                .await
+                .is_err()
+        );
+        drop((occupied, first));
+    }
+
+    #[tokio::test]
+    async fn permanently_busy_pipe_uses_the_request_deadline() {
+        let pipe = format!(r"\\.\pipe\suki-busy-deadline-test-{}", std::process::id());
+        let first = ServerOptions::new()
+            .first_pipe_instance(true)
+            .create(&pipe)
+            .unwrap();
+        let occupied = ClientOptions::new().open(&pipe).unwrap();
+        first.connect().await.unwrap();
+        let started = tokio::time::Instant::now();
+        let error = send(Path::new(&pipe), request(), Duration::from_millis(80))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(error, RequestError::Unreachable(ref message) if message.contains("等待服务响应超时"))
+        );
+        assert!(started.elapsed() >= Duration::from_millis(70));
+        assert!(started.elapsed() < Duration::from_secs(1));
+        drop((occupied, first));
+    }
+
+    #[tokio::test]
+    async fn a_lost_write_acknowledgement_never_reopens_the_pipe() {
+        let pipe = format!(r"\\.\pipe\suki-lost-ack-test-{}", std::process::id());
+        let mut first = ServerOptions::new()
+            .first_pipe_instance(true)
+            .create(&pipe)
+            .unwrap();
+        let pending = tokio::spawn({
+            let pipe = pipe.clone();
+            async move { send(Path::new(&pipe), request(), Duration::from_secs(1)).await }
+        });
+        first.connect().await.unwrap();
+        let unused = ServerOptions::new().create(&pipe).unwrap();
+        let mut bytes = [0; 2048];
+        let count = first.read(&mut bytes).await.unwrap();
+        assert!(bytes[..count].starts_with(b"PUT /stop "));
+        drop(first);
+        assert!(matches!(
+            pending.await.unwrap(),
+            Err(RequestError::Unreachable(_))
+        ));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), unused.connect())
+                .await
+                .is_err()
+        );
     }
 }

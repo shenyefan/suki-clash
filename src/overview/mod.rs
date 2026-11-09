@@ -12,18 +12,30 @@ pub(crate) struct Overview {
     proxy_only: bool,
     month: bool,
     ranking_scroll: component::VirtualListScrollHandle,
+    visible: bool,
     _subscription: Subscription,
 }
 impl Overview {
     pub(crate) fn new(session: Entity<Session>, cx: &mut Context<Self>) -> Self {
-        let subscription = cx.observe(&session, |_, _, cx| cx.notify());
+        let subscription = cx.observe(&session, |this, _, cx| {
+            if this.visible {
+                cx.notify();
+            }
+        });
         Self {
             session,
             breakdown: 0,
             proxy_only: false,
             month: false,
             ranking_scroll: component::VirtualListScrollHandle::new(),
+            visible: true,
             _subscription: subscription,
+        }
+    }
+    pub(crate) fn set_visible(&mut self, visible: bool, cx: &mut Context<Self>) {
+        self.visible = visible;
+        if visible {
+            cx.notify();
         }
     }
 }
@@ -34,6 +46,30 @@ mod tests {
     use crate::overview::history::{Bytes, Hour, Snapshot};
     use gpui_kit::test::TestWindowExt;
     use gpui_kit::{AppContext, Bounds, TestAppContext, WindowBounds, WindowOptions, px, size};
+
+    #[gpui_kit::test]
+    fn hidden_graph_skips_notifications_and_notifies_once_on_return(cx: &mut TestAppContext) {
+        let session =
+            cx.new(|_| crate::session::Session::fixture(Default::default(), Default::default()));
+        let view = cx.new(|cx| Overview::new(session.clone(), cx));
+        let notifications = std::rc::Rc::new(std::cell::Cell::new(0));
+        let _subscription = cx.update(|cx| {
+            cx.observe(&view, {
+                let notifications = notifications.clone();
+                move |_, _| notifications.set(notifications.get() + 1)
+            })
+        });
+        view.update(cx, |view, cx| view.set_visible(false, cx));
+        session.update(cx, |_, cx| cx.notify());
+        cx.run_until_parked();
+        assert_eq!(notifications.get(), 0);
+        view.update(cx, |view, cx| view.set_visible(true, cx));
+        cx.run_until_parked();
+        assert_eq!(notifications.get(), 1);
+        session.update(cx, |_, cx| cx.notify());
+        cx.run_until_parked();
+        assert_eq!(notifications.get(), 2);
+    }
 
     #[gpui_kit::test]
     fn hourly_card_fits_and_native_scope_and_period_tabs_update_the_view(cx: &mut TestAppContext) {

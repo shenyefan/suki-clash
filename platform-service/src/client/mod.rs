@@ -161,6 +161,7 @@ pub async fn set_request_timeout(timeout: Option<Duration>) {
     *REQUEST_TIMEOUT.write().await = timeout;
 }
 
+#[cfg(feature = "standalone")]
 pub(crate) async fn ping_at(path: &Path, timeout: Duration) -> Result<()> {
     let request = request(Verb::Get, IpcCommand::Magic)
         .header(IPC_AUTH_HEADER_KEY, IPC_AUTH_EXPECT)
@@ -168,10 +169,6 @@ pub(crate) async fn ping_at(path: &Path, timeout: Duration) -> Result<()> {
         .map_err(|error| RequestError::InvalidRequest(error.to_string()))?;
     let (status, body) = transport::send(path, request, timeout).await?;
     ensure_success(status, &body)
-}
-
-async fn connect() -> Result<()> {
-    ping_at(Path::new(IPC_PATH), request_timeout().await).await
 }
 
 #[derive(Clone, Copy)]
@@ -196,7 +193,6 @@ where
     P: serde::Serialize + for<'de> serde::Deserialize<'de>,
     R: for<'de> serde::Deserialize<'de>,
 {
-    connect().await?;
     let body = match session {
         None => AuthenticatedRequest {
             credentials: credentials.clone(),
@@ -220,7 +216,6 @@ where
 }
 
 pub async fn get_version() -> Result<Response<ProtocolInfo>> {
-    connect().await?;
     send(
         request(Verb::Get, IpcCommand::GetVersion).header(IPC_AUTH_HEADER_KEY, IPC_AUTH_EXPECT),
         Vec::new(),
@@ -379,7 +374,6 @@ pub(crate) async fn inspect_installation_with_digest(
     requirements: &[crate::CoreRequirement],
     include_service_digest: bool,
 ) -> Result<crate::InstallationStatus> {
-    connect().await?;
     let response = send(
         protected(request(Verb::Post, IpcCommand::InspectInstallation))
             .header(IPC_AUTH_HEADER_KEY, IPC_AUTH_EXPECT)

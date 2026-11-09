@@ -494,9 +494,16 @@ impl Client {
         payload: Vec<u8>,
     ) -> Result<Vec<u8>, String> {
         let stream = self.connect().await?;
+        let read_only = method == Method::GET;
         tokio::time::timeout(timeout, self.exchange(stream, method, path, payload))
             .await
-            .map_err(|_| "内核本地 API 请求超时；服务端操作可能仍在执行，请勿重复提交".to_owned())?
+            .map_err(|_| {
+                if read_only {
+                    "内核本地 API 读取超时".to_owned()
+                } else {
+                    "内核本地 API 请求超时；服务端操作可能仍在执行，请勿重复提交".to_owned()
+                }
+            })?
     }
 
     async fn exchange<S>(

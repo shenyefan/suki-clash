@@ -9,7 +9,7 @@ use std::{
     process::Stdio,
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
 };
 use tokio::net::windows::named_pipe::ServerOptions;
@@ -61,6 +61,98 @@ fn running(launch: Launch, child: tokio::process::Child) -> Running {
         _lifetime: Some(lifetime),
         _execution: None,
     }
+}
+
+#[tokio::test]
+async fn transient_health_failure_preserves_proxy_and_exhaustion_never_auto_recovers() {
+    use http_body_util::Full;
+    use hyper::{Response, StatusCode, body::Bytes, service::service_fn};
+    use hyper_util::rt::TokioIo;
+
+    let (_root, paths) = fixture(Some(SLEEPING_CORE));
+    let mut launch = Launch::prepare(&paths).await.unwrap();
+    let healthy = Arc::new(AtomicBool::new(false));
+    let requests = Arc::new(AtomicUsize::new(0));
+    let pipe = format!(r"\\.\pipe\suki-health-test-{}", random_token().unwrap());
+    let first = ServerOptions::new()
+        .first_pipe_instance(true)
+        .create(&pipe)
+        .unwrap();
+    launch.client = Client::new(Endpoint::Pipe(pipe.clone()), "test-secret".into());
+    let server = tokio::spawn({
+        let healthy = healthy.clone();
+        let requests = requests.clone();
+        async move {
+            let mut listener = first;
+            loop {
+                listener.connect().await.unwrap();
+                let stream = listener;
+                listener = ServerOptions::new().create(&pipe).unwrap();
+                let healthy = healthy.clone();
+                let requests = requests.clone();
+                let service = service_fn(move |request: hyper::Request<hyper::body::Incoming>| {
+                    requests.fetch_add(1, Ordering::SeqCst);
+                    let available = healthy.load(Ordering::SeqCst);
+                    let body = if !available {
+                        "{}"
+                    } else if request.uri().path() == "/version" {
+                        r#"{"version":"confirmed"}"#
+                    } else {
+                        r#"{"tun":{"enable":false}}"#
+                    };
+                    std::future::ready(Ok::<_, std::convert::Infallible>(
+                        Response::builder()
+                            .status(if available {
+                                StatusCode::OK
+                            } else {
+                                StatusCode::SERVICE_UNAVAILABLE
+                            })
+                            .body(Full::new(Bytes::from_static(body.as_bytes())))
+                            .unwrap(),
+                    ))
+                });
+                hyper::server::conn::http1::Builder::new()
+                    .keep_alive(false)
+                    .serve_connection(TokioIo::new(stream), service)
+                    .await
+                    .unwrap();
+            }
+        }
+    });
+    let mut owner = actor(paths);
+    owner.running = Some(running(launch, child("sleep")));
+    let mut values = crate::preferences::defaults(crate::preferences::SettingsKind::SysProxy);
+    values.insert("IsSystemProxyEnabled".into(), "true".into());
+    owner.snapshot.system_proxy = owner.system_proxy.apply(&values, 7897).await.unwrap();
+    owner.publish(Phase::Ready, None);
+
+    owner.observe_health().await;
+    assert_eq!(owner.snapshot.phase(), Phase::Ready);
+    assert_eq!(owner.snapshot.system_proxy.enabled(), Some(true));
+    assert_eq!(owner.health_failures, 1);
+    healthy.store(true, Ordering::SeqCst);
+    owner.observe_health().await;
+    assert_eq!(owner.snapshot.version(), Some("confirmed"));
+    assert_eq!(owner.health_failures, 0);
+    assert_eq!(owner.snapshot.system_proxy.enabled(), Some(true));
+
+    healthy.store(false, Ordering::SeqCst);
+    for _ in 0..3 {
+        owner.observe_health().await;
+    }
+    assert_eq!(owner.snapshot.phase(), Phase::Failed);
+    assert_eq!(owner.snapshot.system_proxy.enabled(), Some(false));
+    assert!(owner.snapshot.error().unwrap().contains("已停止自动检查"));
+    let count = requests.load(Ordering::SeqCst);
+    healthy.store(true, Ordering::SeqCst);
+    for _ in 0..3 {
+        owner.observe_health().await;
+    }
+    assert_eq!(owner.snapshot.phase(), Phase::Failed);
+    assert_eq!(requests.load(Ordering::SeqCst), count);
+    assert_eq!(owner.snapshot.system_proxy.enabled(), Some(false));
+    owner.stop().await.unwrap();
+    server.abort();
 }
 
 #[tokio::test]

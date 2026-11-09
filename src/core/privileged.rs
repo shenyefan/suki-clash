@@ -7,6 +7,13 @@ pub(super) struct Session {
     proof: OwnerSessionProof,
     pid: Option<u32>,
 }
+#[derive(Debug, thiserror::Error)]
+pub(super) enum SessionFailure {
+    #[error("后台服务内核归属已变化，未接管其他会话")]
+    Displaced,
+    #[error("服务内核未运行：{0}")]
+    CoreStopped(String),
+}
 fn credentials(paths: &AppPaths) -> Result<OwnerCredentials, String> {
     super::service_identity::current_owner_credentials_for_root(paths.data())
         .map_err(crate::logging::error_message)
@@ -250,16 +257,29 @@ impl Session {
         self.pid
     }
     pub(super) async fn status(&mut self) -> anyhow::Result<ServiceStatusSnapshot> {
-        let status =
-            suki_service::response_data(suki_service::get_status(&self.credentials).await?)?;
-        if !status.is_active || status.active_generation != Some(self.proof.generation) {
-            anyhow::bail!("后台服务内核归属已变化，未接管其他会话");
+        let reply = suki_service::get_status(&self.credentials).await?;
+        if reply.code == suki_service::ServiceErrorCode::NotActive as u16
+            || reply.code == suki_service::ServiceErrorCode::StaleOwnerSession as u16
+        {
+            return Err(SessionFailure::Displaced.into());
         }
-        if status.core_pid.is_none() {
-            anyhow::bail!(match &status.last_core_exit_reason {
-                Some(reason) => format!("服务内核未运行：{reason}"),
-                None => format!("服务内核未运行：{:?}", status.service_state),
-            });
+        let status = suki_service::response_data(reply)?;
+        if !status.is_active || status.active_generation != Some(self.proof.generation) {
+            return Err(SessionFailure::Displaced.into());
+        }
+        if !status.desired_core_should_be_running
+            || matches!(
+                status.service_state,
+                suki_service::ServiceLifecycleState::Fatal
+            )
+        {
+            return Err(SessionFailure::CoreStopped(
+                status
+                    .last_core_exit_reason
+                    .clone()
+                    .unwrap_or_else(|| format!("{:?}", status.service_state)),
+            )
+            .into());
         }
         self.pid = status.core_pid;
         Ok(status)

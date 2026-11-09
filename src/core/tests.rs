@@ -653,7 +653,7 @@ async fn exit_preparation_retains_failed_recovery_for_a_second_attempt() {
 
 #[cfg(unix)]
 #[tokio::test]
-async fn owned_health_recovery_is_observed_and_stops_after_its_budget() {
+async fn health_checks_tolerate_transient_failure_and_stop_after_three_without_recovery() {
     use std::sync::{
         Arc,
         atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -709,22 +709,24 @@ async fn owned_health_recovery_is_observed_and_stops_after_its_budget() {
     });
     actor.publish(Phase::Ready, None);
     actor.observe_health().await;
-    assert_eq!(actor.snapshot.phase(), Phase::Failed);
-    assert_eq!(actor.health_recovery_remaining, 15);
+    assert_eq!(actor.snapshot.phase(), Phase::Ready);
+    assert_eq!(actor.health_failures, 1);
     healthy.store(true, Ordering::SeqCst);
     actor.observe_health().await;
     assert_eq!(actor.snapshot.phase(), Phase::Ready);
     assert_eq!(actor.snapshot.version(), Some("recovered"));
-    assert_eq!(actor.health_recovery_remaining, 0);
+    assert_eq!(actor.health_failures, 0);
     healthy.store(false, Ordering::SeqCst);
-    for _ in 0..16 {
+    for _ in 0..3 {
         actor.observe_health().await;
     }
-    assert_eq!(actor.health_recovery_remaining, 0);
+    assert_eq!(actor.health_failures, 3);
+    assert_eq!(actor.snapshot.phase(), Phase::Failed);
     let count = requests.load(Ordering::SeqCst);
+    healthy.store(true, Ordering::SeqCst);
     actor.observe_health().await;
     assert_eq!(requests.load(Ordering::SeqCst), count);
-    assert!(actor.snapshot.error().unwrap().contains("恢复观察已停止"));
+    assert!(actor.snapshot.error().unwrap().contains("已停止自动检查"));
     actor.stop().await.unwrap();
     server.abort();
 }

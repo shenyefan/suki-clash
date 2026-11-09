@@ -22,8 +22,24 @@ pub(crate) struct Controller {
     notification_window: Option<AnyWindowHandle>,
     progress_toast: Option<(AnyWindowHandle, Entity<crate::ui::DownloadToast>)>,
     completions: std::collections::BTreeMap<u64, (AnyWindowHandle, Completion)>,
+    visible: bool,
+    _visibility: Option<Subscription>,
 }
 impl Controller {
+    fn set_window_visible(&mut self, visible: bool, cx: &mut gpui_kit::Context<Self>) {
+        if self.visible == visible {
+            return;
+        }
+        self.visible = visible;
+        if let Some(service) = &self.service {
+            service.set_visible(visible);
+        }
+        if visible {
+            // Background samples already updated runtime. Publish the latest
+            // snapshot once when this window starts presenting again.
+            cx.notify();
+        }
+    }
     fn sync_progress(&mut self, cx: &mut gpui_kit::Context<Self>) {
         if let Some(progress) = &self.snapshot.progress {
             if let Some((_, toast)) = &self.progress_toast {
@@ -95,7 +111,16 @@ pub(crate) fn try_controller(cx: &App) -> Option<Entity<Controller>> {
 /// failure produced before window construction is replayed once as a toast.
 pub(crate) fn attach_window(window: &Window, cx: &mut App) {
     let handle = window.window_handle();
-    let report = controller(cx).update(cx, |this, _| {
+    let owner = controller(cx);
+    let weak = owner.downgrade();
+    let visibility = window.observe_window_visibility(move |visibility, _, cx| {
+        let _ = weak.update(cx, |this, cx| {
+            this.set_window_visible(visibility.is_visible(), cx)
+        });
+    });
+    let report = owner.update(cx, |this, cx| {
+        this._visibility = Some(visibility);
+        this.set_window_visible(window.is_visible(), cx);
         let first = this.notification_window.is_none();
         this.notification_window = Some(handle);
         first.then(|| (this.snapshot.error.clone(), this.snapshot.notice.clone()))
@@ -121,9 +146,9 @@ pub(crate) fn attach_window(window: &Window, cx: &mut App) {
     }
 }
 
-pub(crate) fn init(paths: AppPaths, _logs: crate::logging::Feed, cx: &mut App) {
-    #[cfg(not(test))]
-    let (service, snapshot) = match Service::start_with_logs(paths, _logs) {
+#[cfg(not(test))]
+pub(crate) fn init(paths: AppPaths, logs: crate::logging::Feed, cx: &mut App) {
+    let (service, snapshot) = match Service::start_with_logs(paths, logs) {
         Ok(service) => (Some(service), Snapshot::default()),
         Err(error) => (
             None,
@@ -134,18 +159,21 @@ pub(crate) fn init(paths: AppPaths, _logs: crate::logging::Feed, cx: &mut App) {
             },
         ),
     };
-    // GPUI's deterministic scheduler cannot be woken by an OS thread. UI
-    // integration tests render an explicitly stopped adapter; lifecycle and
-    // process work is exercised separately through the real Service/Actor tests.
-    #[cfg(test)]
-    let (service, snapshot) = (
+    install(service, snapshot, cx);
+}
+// GPUI's deterministic scheduler cannot be woken by an OS thread. UI
+// integration tests render an explicitly stopped adapter; lifecycle and
+// process work is exercised separately through the real Service/Actor tests.
+#[cfg(test)]
+pub(crate) fn init(paths: AppPaths, _logs: crate::logging::Feed, cx: &mut App) {
+    install(
         None,
         Snapshot {
             preferences: super::Preferences::load(&paths).ok(),
             ..Snapshot::default()
         },
+        cx,
     );
-    install(service, snapshot, cx);
 }
 pub(crate) fn init_unavailable(message: String, cx: &mut App) {
     install(
@@ -172,6 +200,8 @@ fn install(service: Option<Service>, snapshot: Snapshot, cx: &mut App) {
         notification_window: None,
         progress_toast: None,
         completions: Default::default(),
+        visible: false,
+        _visibility: None,
     });
     owner.update(cx, |this, cx| {
         if let Some(service) = &this.service {
@@ -238,7 +268,9 @@ fn install(service: Option<Service>, snapshot: Snapshot, cx: &mut App) {
                             }
                             this.runtime = runtime;
 
-                            cx.notify();
+                            if this.visible {
+                                cx.notify();
+                            }
                             errors
                         });
                         match report {
@@ -771,6 +803,24 @@ mod startup_notice_tests {
         fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
             div()
         }
+    }
+    #[gpui_kit::test]
+    fn native_window_visibility_updates_the_controller(cx: &mut TestAppContext) {
+        let root = tempfile::tempdir().unwrap();
+        let paths = crate::storage::AppPaths::isolated(root.path());
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            super::init(paths, crate::logging::Feed::default(), cx);
+        });
+        let window = cx.add_window(|_, _| Host);
+        window
+            .update(cx, |_, window, cx| super::attach_window(window, cx))
+            .unwrap();
+        cx.update(|cx| assert!(super::controller(cx).read(cx).visible));
+        cx.simulate_window_visibility_change(window.into(), gpui_kit::WindowVisibility::Hidden);
+        cx.update(|cx| assert!(!super::controller(cx).read(cx).visible));
+        cx.simulate_window_visibility_change(window.into(), gpui_kit::WindowVisibility::Visible);
+        cx.update(|cx| assert!(super::controller(cx).read(cx).visible));
     }
     #[gpui_kit::test]
     fn missing_tun_service_routes_titlebar_tray_and_settings_to_the_service_page(

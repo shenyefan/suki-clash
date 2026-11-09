@@ -11,6 +11,9 @@ use std::{
     time::{Duration, Instant},
 };
 use tokio::sync::watch;
+#[cfg(all(test, windows))]
+#[path = "monitor_windows_tests.rs"]
+mod windows_tests;
 #[derive(Clone)]
 pub(super) struct Target {
     pub(super) client: Client,
@@ -115,9 +118,9 @@ impl Runtime {
                     self.memory_error = Some("内存流响应无效".into());
                 }
             }
-        } else if let Some(error) = state.error {
+        } else {
             self.memory_live = false;
-            self.memory_error = Some(error);
+            self.memory_error = state.error;
         }
     }
     fn apply_probe(&mut self, result: Probe) {
@@ -146,6 +149,7 @@ fn send(
 pub(super) struct ProbeControl {
     pub(super) revision: u64,
     pub(super) proxies: u64,
+    pub(super) visible: bool,
 }
 pub(super) async fn run(
     paths: AppPaths,
@@ -201,6 +205,9 @@ pub(super) async fn run(
     let mut control_revision = refresh
         .as_ref()
         .map_or(0, |control| control.borrow().proxies);
+    let mut visible = refresh
+        .as_ref()
+        .is_none_or(|control| control.borrow().visible);
     let mut probe: Option<tokio::task::JoinHandle<Probe>> = None;
     let mut scope = None;
     let mut flush = tokio::time::interval(Duration::from_millis(200));
@@ -266,6 +273,8 @@ pub(super) async fn run(
                                 let request = receiver.borrow_and_update().clone();
                                 if probe_revision != request.revision { probe_requested=true; probe_revision=request.revision; }
                                 if control_revision != request.proxies { last_control=None; control_failures=0; control_revision=request.proxies; }
+                                if !visible && request.visible { last_control=None; control_failures=0; }
+                                visible=request.visible;
                                 send(&runtime,&updates,&observer);
                             }
                         }
@@ -302,8 +311,8 @@ pub(super) async fn run(
                                 },
                                 Err(error)=> {connection_error=Some(error);runtime.connections_live=false;runtime.statistics.connections=None;recorder.connection_gap();history.gap();}
                             }
-                        } else if let Some(error)=state.error {
-                            runtime.connections_live=false;runtime.statistics.connections=None;connection_error=Some(error);recorder.connection_gap();history.gap();
+                        } else {
+                            runtime.connections_live=false;runtime.statistics.connections=None;connection_error=state.error;recorder.connection_gap();history.gap();
                         }
                     },
                     changed=traffic.events.changed()=> {
@@ -316,7 +325,7 @@ pub(super) async fn run(
                                 Ok(rate)=> {runtime.statistics.upload_rate=Some(rate.up);runtime.statistics.download_rate=Some(rate.down);runtime.statistics.rates=recorder.record_rate(chrono::Local::now(),rate.up,rate.down);runtime.traffic_live=true;traffic_error=None;},
                                 Err(error)=>{if traffic_error.is_none(){log::warn!("解析内核流量流失败：{error}");}traffic_error=Some("流量流响应无效".into());runtime.traffic_live=false;runtime.statistics.upload_rate=None;runtime.statistics.download_rate=None;runtime.statistics.rates.clear();recorder.gap();}
                             }
-                        } else if let Some(error)=state.error {recorder.gap();runtime.statistics.rates.clear();runtime.traffic_live=false;runtime.statistics.upload_rate=None;runtime.statistics.download_rate=None;traffic_error=Some(error);}
+                        } else {recorder.gap();runtime.traffic_live=false;runtime.statistics.upload_rate=None;runtime.statistics.download_rate=None;traffic_error=state.error;}
                     },
                     changed=memory.events.changed()=> {
                         if changed.is_err(){break;}
@@ -324,7 +333,7 @@ pub(super) async fn run(
                     },
                     _=timer.tick()=> {
                         let Some(current)=target.borrow().clone() else {continue;};
-                        if control_failures < 3 && last_control.is_none_or(|last|last.elapsed()>=Duration::from_secs(5)) {
+                        if control_failures < 3 && (last_control.is_none() || visible && last_control.is_some_and(|last|last.elapsed()>=Duration::from_secs(15))) {
                             last_control=Some(Instant::now());
                             let observed=tokio::select! {biased;_=shutdown.changed()=>break,changed=target.changed()=>{if changed.is_err(){break;}continue;},result=read_control(&current)=>result};
                             match observed {
@@ -337,7 +346,14 @@ pub(super) async fn run(
                                     let request=Arc::new(super::icons::Request{target:current.clone(),sources});
                                     icon_requests.send_if_modified(|old|{if old.as_ref().is_some_and(|old|old.target.generation==request.target.generation && old.target.epoch==request.target.epoch && old.sources==request.sources){false}else{*old=Some(request);true}});
                                     runtime.connected=true;runtime.mode=Some(mode);runtime.dns_mode=dns.or_else(||current.dns_mode.clone());runtime.error=proxies.provider_error.clone();runtime.proxies=proxies;runtime.proxy_port=port;},
-                                Err(error)=>{control_failures+=1;runtime.connected=false;runtime.error=Some(if control_failures>=3 {format!("{error}；已停止自动重试")}else{error});}
+                                Err(error)=>{
+                                    control_failures+=1;
+                                    log::debug!("代理视图读取失败（{control_failures}/3）：{error}");
+                                    if control_failures>=3 {
+                                        runtime.connected=false;
+                                        runtime.error=Some(format!("{error}；已停止自动重试"));
+                                    }
+                                }
                             }
                         }
                         if let Some(task)=probe.as_ref() && task.is_finished() && let Some(task)=probe.take() {
@@ -901,6 +917,19 @@ mod memory_tests {
             })
         );
         assert!(runtime.memory_live);
+        runtime.apply_memory(super::super::streams::State {
+            generation: 2,
+            epoch: 3,
+            packet: None,
+            error: None,
+        });
+        assert!(!runtime.memory_live, "a reconnecting stream is not live");
+        assert_eq!(runtime.memory.as_ref().unwrap().inuse, 4096);
+        assert!(
+            runtime.memory_error.is_none(),
+            "transient reconnects do not notify"
+        );
+        runtime.apply_memory(packet(2, 3, br#"{"inuse":4096,"oslimit":8192}"#));
         runtime.apply_memory(packet(1, 3, br#"{"inuse":1}"#));
         runtime.apply_memory(packet(2, 2, br#"{"inuse":1}"#));
         assert_eq!(runtime.memory.as_ref().unwrap().inuse, 4096);

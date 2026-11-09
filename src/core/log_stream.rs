@@ -156,19 +156,22 @@ pub(super) async fn run(
                 }
             };
             if let Err(error) = result {
-                if failure.as_ref() != Some(&error) {
-                    feed.emit(Level::Warning, "logging", &error);
-                    failure = Some(error);
-                }
                 failures += 1;
                 if rejected || failures >= 3 {
-                    if !rejected {
-                        feed.emit(
-                            Level::Warning,
-                            "logging",
-                            "后台服务日志连续读取失败，已停止自动重连",
-                        );
-                    }
+                    feed.emit(
+                        Level::Warning,
+                        "logging",
+                        &if rejected {
+                            error.clone()
+                        } else {
+                            format!("{error}；已停止自动重连")
+                        },
+                    );
+                } else if failure.as_ref() != Some(&error) {
+                    feed.emit(Level::Debug, "logging", &error);
+                    failure = Some(error);
+                }
+                if rejected || failures >= 3 {
                     tokio::select! { _ = shutdown.changed() => break, changed = targets.changed() => { if changed.is_err() { break; } } }
                     continue;
                 }
@@ -222,19 +225,20 @@ pub(super) async fn run(
                 }
             }
         };
-        if let Err(error) = result
-            && failure.as_ref() != Some(&error)
-        {
-            feed.emit(Level::Warning, "logging", &error);
+        failures += 1;
+        if let Err(error) = result {
+            if failures >= 3 {
+                feed.emit(
+                    Level::Warning,
+                    "logging",
+                    &format!("{error}；已停止自动重连"),
+                );
+            } else if failure.as_ref() != Some(&error) {
+                feed.emit(Level::Debug, "logging", &error);
+            }
             failure = Some(error);
         }
-        failures += 1;
         if failures >= 3 {
-            feed.emit(
-                Level::Warning,
-                "logging",
-                "内核日志连接连续失败，已停止自动重连",
-            );
             tokio::select! {biased;_=shutdown.changed()=>break,changed=targets.changed()=>if changed.is_err(){break;}}
             failures = 0;
             backoff = Duration::from_millis(250);
