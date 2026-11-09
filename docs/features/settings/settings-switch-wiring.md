@@ -1,5 +1,7 @@
 # 开关执行接入复核（2026-11-03）
 
+状态更新（2026-11-09）：用户确认文档此前列出的实机验收部分均已完成，相关待验收项关闭。下文各次检查中的“未验收／待验收”保留为当时记录；本次未重新运行验收。实现范围、暂缓项及能力限制以[当前功能对照](../../reference/cv/cv-gap-checklist.md)为准。
+
 范围：当前 `src/preferences/schema.rs` 的全部 41 个 Toggle，以及仪表盘以外 `Switch::new` 调用点。只读源码复核，未执行真实网络、服务或凭据操作，不能代替平台验收。当前未发现只改界面布尔值却没有保存/应用入口的正式开关。
 
 ## 共同提交链
@@ -19,7 +21,7 @@
 | AutoDetectInterface | configuration/tun.rs::apply 写 tun.auto-detect-interface |
 | IpAutoRefresh | core/service.rs General Settings 成功后更新 probe_controls.auto_refresh；core/monitor.rs 消费。虽属于仪表盘设置，已有真实监测行为 |
 | EnableTraySpeed | tray/mod.rs::sync；macOS 托盘标题显示实时速率。schema 平台能力限制，其他平台不伪装支持 |
-| TrayInlineModes | tray/menu.rs::build；实际改变原生菜单出站模式内联/子菜单排布 |
+| TrayInlineModes | tray/menu.rs::build；实际改变 GPUI 托盘浮层出站模式内联／子层排布 |
 | EnableAutoDelay | core/delays.rs::run 自动调度分支；启用后按 AutoDelayInterval 请求当前已选择组节点，共用测速 lane |
 | SnifferOverrideEnabled | configuration/flow.rs::apply_settings；关闭继承来源，开启插入全局 sniffer 文档 |
 | SnifferEnabled | configuration/flow.rs::SNIFFER_FLAGS/sniffer_form → sniffer.enable |

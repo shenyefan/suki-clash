@@ -1,5 +1,7 @@
 # 设置来源核查清单（2026-10-29基线；2026-11-03更新）
 
+状态更新（2026-11-09）：用户确认文档此前列出的实机验收部分均已完成，相关待验收项关闭。下文各次检查中的“未验收／待验收”保留为当时记录；本次未重新运行验收。实现范围、暂缓项及能力限制以[当前功能对照](../../reference/cv/cv-gap-checklist.md)为准。
+
 ## 本批清理结果（2026-11-03）
 
 原155项为当时审计基线，以下逐项表保留来源证据，不代表当前仍有全部入口。S01已删除8项无消费者入口、默认值与依赖：AutoCheckUpdate、PriorityIndex、DiffWorkDir、UseHotReloadProfile、HotReloadProfileAutoCloseConnection、TestProfileOnStart、PauseSsidText、DisableDnsOnPauseSsid。AutoCloseConnection及绕过设置保留。Gist旧运行配置同步字段替换为完整备份管理入口；Token／Age私钥使用独立安全存储，备份配置保存于settings.json的backup分组，未增加明文凭据入口。本次进一步删除 WebDAV、未接入自动备份、托盘自定义图标／颜色模式、代理组工具位置、重复服务入口和版本复制。同步仅保留 Gist，并与维护合并。当前全部开关的执行消费者另见[开关接入复核](settings-switch-wiring.md)。

@@ -76,7 +76,7 @@ hosts: {}
 
 ## 凭据
 
-内核控制凭据保存在受限权限的原生内核设置文件。订阅和覆写的 Authorization、Age 私钥使用各自的安全存储命名空间，不进入程序设置或索引。GitHub/WebDAV 等未接入的凭据存储保持明确拒绝，不明文保存。
+内核控制凭据保存在受限权限的原生内核设置文件。订阅和覆写的 Authorization、Age 私钥使用各自的安全存储命名空间，不进入程序设置或索引。Gist 的 Token／Age 私钥使用独立安全存储；WebDAV 不支持，不提供明文凭据入口。
 
 DNS、嗅探与完整文档编辑的热应用和布局规则见 [flow.md](../configuration/flow.md)。
 

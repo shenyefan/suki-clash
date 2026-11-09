@@ -110,5 +110,12 @@
       "diff_manifest": "cv-reference-sync-2026-11-05.csv",
       "report": "cv-update-comparison-2026-11-05.md"
     }
-  ]
+  ],
+  "local_observation": {
+    "observed_on": "2026-11-09",
+    "directory": "clash-verge-rev-dev",
+    "git_commit": "cd5156fb8a1363b1d9b3bb09fa034e8068350fa3",
+    "working_tree_clean": true,
+    "scope": "Local HEAD and status only; used by the 2026-11-09 targeted review. No upstream synchronization or full snapshot hash recomputation; local and upstream objects above remain the historical 2026-11-05 baseline."
+  }
 }

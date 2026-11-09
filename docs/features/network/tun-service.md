@@ -1,5 +1,7 @@
 # TUN 与常驻服务
 
+状态更新（2026-11-09）：用户确认文档此前列出的实机验收部分均已完成，相关待验收项关闭。下文各次检查中的“未验收／待验收”保留为当时记录；本次未重新运行验收。实现范围、暂缓项及能力限制以[当前功能对照](../../reference/cv/cv-gap-checklist.md)为准。
+
 参考本地 CV 2.5.9 的 TUN 合成、服务生命周期、owner identity、runtime bundle，以及 service-ipc v2.7.6；同时核对 ClashSuki 的 TUN 串行切换与回退。服务源码保存在 `platform-service/`，保留 GPL-3.0 许可证及来源说明，使用 Suki 独立服务名、目录和 IPC，不接管 CV 服务。
 
 ## 执行与权限

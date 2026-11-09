@@ -1,5 +1,7 @@
 # Velopack 交付与更新
 
+状态更新（2026-11-09）：用户确认文档此前列出的实机验收部分均已完成，相关待验收项关闭。下文各次检查中的“未验收／待验收”保留为当时记录；本次未重新运行验收。实现范围、暂缓项及能力限制以[当前功能对照](../reference/cv/cv-gap-checklist.md)为准。
+
 本项目首次接入固定使用 Rust SDK／`vpk` **1.2.161**。Velopack处理应用分发和更新；GPUI Kit仍负责应用界面，Mihomo与独立平台服务保持现有所有权。参考依据为[官方Rust接入](https://docs.velopack.io/getting-started/rust)、[官方打包参数](https://docs.velopack.io/packaging/overview)、[GitHub发布](https://docs.velopack.io/distributing/github-actions)及[1.2.161源码](https://github.com/velopack/velopack/tree/1.2.161)，不使用仅新版本提供的参数。
 
 ## GitHub自动构建
