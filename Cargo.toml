@@ -65,7 +65,7 @@ system-configuration = "0.8.0"
 [target.'cfg(target_os = "linux")'.dependencies]
 zbus = "6.1.0"
 # GPUI's Linux portals use async-io; ashpd forbids enabling tokio alongside it.
-oo7 = { version = "0.6.0", default-features = false, features = ["async-std", "native_crypto"] }
+oo7 = { version = "0.7.0", default-features = false, features = ["async-std", "native_crypto"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
