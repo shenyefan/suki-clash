@@ -17,21 +17,6 @@ use gpui_kit::{
     *,
 };
 
-pub(super) enum DeferredAction {
-    ResetProgram,
-    FlushFakeIp,
-    Service(crate::core::ServiceAction),
-}
-
-impl DeferredAction {
-    fn label(&self) -> &'static str {
-        match self {
-            Self::ResetProgram => "重置程序",
-            Self::FlushFakeIp => "清空 Fake-IP 缓存",
-            Self::Service(_) => "卸载服务",
-        }
-    }
-}
 impl SettingsPage {
     pub(super) fn runtime_view(&self, window: &mut Window, cx: &mut Context<Self>) -> Div {
         if self.kind == SettingsKind::SysProxy {
@@ -220,28 +205,7 @@ impl SettingsPage {
                 },
             )
     }
-    pub(super) fn defer_destructive(
-        &mut self,
-        action: &'static str,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let action = match action {
-            "重置程序" => DeferredAction::ResetProgram,
-            "清空 Fake-IP 缓存" => DeferredAction::FlushFakeIp,
-            _ => {
-                ui::show_error("操作不可用".into(), window, cx);
-                return;
-            }
-        };
-        self.defer_action(action, window, cx);
-    }
-    pub(super) fn defer_action(
-        &mut self,
-        action: DeferredAction,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    pub(super) fn defer_fake_ip(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.pending_action.is_some() {
             ui::show_error("已有待执行操作，请先完成或撤销".into(), window, cx);
             return;
@@ -249,7 +213,7 @@ impl SettingsPage {
         let owner = cx.weak_entity();
         let note = ui::notifications::undo(
             window,
-            format!("将在 5 秒后{}", action.label()),
+            "将在 5 秒后清空 Fake-IP 缓存",
             cx,
             move |_, cx| {
                 let _ = owner.update(cx, |this, cx| {
@@ -270,17 +234,7 @@ impl SettingsPage {
                 if let Some(note) = note {
                     note.update(cx, |note, cx| note.dismiss(window, cx));
                 }
-                match action {
-                    DeferredAction::ResetProgram => crate::core::reset_program(window, cx),
-                    DeferredAction::FlushFakeIp => {
-                        crate::core::request(crate::core::Command::FlushFakeIp, window, cx)
-                    }
-                    DeferredAction::Service(action) => crate::core::request(
-                        crate::core::Command::PlatformService(action),
-                        window,
-                        cx,
-                    ),
-                }
+                crate::core::request(crate::core::Command::FlushFakeIp, window, cx);
                 cx.notify();
             });
         }));
@@ -297,7 +251,7 @@ impl SettingsPage {
             "重启内核" => Some(crate::core::Command::Restart),
             "校验配置" => Some(crate::core::Command::Validate),
             "清空 Fake-IP 缓存" => {
-                self.defer_destructive("清空 Fake-IP 缓存", window, cx);
+                self.defer_fake_ip(window, cx);
                 return;
             }
             "更新 GeoData" => Some(crate::core::Command::UpdateGeo),

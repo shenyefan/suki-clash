@@ -126,6 +126,7 @@ pub(crate) struct Snapshot {
     generation: u64,
     request_id: Option<u64>,
     phase: Phase,
+    reconnecting: bool,
     pid: Option<u32>,
     version: Option<String>,
     core_installed: Option<bool>,
@@ -260,6 +261,9 @@ impl Snapshot {
             && self.request_id >= previous.request_id
     }
     pub(crate) fn label(&self) -> &'static str {
+        if self.phase == Phase::Ready && self.reconnecting {
+            return "正在重连";
+        }
         if self.core_installed == Some(false)
             && self.pid.is_none()
             && matches!(self.phase, Phase::Stopped | Phase::Failed)

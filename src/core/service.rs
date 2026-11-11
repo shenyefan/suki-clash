@@ -419,6 +419,7 @@ pub(super) struct Actor {
     versions_cached: Option<std::time::Instant>,
     geo_unknown: bool,
     resources_requested: bool,
+    resource_error: Option<String>,
     rules_attempted: Option<(u64, u64)>,
     resources_refreshed: std::time::Instant,
     pub(super) override_attempts: std::collections::BTreeMap<u64, i64>,
@@ -435,6 +436,8 @@ pub(super) struct Actor {
     health_failures: u8,
     owner_failures: u8,
     missing_core_failures: u8,
+    service_disconnect: Option<String>,
+    core_disconnect: Option<String>,
     pub(super) selection_recovery: Option<super::proxy_control::SelectionRecovery>,
     provider_sync: Option<ProviderSyncPlan>,
     provider_sync_identity: Option<(u64, u64)>,
@@ -467,6 +470,7 @@ impl Actor {
             versions_cached: None,
             geo_unknown: false,
             resources_requested: false,
+            resource_error: None,
             rules_attempted: None,
             resources_refreshed: std::time::Instant::now(),
             profile_attempts: Default::default(),
@@ -483,6 +487,8 @@ impl Actor {
             health_failures: 0,
             owner_failures: 0,
             missing_core_failures: 0,
+            service_disconnect: None,
+            core_disconnect: None,
             selection_recovery: None,
             provider_sync: None,
             provider_sync_identity: None,
@@ -510,6 +516,8 @@ impl Actor {
         }
         self.snapshot.revision = self.snapshot.revision.saturating_add(1);
         self.snapshot.phase = phase;
+        self.snapshot.reconnecting = phase == Phase::Ready
+            && (self.service_disconnect.is_some() || self.core_disconnect.is_some());
         if phase == Phase::Failed {
             self.snapshot.tun = None;
         }
@@ -543,6 +551,18 @@ impl Actor {
             notices.push(warning.clone());
             self.snapshot.notice = Some(notices.join("\n"));
         }
+        let disconnect = [
+            self.service_disconnect.as_deref(),
+            self.core_disconnect.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join("\n");
+        if !disconnect.is_empty() {
+            notices.push(disconnect);
+            self.snapshot.notice = Some(notices.join("\n"));
+        }
         self.sync_monitor();
         if phase == Phase::Ready && self.running.is_some() {
             self.queue_provider_sync();
@@ -570,6 +590,25 @@ impl Actor {
     pub(super) fn progress(&mut self, label: &str) {
         self.snapshot.progress = Some(super::TransferProgress::pending(label));
         self.publish(self.snapshot.phase, None);
+    }
+
+    fn update_disconnect(&mut self, service: Option<String>, core: Option<String>) {
+        if self.service_disconnect == service && self.core_disconnect == core {
+            return;
+        }
+        if self.service_disconnect.is_some() && service.is_none() {
+            log::info!("后台服务状态获取已恢复");
+        }
+        if self.core_disconnect.is_some() && core.is_none() {
+            log::info!("内核状态获取已恢复");
+        }
+        self.service_disconnect = service;
+        self.core_disconnect = core;
+        self.publish_snapshot(
+            self.snapshot.phase,
+            self.snapshot.error.clone(),
+            self.snapshot.error_logged,
+        );
     }
 
     async fn run(
@@ -707,9 +746,10 @@ impl Actor {
                     }
                     self.snapshot.request_id = Some(request.id);
                     let operation_name = request.command.operation();
-                    log::debug!("开始{}，内核代次 {}，配置修订 {}", operation_name, self.snapshot.generation, self.snapshot.monitor_epoch);
+                    log::debug!("开始{operation_name}");
+                    log::trace!("请求 {}，内核代次 {}，配置修订 {}", request.id, self.snapshot.generation, self.snapshot.monitor_epoch);
                     if let Command::Settings { kind, patch } = &request.command {
-                        log::debug!("修改 {} 设置，涉及字段 {}", kind.id(), patch.keys().cloned().collect::<Vec<_>>().join("、"));
+                        log::trace!("修改 {} 设置，字段 {}", kind.id(), patch.keys().cloned().collect::<Vec<_>>().join("、"));
                     }
                     self.snapshot.operation_active=true;
                     self.snapshot.operation_committed=false;
@@ -805,7 +845,12 @@ impl Actor {
                             Command::UpdateGeo => self.update_geo().await,
                             Command::UpdateDatabase(database) => self.update_database(database).await,
                             Command::Rules => self.refresh_rules().await,
-                            Command::Resources => { self.resources_requested = true; self.refresh_resources().await },
+                            Command::Resources => {
+                                self.resources_requested = true;
+                                let result = self.refresh_resources().await;
+                                self.resource_error = result.as_ref().err().cloned();
+                                result
+                            },
                             Command::UpdateProviders { kind, name, generation } => self.update_providers(kind, name, generation).await,
                             Command::CheckUpdate(selection) => self.check_update(selection).await,
                             Command::Install(selection) => self.install(selection).await,
@@ -833,10 +878,13 @@ impl Actor {
                     self.snapshot.operation_active=false;
                     self.snapshot.progress=None;
                     if let Err(error) = result {
-                        if self.snapshot.operation_committed {
-                            log::error!("{operation_name}：{error}；部分更改已提交");
+                        if matches!(&request.command, Command::Resources) {
+                            log::error!("外部资源获取失败");
+                            log::trace!("外部资源获取失败，原因 {error}");
+                        } else if self.snapshot.operation_committed {
+                            log::error!("{error}（{operation_name}，部分更改已提交）");
                         } else {
-                            log::error!("{operation_name}：{error}");
+                            log::error!("{error}（{operation_name}）");
                         }
                         // Preparation failure must preserve an existing ready child.
                         let phase = if matches!(&request.command, Command::Gist(_) | Command::LocalBackup(_) | Command::AppUpdate(_)) { self.snapshot.phase } else if self.running.is_some() && self.snapshot.phase == Phase::Ready { Phase::Ready } else { Phase::Failed };
@@ -867,11 +915,16 @@ impl Actor {
                     if visible && self.resources_requested
                         && self.resources_refreshed.elapsed() >= Duration::from_secs(10)
                         && self.snapshot.phase == Phase::Ready {
+                        let was_failed = self.snapshot.resources.error.is_some();
                         match self.refresh_resources().await {
-                            Ok(()) => self.publish(self.snapshot.phase, None),
+                            Ok(()) => {
+                                if was_failed { log::info!("外部资源获取已恢复"); }
+                                self.publish_snapshot(self.snapshot.phase, self.snapshot.error.clone(), self.snapshot.error_logged);
+                            },
                             Err(error) => {
-                                self.resources_requested = false;
-                                self.publish(self.snapshot.phase, Some(error));
+                                if !was_failed { log::debug!("外部资源获取失败"); }
+                                log::trace!("外部资源获取失败，原因 {error}");
+                                self.publish_snapshot(self.snapshot.phase, self.snapshot.error.clone(), self.snapshot.error_logged);
                             }
                         }
                     }
@@ -984,6 +1037,7 @@ impl Actor {
             Ok(_) => {
                 self.owner_failures = 0;
                 let pid = running.child.id();
+                self.update_disconnect(None, self.core_disconnect.clone());
                 if self.snapshot.pid != pid {
                     self.snapshot.pid = pid;
                     self.publish_snapshot(
@@ -994,32 +1048,30 @@ impl Actor {
                 }
             }
             Err(error) => {
-                let unreadable = error
-                    .downcast_ref::<super::privileged::SessionFailure>()
-                    .is_none();
-                self.owner_failures = (self.owner_failures + 1).min(3);
-                let mut error = error.to_string();
-                if unreadable {
-                    log::debug!("服务状态读取失败：{error:#}");
-                    if self.owner_failures < 3 {
-                        return;
+                let unreachable = suki_service::is_unreachable(&error);
+                self.owner_failures = self.owner_failures.saturating_add(1);
+                let error = error.to_string();
+                if unreachable {
+                    log::trace!("后台服务状态获取失败，原因 {error}");
+                    self.update_disconnect(
+                        Some("后台服务状态获取失败".into()),
+                        self.core_disconnect.clone(),
+                    );
+                    #[cfg(windows)]
+                    if self.owner_failures >= 3
+                        && matches!(suki_service::service_transport_expected().await, Ok(false))
+                    {
+                        let error = match self.release_unreachable_runtime().await {
+                            Ok(()) => "后台服务已停止".to_owned(),
+                            Err(cleanup) => {
+                                crate::failure::join(["后台服务已停止".to_owned(), cleanup])
+                            }
+                        };
+                        self.publish(Phase::Failed, Some(error));
                     }
-                    // Like CV's owner watch, an unreadable service is not proof that
-                    // its owned core has stopped. Verify the private endpoint first.
-                    match running.launch.client.version().await {
-                        Ok(_) => {
-                            self.owner_failures = 0;
-                            return;
-                        }
-                        Err(core_error) => {
-                            error = crate::failure::scoped([
-                                ("服务状态", error),
-                                ("内核端点", core_error),
-                            ]);
-                        }
-                    }
+                    return;
                 }
-                let error = match self.mark_runtime_failed().await {
+                let error = match self.release_unreachable_runtime().await {
                     Ok(()) => error,
                     Err(cleanup) => crate::failure::join([error, cleanup]),
                 };
@@ -1048,6 +1100,7 @@ impl Actor {
         match result {
             Ok((version, tun)) => {
                 self.health_failures = 0;
+                self.update_disconnect(self.service_disconnect.clone(), None);
                 if self.snapshot.version.as_ref() != Some(&version)
                     || self.snapshot.tun != Some(tun)
                 {
@@ -1061,18 +1114,49 @@ impl Actor {
                 }
             }
             Err(error) => {
-                self.health_failures += 1;
+                self.health_failures = self.health_failures.saturating_add(1);
                 if self.health_failures < 3 {
-                    log::debug!("内核状态读取失败：{error}");
+                    log::trace!("{error}（内核状态，将自动重试）");
                     return;
                 }
                 self.snapshot.tun = None;
-                let error = match self.mark_runtime_failed().await {
-                    Ok(()) => format!("{error}；已停止自动检查，请停止后重试"),
-                    Err(cleanup) => crate::failure::join([error, cleanup]),
-                };
-                self.publish(Phase::Failed, Some(error));
+                log::trace!("内核状态获取失败，原因 {error}");
+                self.update_disconnect(
+                    self.service_disconnect.clone(),
+                    Some("内核状态获取失败".into()),
+                );
             }
+        }
+    }
+
+    async fn release_unreachable_runtime(&mut self) -> Result<(), String> {
+        self.service_disconnect = None;
+        self.core_disconnect = None;
+        let mut errors = Vec::new();
+        if let Err(error) = self.mark_runtime_failed().await {
+            errors.push(error);
+        }
+        // A new service session stops the previous core before starting its replacement.
+        // A local child must be reaped before releasing its execution guard.
+        if let Some(running) = self.running.as_mut()
+            && let Process::Local(child) = &mut running.child
+            && let Err(error) = terminate(child).await
+        {
+            errors.push(error);
+            return Err(crate::failure::join(errors));
+        }
+        if let Some(mut running) = self.running.take()
+            && let Some(output) = running.output.take()
+        {
+            output.abort();
+            let _ = output.await;
+        }
+        #[cfg(target_os = "macos")]
+        self.system_proxy.detach_service_session();
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(crate::failure::join(errors))
         }
     }
 
@@ -1511,6 +1595,11 @@ impl Actor {
             self.snapshot.resources.error = Some(error.clone());
             return Err(error);
         }
+        if self.resource_error.is_some() && self.snapshot.error == self.resource_error {
+            self.snapshot.error = None;
+            self.snapshot.error_logged = false;
+        }
+        self.resource_error = None;
         Ok(())
     }
     async fn update_providers(
@@ -2440,7 +2529,7 @@ impl Actor {
                 self.publish(Phase::Ready, None);
                 return Ok(());
             }
-            return Err("已有内核进程但尚未确认就绪，请停止后重试".into());
+            self.stop_owned().await?;
         }
         let repository = crate::storage::Repository::open(self.paths.clone())
             .map_err(crate::logging::error_message)?;
@@ -2761,6 +2850,7 @@ impl Actor {
         self.snapshot.system_proxy = self.system_proxy.clear().await?;
         if self.running.is_some() {
             self.publish(Phase::Stopping, None);
+            self.log_target.send_replace(None);
             let running = self.running.as_mut().ok_or("内核进程不存在")?;
             // Child handle is authoritative. Never discover/kill by process name or PID alone.
             running.child.stop().await?;
@@ -2780,6 +2870,8 @@ impl Actor {
                 }
             }
         }
+        self.service_disconnect = None;
+        self.core_disconnect = None;
         Ok(self.running.take().map(|running| running.launch))
     }
 

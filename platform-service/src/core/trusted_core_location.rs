@@ -121,7 +121,7 @@ fn check_platform_location(canonical: &Path) -> Result<(), ServiceError> {
 
 #[cfg(all(windows, not(feature = "test")))]
 pub(crate) fn require_trusted_service_registration(
-    service: &platform_lib::service::Service,
+    service: &windows_service::service::Service,
 ) -> Result<(), ServiceError> {
     windows_location::check_service_registration(service)
 }
@@ -220,13 +220,13 @@ mod windows_location {
 
     #[cfg(not(feature = "test"))]
     pub(super) fn check_service_registration(
-        service: &platform_lib::service::Service,
+        service: &windows_service::service::Service,
     ) -> Result<(), ServiceError> {
         use windows_sys::Win32::Security::Authorization::SE_SERVICE;
 
         let label = format!("registered service {:?}", crate::WINDOWS_SERVICE_NAME);
         let security = SecurityInfo::read(service.raw_handle().cast(), SE_SERVICE, &label)?;
-        let rights = platform_lib::service::ServiceAccess::CHANGE_CONFIG.bits()
+        let rights = windows_service::service::ServiceAccess::CHANGE_CONFIG.bits()
             | DELETE
             | WRITE_DAC
             | WRITE_OWNER

@@ -27,7 +27,7 @@ pub(crate) fn scoped<S: AsRef<str>>(errors: impl IntoIterator<Item = (S, String)
     join(
         causes
             .into_iter()
-            .map(|(scopes, message)| format!("{}：{message}", scopes.join("、"))),
+            .map(|(scopes, message)| format!("[{}] {message}", scopes.join("、"))),
     )
 }
 #[cfg(test)]
@@ -39,7 +39,7 @@ mod tests {
                 ("出口请求", "HTTP 连接失败".into()),
                 ("出口 IP", "HTTP 连接失败".into())
             ]),
-            "出口请求、出口 IP：HTTP 连接失败"
+            "[出口请求、出口 IP] HTTP 连接失败"
         );
         assert_eq!(
             super::join(["请求失败", "请求失败", "旧配置恢复失败"]),
@@ -60,7 +60,7 @@ mod tests {
                 ("恢复旧内核配置", "控制通道已关闭".into()),
                 ("恢复来源", reason.clone()),
             ]),
-            format!("应用设置、恢复旧设置、恢复来源：{reason}；恢复旧内核配置：控制通道已关闭")
+            format!("[应用设置、恢复旧设置、恢复来源] {reason}；[恢复旧内核配置] 控制通道已关闭")
         );
     }
 }

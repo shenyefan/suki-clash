@@ -154,7 +154,7 @@ pub fn uninstall(service: &Path) -> Result<()> {
     let warning = elevate(
         &service,
         &arguments,
-        unsafe { platform_lib::getegid() },
+        unsafe { libc::getegid() },
         "卸载 Suki Clash 后台服务",
     )?;
     #[cfg(windows)]
@@ -307,7 +307,7 @@ pub fn prepare_install(mut arguments: impl Iterator<Item = OsString>) -> Result<
     let mut core_only = false;
     let mut prompt = "Install Suki Clash service and approved cores".to_owned();
     #[cfg(unix)]
-    let mut gid = unsafe { platform_lib::getgid() };
+    let mut gid = unsafe { libc::getgid() };
     while let Some(argument) = arguments.next() {
         match argument.to_str() {
             Some("--ensure") => ensure = true,
@@ -418,7 +418,7 @@ fn shell_quote(value: &std::ffi::OsStr) -> String {
 
 #[cfg(all(unix, feature = "client"))]
 fn elevate(installer: &Path, arguments: &[OsString], gid: u32, prompt: &str) -> Result<bool> {
-    let status = if unsafe { platform_lib::geteuid() } == 0 {
+    let status = if unsafe { libc::geteuid() } == 0 {
         Command::new(installer)
             .args(arguments)
             .env("CLASH_VERGE_SERVICE_GID", gid.to_string())

@@ -1,11 +1,7 @@
 //! Active subscription identity is persisted; every start reloads the current source.
-#[cfg(test)]
-use crate::storage::DirectoryKind;
 use crate::storage::{AppPaths, Namespace, Repository};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
-#[cfg(test)]
-use tokio::io::AsyncReadExt as _;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct ProfileIdentity {
@@ -113,31 +109,6 @@ impl Source {
         if let Some(id) = selection.selected_profile_id {
             return Self::from_profile(paths, id);
         }
-        // Explicit test fixtures may supply a local source. Release startup has
-        // only the selected subscription and settings as its configuration inputs.
-        #[cfg(test)]
-        {
-            let path = paths
-                .directory(DirectoryKind::Config)
-                .join("runtime-source.yaml");
-            match read(&path, super::INPUT_LIMIT).await {
-                Ok(bytes) => {
-                    return Ok(Self {
-                        profile: None,
-                        content: String::from_utf8(bytes).map_err(|error| {
-                            crate::logging::rejected("测试来源必须为 UTF-8", error)
-                        })?,
-                    });
-                }
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(error) => {
-                    return Err(crate::logging::diagnostic_error(
-                        "无法读取测试配置来源".into(),
-                        error,
-                    ));
-                }
-            }
-        }
         Self::basic(paths)
     }
 
@@ -160,14 +131,4 @@ impl Source {
     pub(crate) fn commit(&self, paths: &AppPaths) -> Result<(), String> {
         select_profile(paths, self.profile.as_ref().map(ProfileIdentity::id))
     }
-}
-#[cfg(test)]
-async fn read(path: &std::path::Path, limit: u64) -> std::io::Result<Vec<u8>> {
-    let file = tokio::fs::File::open(path).await?;
-    let mut bytes = Vec::new();
-    file.take(limit + 1).read_to_end(&mut bytes).await?;
-    if bytes.len() as u64 > limit {
-        return Err(std::io::Error::other("来源超过上限"));
-    }
-    Ok(bytes)
 }

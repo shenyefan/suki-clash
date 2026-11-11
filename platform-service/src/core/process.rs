@@ -37,18 +37,18 @@ fn parse_linux_process_stat(stat: &str) -> Result<(char, u64)> {
 }
 
 #[cfg(target_os = "macos")]
-fn macos_process_info(pid: i32) -> std::io::Result<platform_lib::proc_bsdinfo> {
-    let mut info = unsafe { std::mem::zeroed::<platform_lib::proc_bsdinfo>() };
+fn macos_process_info(pid: i32) -> std::io::Result<libc::proc_bsdinfo> {
+    let mut info = unsafe { std::mem::zeroed::<libc::proc_bsdinfo>() };
     let info_len = unsafe {
-        platform_lib::proc_pidinfo(
+        libc::proc_pidinfo(
             pid,
-            platform_lib::PROC_PIDTBSDINFO,
+            libc::PROC_PIDTBSDINFO,
             0,
-            (&mut info as *mut platform_lib::proc_bsdinfo).cast(),
-            std::mem::size_of::<platform_lib::proc_bsdinfo>() as i32,
+            (&mut info as *mut libc::proc_bsdinfo).cast(),
+            std::mem::size_of::<libc::proc_bsdinfo>() as i32,
         )
     };
-    if info_len == std::mem::size_of::<platform_lib::proc_bsdinfo>() as i32 {
+    if info_len == std::mem::size_of::<libc::proc_bsdinfo>() as i32 {
         Ok(info)
     } else {
         Err(std::io::Error::last_os_error())
@@ -150,13 +150,12 @@ pub(super) fn process_identity(pid: u32) -> Result<Option<ProcessIdentity>> {
                 };
             }
         };
-        if info.pbi_status == platform_lib::SZOMB {
+        if info.pbi_status == libc::SZOMB {
             return Ok(None);
         }
-        let mut path = vec![0u8; platform_lib::PROC_PIDPATHINFO_MAXSIZE as usize];
-        let path_len = unsafe {
-            platform_lib::proc_pidpath(unix_pid, path.as_mut_ptr().cast(), path.len() as u32)
-        };
+        let mut path = vec![0u8; libc::PROC_PIDPATHINFO_MAXSIZE as usize];
+        let path_len =
+            unsafe { libc::proc_pidpath(unix_pid, path.as_mut_ptr().cast(), path.len() as u32) };
         if path_len <= 0 {
             let error = std::io::Error::last_os_error();
             return if is_process_alive(pid) {
@@ -180,7 +179,7 @@ pub(super) fn process_identity(pid: u32) -> Result<Option<ProcessIdentity>> {
                 };
             }
         };
-        if confirmed.pbi_status == platform_lib::SZOMB {
+        if confirmed.pbi_status == libc::SZOMB {
             return Ok(None);
         }
         if (confirmed.pbi_start_tvsec, confirmed.pbi_start_tvusec)
@@ -222,9 +221,9 @@ pub(super) fn is_process_alive(pid: u32) -> bool {
         let Some(unix_pid) = checked_unix_pid(pid) else {
             return false;
         };
-        let result = unsafe { platform_lib::kill(unix_pid, 0) };
-        let exists = result == 0
-            || std::io::Error::last_os_error().raw_os_error() == Some(platform_lib::EPERM);
+        let result = unsafe { libc::kill(unix_pid, 0) };
+        let exists =
+            result == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM);
         if !exists {
             return false;
         }
@@ -240,8 +239,8 @@ pub(super) fn is_process_alive(pid: u32) -> bool {
         #[cfg(target_os = "macos")]
         {
             match macos_process_info(unix_pid) {
-                Ok(info) => info.pbi_status != platform_lib::SZOMB,
-                Err(error) => error.raw_os_error() != Some(platform_lib::ESRCH),
+                Ok(info) => info.pbi_status != libc::SZOMB,
+                Err(error) => error.raw_os_error() != Some(libc::ESRCH),
             }
         }
 
@@ -317,8 +316,8 @@ async fn terminate_process_inner(
             process_identity(pid).ok().flatten()
         };
         warn!("正在终止进程 {}", pid);
-        if unsafe { platform_lib::kill(unix_pid, platform_lib::SIGTERM) } != 0
-            && std::io::Error::last_os_error().raw_os_error() != Some(platform_lib::ESRCH)
+        if unsafe { libc::kill(unix_pid, libc::SIGTERM) } != 0
+            && std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
         {
             return Err(std::io::Error::last_os_error().into());
         }
@@ -340,8 +339,8 @@ async fn terminate_process_inner(
             }
         }
         warn!("进程 {} 在 {:?} 内未退出，发送 SIGKILL", pid, grace);
-        if unsafe { platform_lib::kill(unix_pid, platform_lib::SIGKILL) } != 0
-            && std::io::Error::last_os_error().raw_os_error() != Some(platform_lib::ESRCH)
+        if unsafe { libc::kill(unix_pid, libc::SIGKILL) } != 0
+            && std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
         {
             return Err(std::io::Error::last_os_error().into());
         }

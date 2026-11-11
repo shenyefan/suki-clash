@@ -52,7 +52,17 @@ fn remove_core_firewall_rules(cores: &std::path::Path) {
                     || extension.eq_ignore_ascii_case(suki_clash_service::CORE_DISPLACED_EXTENSION)
             });
             if !bookkeeping && entry.file_type().is_ok_and(|kind| kind.is_file()) {
-                names.insert(entry.file_name());
+                if directory == records {
+                    if path
+                        .extension()
+                        .is_some_and(|extension| extension == "record")
+                        && let Some(name) = path.file_stem()
+                    {
+                        names.insert(name.to_os_string());
+                    }
+                } else {
+                    names.insert(entry.file_name());
+                }
             }
         }
     }
@@ -66,7 +76,9 @@ fn remove_core_firewall_rules(cores: &std::path::Path) {
         }
         match shared::netsh_firewall(&["delete", "rule", &format!("name={name}")]) {
             Ok(()) => {
-                let record = records.join(&file_name);
+                let Ok(record) = shared::core_firewall_record(&cores.join(&file_name)) else {
+                    continue;
+                };
                 if let Err(error) = std::fs::remove_file(&record)
                     && error.kind() != std::io::ErrorKind::NotFound
                 {
@@ -239,12 +251,12 @@ pub(super) fn run(debug: bool) -> Result<(), Error> {
 
 #[cfg(windows)]
 pub(super) fn run(_debug: bool) -> anyhow::Result<()> {
-    use platform_lib::{
+    use std::{thread, time::Duration};
+    use windows_service::{
         Error as WindowsServiceError,
         service::{ServiceAccess, ServiceState},
         service_manager::{ServiceManager, ServiceManagerAccess},
     };
-    use std::{thread, time::Duration};
 
     const ERROR_SERVICE_DOES_NOT_EXIST: i32 = 1060;
     const ERROR_SERVICE_NOT_ACTIVE: i32 = 1062;

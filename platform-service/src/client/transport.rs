@@ -21,7 +21,7 @@ pub(super) async fn send(
             .map_err(RequestError::from)?;
         #[cfg(windows)]
         let stream = {
-            // CV's kode-bridge transport waits through the accept/create-next
+            // The local pipe transport can briefly be busy during the accept/create-next
             // listener gap. Only retry opening: the request has not been sent.
             let stream = loop {
                 match tokio::net::windows::named_pipe::ClientOptions::new().open(path) {
@@ -33,7 +33,7 @@ pub(super) async fn send(
                 }
             };
             #[cfg(not(feature = "test"))]
-            super::windows_identity::verify_pipe(&stream)?;
+            super::windows_identity::verify_pipe(&stream).await?;
             stream
         };
         let (mut sender, connection) = http1::handshake(TokioIo::new(stream))
@@ -73,7 +73,7 @@ pub(super) async fn send(
     };
     let result = tokio::time::timeout(timeout, work)
         .await
-        .unwrap_or_else(|_| Err(RequestError::Unreachable("等待服务响应超时".into())));
+        .unwrap_or_else(|_| Err(RequestError::Unreachable("响应超时".into())));
     match (result, received) {
         (Err(_), Some(status)) if !status.is_success() => Err(RequestError::Rejected {
             code: status.as_u16(),
@@ -170,9 +170,7 @@ mod windows_tests {
         let error = send(Path::new(&pipe), request(), Duration::from_millis(80))
             .await
             .unwrap_err();
-        assert!(
-            matches!(error, RequestError::Unreachable(ref message) if message.contains("等待服务响应超时"))
-        );
+        assert!(matches!(error, RequestError::Unreachable(ref message) if message == "响应超时"));
         assert!(started.elapsed() >= Duration::from_millis(70));
         assert!(started.elapsed() < Duration::from_secs(1));
         drop((occupied, first));

@@ -198,7 +198,7 @@ fn absent_or_empty_indexes_leave_source_intact() {
 
 #[tokio::test]
 async fn selected_profile_reloads_current_source_and_bad_selection_never_falls_back() {
-    use crate::storage::{AppPaths, DirectoryKind, Namespace, Repository};
+    use crate::storage::{AppPaths, Namespace, Repository};
     let root = tempfile::tempdir().unwrap();
     let paths = AppPaths::isolated(root.path());
     let store = Repository::open(paths.clone()).unwrap();
@@ -231,13 +231,6 @@ async fn selected_profile_reloads_current_source_and_bad_selection_never_falls_b
     std::fs::write(
         &selection,
         br#"{"schema_version":1,"profiles":{"selected_profile_id":99}}"#,
-    )
-    .unwrap();
-    std::fs::write(
-        paths
-            .directory(DirectoryKind::Config)
-            .join("runtime-source.yaml"),
-        "mode: direct",
     )
     .unwrap();
     assert!(Source::load(&paths).await.is_err());
@@ -273,7 +266,7 @@ fn cv_lowercases_root_keys_but_preserves_nested_names_and_replaces_hosts() {
 
 #[tokio::test]
 async fn empty_profile_list_produces_a_real_basic_runtime_without_fake_profile_identity() {
-    use crate::storage::{AppPaths, DirectoryKind, Repository};
+    use crate::storage::{AppPaths, Repository};
     let root = tempfile::tempdir().unwrap();
     let paths = AppPaths::isolated(root.path());
     Repository::open(paths.clone()).unwrap();
@@ -284,10 +277,4 @@ async fn empty_profile_list_produces_a_real_basic_runtime_without_fake_profile_i
     assert_eq!(value["mode"], "rule");
     assert!(value.get("proxies").is_none());
     assert!(value.get("rules").is_none());
-    assert!(
-        !paths
-            .directory(DirectoryKind::Config)
-            .join("runtime-source.yaml")
-            .exists()
-    );
 }

@@ -10,7 +10,7 @@
 - `settings/mihomo.yaml`、`dns.yaml`、`sniffer.yaml`：实际持久化的内核原生设置。
 - `settings/settings.json`：订阅元数据和代理选择；`indexes/`：覆写索引和订阅增强。当前格式中增强片段为 YAML 字符串，先按其已定义格式处理，再写回脱敏 JSON。
 - `profiles/`、`overrides/`：订阅和 YAML 覆写；安全凭据文件与任意 JavaScript 正文不进入包。
-- `runtime/`：当前可读取的本地 `core/run-*/candidate.yaml`；另包含存在时的 `runtime-source.yaml`。不越权读取系统服务的受限目录，不把本地候选文件描述为内核 API 的实际回读。
+- `runtime/`：当前可读取的本地 `core/run-*/candidate.yaml`。不越权读取系统服务的受限目录，不把本地候选文件描述为内核 API 的实际回读。
 
 配置脱敏在 ZIP 写入前完成。保留开关、端口、列表顺序和非敏感字段；遮蔽密码、Token、鉴权、自定义请求头、私钥、UUID、代理服务器、订阅 URL 的私有路径／参数，以及应用和用户目录。代理 URI 可能把凭据整体编码在 URL 的 host 部分，因此非公共网络／DNS URL 的地址整体遮蔽。安全凭据库不读取，源文件不改写。
 

@@ -2,9 +2,8 @@ fn main() {
     println!("cargo:rerun-if-changed=../assets/logo.ico");
     println!("cargo:rerun-if-changed=../packaging/windows/service.rc");
     println!("cargo:rerun-if-changed=../packaging/windows/version.rc");
-    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows")
-        && std::env::var_os("CARGO_FEATURE_STANDALONE").is_some()
-    {
+    #[cfg(feature = "standalone")]
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
         let icon = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../assets/logo.ico");
         let icon = format!(
             "SUKI_APP_ICON=\"{}\"",

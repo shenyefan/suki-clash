@@ -6,6 +6,218 @@ use std::{
     time::{Duration, Instant},
 };
 use tokio::{sync::watch, task::JoinHandle};
+
+/// Shared by log and data subscriptions; requests are read-only and each attempt is bounded.
+#[derive(Default)]
+pub(super) struct Reconnect {
+    failures: usize,
+}
+impl Reconnect {
+    pub(super) fn failed(&mut self) -> (bool, Duration) {
+        const DELAYS: [u64; 6] = [1, 2, 4, 8, 15, 30];
+        let first = self.failures == 0;
+        let delay = DELAYS[self.failures.min(DELAYS.len() - 1)];
+        self.failures = (self.failures + 1).min(DELAYS.len());
+        (first, Duration::from_secs(delay))
+    }
+    pub(super) fn recovered(&mut self) -> bool {
+        let failed = self.failures != 0;
+        self.failures = 0;
+        failed
+    }
+}
+
+#[cfg(test)]
+mod retry_policy_tests {
+    use super::*;
+    #[test]
+    fn retry_delay_caps_without_stopping_and_resets_after_recovery() {
+        let mut retry = Reconnect::default();
+        for (index, seconds) in [1, 2, 4, 8, 15, 30, 30, 30].into_iter().enumerate() {
+            assert_eq!(retry.failed(), (index == 0, Duration::from_secs(seconds)));
+        }
+        assert!(retry.recovered());
+        assert_eq!(retry.failed(), (true, Duration::from_secs(1)));
+    }
+}
+
+#[cfg(all(test, windows))]
+mod reconnect_tests {
+    use super::super::{
+        client::{Client, Endpoint},
+        log_stream,
+    };
+    use super::*;
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt},
+        net::windows::named_pipe::ServerOptions,
+    };
+
+    fn target(path: String) -> Target {
+        Target {
+            logs: None,
+            http: Default::default(),
+            client: Client::new(Endpoint::Pipe(path), "secret".into()),
+            generation: 1,
+            epoch: 1,
+            order: vec![],
+            proxy_port: 0,
+            proxy_auth: None,
+            dns_mode: None,
+            proxy_error: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn data_and_logs_recover_after_four_failures_without_target_change() {
+        for logs in [false, true] {
+            let path = format!(r"\\.\pipe\suki-reconnect-{}-{logs}", std::process::id());
+            let mut listener = ServerOptions::new()
+                .first_pipe_instance(true)
+                .create(&path)
+                .unwrap();
+            let mut current = target(path.clone());
+            let server = tokio::spawn(async move {
+                for _ in 0..4 {
+                    listener.connect().await.unwrap();
+                    let next = ServerOptions::new().create(&path).unwrap();
+                    drop(listener);
+                    listener = next;
+                }
+                listener.connect().await.unwrap();
+                let mut socket = tokio_tungstenite::accept_async(listener).await.unwrap();
+                let message = if logs {
+                    r#"{"type":"info","payload":"recovered log"}"#
+                } else {
+                    r#"{"up":1,"down":2}"#
+                };
+                socket
+                    .send(tokio_tungstenite::tungstenite::Message::Text(
+                        message.into(),
+                    ))
+                    .await
+                    .unwrap();
+                while socket.next().await.is_some() {}
+            });
+            let root = tempfile::tempdir().unwrap();
+            let paths = crate::storage::AppPaths::isolated(root.path());
+            paths.create().unwrap();
+            let feed = crate::logging::Feed::default();
+            let (_settings, settings) = watch::channel((vec![], (7, 1024 * 1024)));
+            if logs {
+                current.logs = Some(log_stream::Source {
+                    service: None,
+                    settings,
+                    pipe_suppressed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                });
+            }
+            let (_targets, targets) = watch::channel(Some(current));
+            let (shutdown, cancel) = watch::channel(false);
+            let (sender, mut events) = watch::channel(State::default());
+            let worker = if logs {
+                tokio::spawn(log_stream::run(paths, feed.clone(), targets, cancel))
+            } else {
+                tokio::spawn(run("/traffic", targets, cancel, sender))
+            };
+            tokio::time::timeout(Duration::from_secs(25), async {
+                if logs {
+                    loop {
+                        if feed
+                            .since(0)
+                            .iter()
+                            .any(|record| record.message == "recovered log")
+                        {
+                            break;
+                        }
+                        tokio::time::sleep(Duration::from_millis(10)).await;
+                    }
+                } else {
+                    loop {
+                        events.changed().await.unwrap();
+                        if events.borrow_and_update().packet.is_some() {
+                            break;
+                        }
+                    }
+                }
+            })
+            .await
+            .unwrap();
+            if logs {
+                let records = feed.since(0);
+                assert_eq!(
+                    records
+                        .iter()
+                        .filter(|record| record.level == crate::logging::Level::Warning)
+                        .count(),
+                    1
+                );
+                assert!(
+                    records
+                        .iter()
+                        .any(|record| record.message == "内核日志获取已恢复")
+                );
+            }
+            shutdown.send_replace(true);
+            tokio::time::timeout(Duration::from_secs(2), worker)
+                .await
+                .unwrap()
+                .unwrap();
+            server.abort();
+            let _ = server.await;
+        }
+    }
+
+    #[tokio::test]
+    async fn authentication_rejection_waits_for_target_change() {
+        let path = format!(r"\\.\pipe\suki-rejected-{}", std::process::id());
+        let listener = ServerOptions::new()
+            .first_pipe_instance(true)
+            .create(&path)
+            .unwrap();
+        let mut current = target(path.clone());
+        let (targets, receiver) = watch::channel(Some(current.clone()));
+        let (shutdown, cancel) = watch::channel(false);
+        let mut feed = Feed::start("/traffic", receiver, cancel);
+        listener.connect().await.unwrap();
+        let next = ServerOptions::new().create(&path).unwrap();
+        let mut listener = listener;
+        let mut request = Vec::new();
+        while !request.ends_with(b"\r\n\r\n") {
+            request.push(listener.read_u8().await.unwrap());
+        }
+        listener
+            .write_all(
+                b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            )
+            .await
+            .unwrap();
+        listener.shutdown().await.unwrap();
+        drop(listener);
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                feed.events.changed().await.unwrap();
+                if feed.events.borrow_and_update().error.is_some() {
+                    break;
+                }
+            }
+        })
+        .await
+        .unwrap();
+        assert!(
+            tokio::time::timeout(Duration::from_millis(1500), next.connect())
+                .await
+                .is_err()
+        );
+        current.epoch += 1;
+        targets.send_replace(Some(current));
+        tokio::time::timeout(Duration::from_secs(2), next.connect())
+            .await
+            .unwrap()
+            .unwrap();
+        shutdown.send_replace(true);
+        feed.finish().await;
+    }
+}
 #[derive(Clone)]
 pub(super) struct Packet {
     pub(super) generation: u64,
@@ -71,8 +283,7 @@ async fn run(
     mut shutdown: watch::Receiver<bool>,
     sender: watch::Sender<State>,
 ) {
-    let mut backoff = Duration::from_millis(250);
-    let mut failures = 0u8;
+    let mut reconnect = Reconnect::default();
     let mut scope = None;
     'supervisor: loop {
         if *shutdown.borrow() {
@@ -87,11 +298,15 @@ async fn run(
         if scope != Some((current.generation, current.epoch)) {
             sender.send_replace(State::default());
             scope = Some((current.generation, current.epoch));
-            failures = 0;
+            reconnect = Reconnect::default();
         }
-        let connection = tokio::select! {biased;_=shutdown.changed()=>break,changed=target.changed()=>{if changed.is_err(){break;}backoff=Duration::from_millis(250);continue;},result=current.client.websocket(path)=>result};
+        let mut rejected = false;
+        let connection = tokio::select! {biased;_=shutdown.changed()=>break,changed=target.changed()=>{if changed.is_err(){break;}continue;},result=current.client.websocket(path)=>result};
         let result: Result<(), String> = match connection {
-            Err(error) => Err(error),
+            Err(error) => {
+                rejected = error.rejected;
+                Err(error.message)
+            }
             Ok(mut socket) => {
                 let connected_at = Instant::now();
                 let mut last_data = Instant::now();
@@ -103,7 +318,7 @@ async fn run(
                     let next = tokio::select! {
                         biased;
                         _=shutdown.changed()=>{close(&mut socket).await;break 'supervisor;},
-                        changed=target.changed()=>{close(&mut socket).await;if changed.is_err(){break 'supervisor;}backoff=Duration::from_millis(250);continue 'supervisor;},
+                        changed=target.changed()=>{close(&mut socket).await;if changed.is_err(){break 'supervisor;}continue 'supervisor;},
                         next=tokio::time::timeout(Duration::from_secs(15).saturating_sub(last_data.elapsed()),socket.next())=>next,
                     };
                     use tokio_tungstenite::tungstenite::Message;
@@ -126,11 +341,10 @@ async fn run(
                         Ok(Some(Ok(Message::Close(_)))) | Ok(None) => {
                             break Err("内核 WebSocket 已关闭".into());
                         }
-                        Ok(Some(Err(
-                            error @ tokio_tungstenite::tungstenite::Error::Capacity(_),
-                        ))) => {
+                        Ok(Some(Err(error))) if super::client::SocketError::is_rejected(&error) => {
+                            rejected = true;
                             break Err(crate::logging::rejected(
-                                "内核 WebSocket 消息超过大小上限".into(),
+                                "内核 WebSocket 协议错误".into(),
                                 error,
                             ));
                         }
@@ -147,8 +361,10 @@ async fn run(
                     };
                     last_data = Instant::now();
                     if connected_at.elapsed() >= Duration::from_secs(10) {
-                        backoff = Duration::from_millis(250);
-                        failures = 0;
+                        reconnect.recovered();
+                    }
+                    if sender.borrow().error.is_some() {
+                        log::trace!("内核流已恢复，接口 {path}");
                     }
                     sender.send_replace(State {
                         generation: current.generation,
@@ -164,23 +380,26 @@ async fn run(
                 }
             }
         };
-        failures += 1;
+        let (_, delay) = reconnect.failed();
         if let Err(error) = result {
-            log::debug!("内核流 {path} 连接失败（{failures}/3）：{error}");
+            log::trace!("内核流获取失败，接口 {path}，原因 {error}");
             sender.send_replace(State {
                 generation: current.generation,
                 epoch: current.epoch,
                 packet: None,
-                error: (failures >= 3).then(|| format!("{error}；已停止自动重连")),
+                error: Some(if rejected {
+                    error
+                } else {
+                    format!("{error}；正在自动重连")
+                }),
             });
         }
-        if failures >= 3 {
+        if rejected {
             tokio::select! {biased;_=shutdown.changed()=>break,changed=target.changed()=>if changed.is_err(){break;}}
-            failures = 0;
-            backoff = Duration::from_millis(250);
+            reconnect = Reconnect::default();
             continue;
         }
-        tokio::select! {biased;_=shutdown.changed()=>break,changed=target.changed()=>{if changed.is_err(){break;}backoff=Duration::from_millis(250);failures=0;},_=tokio::time::sleep(backoff)=>{backoff=(backoff*2).min(Duration::from_secs(5));}}
+        tokio::select! {biased;_=shutdown.changed()=>break,changed=target.changed()=>{if changed.is_err(){break;}},_=tokio::time::sleep(delay)=>{}}
     }
 }
 
@@ -190,7 +409,7 @@ mod tests {
     use crate::core::client::{Client, Endpoint};
     use tokio_tungstenite::{accept_hdr_async, tungstenite::Message};
     #[tokio::test]
-    async fn repeated_handshake_failures_stop_after_three_attempts_until_target_changes() {
+    async fn repeated_handshake_failures_keep_retrying_and_target_changes_skip_backoff() {
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("failed.sock");
         let listener = tokio::net::UnixListener::bind(&path).unwrap();
@@ -209,8 +428,8 @@ mod tests {
         let (targets, receiver) = watch::channel(Some(current.clone()));
         let (shutdown, cancel) = watch::channel(false);
         let feed = Feed::start("/traffic", receiver, cancel);
-        for _ in 0..3 {
-            let (socket, _) = tokio::time::timeout(Duration::from_secs(3), listener.accept())
+        for _ in 0..4 {
+            let (socket, _) = tokio::time::timeout(Duration::from_secs(5), listener.accept())
                 .await
                 .unwrap()
                 .unwrap();
@@ -227,7 +446,7 @@ mod tests {
                 .error
                 .as_deref()
                 .unwrap()
-                .contains("已停止自动重连")
+                .contains("正在自动重连")
         );
         let mut next = current;
         next.epoch += 1;

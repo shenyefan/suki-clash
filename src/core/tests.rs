@@ -20,13 +20,6 @@ fn fixture(script: Option<&str>) -> (tempfile::TempDir, AppPaths) {
     let paths = AppPaths::isolated(root.path());
     Repository::open(paths.clone()).unwrap();
     core_settings(&paths, 0);
-    std::fs::write(
-        paths
-            .directory(DirectoryKind::Config)
-            .join("runtime-source.yaml"),
-        "mixed-port: 0\nport: 0\nsocks-port: 0\nlog-level: silent\nrules: ['MATCH,DIRECT']\n",
-    )
-    .unwrap();
     if let Some(script) = script {
         let binary = paths
             .directory(DirectoryKind::Core)
@@ -653,7 +646,7 @@ async fn exit_preparation_retains_failed_recovery_for_a_second_attempt() {
 
 #[cfg(unix)]
 #[tokio::test]
-async fn health_checks_tolerate_transient_failure_and_stop_after_three_without_recovery() {
+async fn health_checks_retry_unknown_failures_and_recover_the_running_core() {
     use std::sync::{
         Arc,
         atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -721,13 +714,19 @@ async fn health_checks_tolerate_transient_failure_and_stop_after_three_without_r
         actor.observe_health().await;
     }
     assert_eq!(actor.health_failures, 3);
-    assert_eq!(actor.snapshot.phase(), Phase::Failed);
+    assert_eq!(actor.snapshot.phase(), Phase::Ready);
+    assert!(actor.running.is_some());
+    assert!(actor.snapshot.has_process());
+    assert!(actor.monitor.borrow().is_some());
+    assert!(actor.log_target.borrow().is_some());
+    assert_eq!(actor.core_disconnect.as_deref(), Some("内核状态获取失败"));
     let count = requests.load(Ordering::SeqCst);
     healthy.store(true, Ordering::SeqCst);
     actor.observe_health().await;
-    assert_eq!(requests.load(Ordering::SeqCst), count);
-    assert!(actor.snapshot.error().unwrap().contains("已停止自动检查"));
-    actor.stop().await.unwrap();
+    assert_eq!(requests.load(Ordering::SeqCst), count + 2);
+    assert_eq!(actor.snapshot.version(), Some("recovered"));
+    assert_eq!(actor.core_disconnect, None);
+    actor.stop_owned().await.unwrap();
     server.abort();
 }
 
@@ -1036,6 +1035,8 @@ async fn a_live_process_is_not_ready_and_cancelled_start_remains_owned_until_rea
 async fn failed_validation_preserves_the_old_process_and_source() {
     use std::os::unix::fs::PermissionsExt as _;
     let (_root, paths) = fixture(Some(SLEEPING_CORE));
+    save_profile(&paths, 7, "mode: rule\n");
+    crate::configuration::select_profile(&paths, Some(7)).unwrap();
     let launch = Launch::prepare(&paths).await.unwrap();
     let mut child = launch
         .command(false)
@@ -1080,9 +1081,7 @@ async fn failed_validation_preserves_the_old_process_and_source() {
     let binary = paths.directory(DirectoryKind::Core).join("mihomo");
     crate::storage::atomic_write(&binary, b"#!/bin/sh\nexit 1\n").unwrap();
     std::fs::set_permissions(binary, std::fs::Permissions::from_mode(0o700)).unwrap();
-    let source = paths
-        .directory(DirectoryKind::Config)
-        .join("runtime-source.yaml");
+    let source = crate::profiles::repository::body_path(&paths, 7);
     let before = std::fs::read(&source).unwrap();
     assert!(actor.restart().await.unwrap_err().contains("拒绝"));
     assert_eq!(actor.running.as_ref().unwrap().child.id(), pid);
@@ -1221,13 +1220,8 @@ exec "$SUKI_TEST_MIHOMO" "$@"
     assert_eq!(actor.snapshot.phase(), Phase::Ready);
     assert_eq!(actor.snapshot.generation(), generation + 2);
     let pid = actor.running.as_ref().unwrap().child.id();
-    std::fs::write(
-        paths
-            .directory(DirectoryKind::Config)
-            .join("runtime-source.yaml"),
-        "proxies: [{type: definitely-invalid}]\n",
-    )
-    .unwrap();
+    save_profile(&paths, 7, "proxies: [{type: definitely-invalid}]\n");
+    crate::configuration::select_profile(&paths, Some(7)).unwrap();
     assert!(actor.restart().await.is_err());
     assert_eq!(actor.snapshot.phase(), Phase::Ready);
     assert_eq!(actor.running.as_ref().unwrap().child.id(), pid);
@@ -1260,9 +1254,9 @@ fn save_override(paths: &AppPaths, kind: &str, content: &str) {
 #[tokio::test]
 async fn persisted_overrides_feed_private_candidate_without_mutating_source() {
     let (_root, paths) = fixture(Some(SLEEPING_CORE));
-    let source = paths
-        .directory(DirectoryKind::Config)
-        .join("runtime-source.yaml");
+    save_profile(&paths, 7, "mode: rule\n");
+    crate::configuration::select_profile(&paths, Some(7)).unwrap();
+    let source = crate::profiles::repository::body_path(&paths, 7);
     let before = std::fs::read(&source).unwrap();
     save_override(
         &paths,
@@ -1357,12 +1351,6 @@ async fn real_profile_activation_apply_persistence_and_failed_commit_recovery() 
     let installed = paths.directory(DirectoryKind::Core).join("mihomo");
     std::fs::copy(binary, &installed).unwrap();
     std::fs::set_permissions(installed, std::fs::Permissions::from_mode(0o700)).unwrap();
-    std::fs::remove_file(
-        paths
-            .directory(DirectoryKind::Config)
-            .join("runtime-source.yaml"),
-    )
-    .unwrap();
     let source = "mixed-port: 0\nport: 0\nsocks-port: 0\nlog-level: silent\nmode: rule\nrules: ['MATCH,DIRECT']";
     save_profile(&paths, 7, source);
     let mut owner = actor(paths.clone());
@@ -1485,12 +1473,6 @@ async fn real_startup_keeps_requested_port_and_invalid_configuration() {
 async fn real_first_open_service_automatically_starts_base_runtime() {
     let bundle = std::env::var_os("SUKI_TEST_BUNDLE").expect("set SUKI_TEST_BUNDLE");
     let (_root, paths) = fixture(None);
-    std::fs::remove_file(
-        paths
-            .directory(DirectoryKind::Config)
-            .join("runtime-source.yaml"),
-    )
-    .unwrap();
     crate::bootstrap::prepare(&paths, Path::new(&bundle), || false).unwrap();
     core_settings(&paths, 0);
     let mut service = Service::start(paths).unwrap();
@@ -2591,7 +2573,12 @@ async fn real_proxy_selection_modes_persistence_and_readback() {
     let binary = paths.directory(DirectoryKind::Core).join("mihomo");
     std::fs::copy(std::env::var_os("SUKI_TEST_MIHOMO").unwrap(), &binary).unwrap();
     std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
-    std::fs::write(paths.directory(DirectoryKind::Config).join("runtime-source.yaml"),"mixed-port: 0\nport: 0\nsocks-port: 0\nproxy-groups:\n  - name: '选择 / test'\n    type: select\n    proxies: [DIRECT, REJECT]\n  - name: automatic\n    type: url-test\n    proxies: [DIRECT, REJECT]\n    url: http://127.0.0.1:9\n    interval: 3600\n    lazy: true\nrules: ['MATCH,选择 / test']\n").unwrap();
+    save_profile(
+        &paths,
+        7,
+        "mixed-port: 0\nport: 0\nsocks-port: 0\nproxy-groups:\n  - name: '选择 / test'\n    type: select\n    proxies: [DIRECT, REJECT]\n  - name: automatic\n    type: url-test\n    proxies: [DIRECT, REJECT]\n    url: http://127.0.0.1:9\n    interval: 3600\n    lazy: true\nrules: ['MATCH,选择 / test']\n",
+    );
+    crate::configuration::select_profile(&paths, Some(7)).unwrap();
     let mut owner = actor(paths.clone());
     owner.start().await.unwrap();
     let pid = owner.running.as_ref().unwrap().child.id();
@@ -2911,7 +2898,15 @@ async fn real_group_tests_keep_group_urls_and_results_separate() {
                 .unwrap();
         }));
     }
-    std::fs::write(paths.directory(DirectoryKind::Config).join("runtime-source.yaml"),format!("mixed-port: 0\nport: 0\nsocks-port: 0\nproxy-groups:\n  - name: hop\n    type: select\n    proxies: [DIRECT]\n  - name: a\n    type: select\n    proxies: [hop]\n    url: {}\n  - name: b\n    type: select\n    proxies: [hop]\n    url: {}\nrules: ['MATCH,DIRECT']\n",urls[0],urls[1])).unwrap();
+    save_profile(
+        &paths,
+        7,
+        &format!(
+            "mixed-port: 0\nport: 0\nsocks-port: 0\nproxy-groups:\n  - name: hop\n    type: select\n    proxies: [DIRECT]\n  - name: a\n    type: select\n    proxies: [hop]\n    url: {}\n  - name: b\n    type: select\n    proxies: [hop]\n    url: {}\nrules: ['MATCH,DIRECT']\n",
+            urls[0], urls[1]
+        ),
+    );
+    crate::configuration::select_profile(&paths, Some(7)).unwrap();
     let mut owner = actor(paths);
     owner.start().await.unwrap();
     let (requests, receiver) = async_channel::bounded(32);
@@ -3024,7 +3019,8 @@ async fn chain_roundtrip(kind: &str) {
     let binary = paths.directory(DirectoryKind::Core).join("mihomo");
     std::fs::copy(std::env::var_os("SUKI_TEST_MIHOMO").unwrap(), &binary).unwrap();
     std::fs::set_permissions(binary, std::fs::Permissions::from_mode(0o700)).unwrap();
-    std::fs::write(paths.directory(DirectoryKind::Config).join("runtime-source.yaml"),"mixed-port: 0\nport: 0\nsocks-port: 0\nproxies:\n- {name: entry, type: socks5, server: 127.0.0.1, port: 10081}\n- {name: exit, type: socks5, server: 127.0.0.1, port: 10082}\nproxy-groups:\n- {name: select, type: GROUP_KIND, proxies: [DIRECT, entry, exit], url: 'http://127.0.0.1:9/health', interval: 300}\nrules: ['MATCH,select']\n".replace("GROUP_KIND",kind)).unwrap();
+    save_profile(&paths, 7, &"mixed-port: 0\nport: 0\nsocks-port: 0\nproxies:\n- {name: entry, type: socks5, server: 127.0.0.1, port: 10081}\n- {name: exit, type: socks5, server: 127.0.0.1, port: 10082}\nproxy-groups:\n- {name: select, type: GROUP_KIND, proxies: [DIRECT, entry, exit], url: 'http://127.0.0.1:9/health', interval: 300}\nrules: ['MATCH,select']\n".replace("GROUP_KIND",kind));
+    crate::configuration::select_profile(&paths, Some(7)).unwrap();
     let mut owner = actor(paths.clone());
     owner.start().await.unwrap();
     let pid = owner.running.as_ref().unwrap().child.id();

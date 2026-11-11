@@ -1,10 +1,9 @@
+use super::ipc::RequestContext;
 #[cfg(unix)]
 use crate::owner_key;
 use crate::{
     IPC_AUTH_EXPECT, OwnerCredentials, OwnerIdentity, SESSION_TOKEN_HEX_LEN, ServiceErrorCode,
 };
-use kode_bridge::errors::KodeBridgeError;
-use kode_bridge::ipc_http_server::RequestContext;
 use sha2::{Digest as _, Sha256};
 use std::{fmt, path::PathBuf};
 
@@ -98,14 +97,14 @@ pub(crate) fn hash_session_token(token: &str) -> anyhow::Result<String> {
         .collect())
 }
 
-pub fn ipc_request_context_to_auth_context(
+pub(super) fn ipc_request_context_to_auth_context(
     ctx: &RequestContext,
-) -> Result<AuthStatus, KodeBridgeError> {
+) -> Result<AuthStatus, ServiceError> {
     let headers = &ctx.headers;
     match headers.get("X-IPC-Magic") {
         Some(token) if token == IPC_AUTH_EXPECT => Ok(AuthStatus::Authorized),
-        Some(_) => Err(KodeBridgeError::ClientError { status: 401 }),
-        None => Err(KodeBridgeError::ClientError { status: 401 }),
+        Some(_) => Err(ServiceError::unauthorized("invalid IPC authentication")),
+        None => Err(ServiceError::unauthorized("invalid IPC authentication")),
     }
 }
 
@@ -147,11 +146,7 @@ pub fn authenticate_owner(
     {
         use std::os::unix::fs::MetadataExt as _;
 
-        let peer = context
-            .client_info
-            .peer_credentials
-            .uid
-            .zip(context.client_info.peer_credentials.gid);
+        let peer = context.peer;
         validate_unix_identity(&credentials.identity, peer)?;
 
         let app_data_root = std::fs::canonicalize(&credentials.app_data_dir)
@@ -241,7 +236,7 @@ fn authenticate_synthetic_test_owner(
             )));
         }
     };
-    if !metadata.is_dir() || metadata.uid() != unsafe { platform_lib::geteuid() } {
+    if !metadata.is_dir() || metadata.uid() != unsafe { libc::geteuid() } {
         return Some(Err(ServiceError::unauthorized(
             "synthetic test owner root is not controlled by the test process",
         )));
@@ -584,10 +579,9 @@ mod windows_auth {
 mod tests {
     use super::authenticate_owner;
     use super::validate_unix_identity;
+    use crate::core::ipc::RequestContext;
     use crate::{OwnerCredentials, OwnerIdentity, ServiceErrorCode};
     use http::{HeaderMap, Method};
-    use kode_bridge::{ClientInfo, PeerCredentials, RequestContext};
-    use std::{collections::HashMap, time::Instant};
 
     #[test]
     fn unix_owner_must_match_kernel_peer_credentials() {
@@ -602,26 +596,17 @@ mod tests {
     #[test]
     fn authenticated_unix_owner_uses_canonical_owned_app_root()
     -> Result<(), Box<dyn std::error::Error>> {
-        let uid = unsafe { platform_lib::geteuid() };
-        let gid = unsafe { platform_lib::getegid() };
+        let uid = unsafe { libc::geteuid() };
+        let gid = unsafe { libc::getegid() };
         let app_root =
             std::env::temp_dir().join(format!("service-owner-auth-{}", std::process::id()));
         std::fs::create_dir_all(&app_root)?;
         let context = RequestContext {
             method: Method::POST,
             uri: "/clash/start".parse()?,
-            path_params: HashMap::new(),
             headers: HeaderMap::new(),
             body: Default::default(),
-            client_info: ClientInfo {
-                connection_id: 1,
-                connected_at: Instant::now(),
-                peer_credentials: PeerCredentials {
-                    uid: Some(uid),
-                    gid: Some(gid),
-                },
-            },
-            timestamp: Instant::now(),
+            peer: Some((uid, gid)),
         };
         let credentials = OwnerCredentials {
             identity: OwnerIdentity::Unix { uid, gid },

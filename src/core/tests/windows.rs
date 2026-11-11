@@ -64,7 +64,7 @@ fn running(launch: Launch, child: tokio::process::Child) -> Running {
 }
 
 #[tokio::test]
-async fn transient_health_failure_preserves_proxy_and_exhaustion_never_auto_recovers() {
+async fn transient_health_failure_preserves_proxy_and_reconnects_after_recovery() {
     use http_body_util::Full;
     use hyper::{Response, StatusCode, body::Bytes, service::service_fn};
     use hyper_util::rt::TokioIo;
@@ -97,6 +97,8 @@ async fn transient_health_failure_preserves_proxy_and_exhaustion_never_auto_reco
                         "{}"
                     } else if request.uri().path() == "/version" {
                         r#"{"version":"confirmed"}"#
+                    } else if request.uri().path().starts_with("/providers/") {
+                        r#"{"providers":{}}"#
                     } else {
                         r#"{"tun":{"enable":false}}"#
                     };
@@ -120,7 +122,9 @@ async fn transient_health_failure_preserves_proxy_and_exhaustion_never_auto_reco
         }
     });
     let mut owner = actor(paths);
-    owner.running = Some(running(launch, child("sleep")));
+    let owned = child("sleep");
+    let handle = process_handle(&owned);
+    owner.running = Some(running(launch, owned));
     let mut values = crate::preferences::defaults(crate::preferences::SettingsKind::SysProxy);
     values.insert("IsSystemProxyEnabled".into(), "true".into());
     owner.snapshot.system_proxy = owner.system_proxy.apply(&values, 7897).await.unwrap();
@@ -137,22 +141,60 @@ async fn transient_health_failure_preserves_proxy_and_exhaustion_never_auto_reco
     assert_eq!(owner.snapshot.system_proxy.enabled(), Some(true));
 
     healthy.store(false, Ordering::SeqCst);
-    for _ in 0..3 {
+    for _ in 0..6 {
         owner.observe_health().await;
     }
-    assert_eq!(owner.snapshot.phase(), Phase::Failed);
-    assert_eq!(owner.snapshot.system_proxy.enabled(), Some(false));
-    assert!(owner.snapshot.error().unwrap().contains("已停止自动检查"));
+    assert_eq!(owner.snapshot.phase(), Phase::Ready);
+    assert_eq!(owner.snapshot.system_proxy.enabled(), Some(true));
+    assert!(owner.running.is_some());
+    assert_eq!(owner.snapshot.label(), "正在重连");
+    assert!(!owner.snapshot.is_busy());
+    assert!(owner.snapshot.has_process());
+    assert!(owner.monitor.borrow().is_some());
+    assert!(owner.log_target.borrow().is_some());
+    assert_eq!(owner.core_disconnect.as_deref(), Some("内核状态获取失败"));
+    let resource_error = owner.refresh_resources().await.unwrap_err();
+    owner.resource_error = Some(resource_error.clone());
+    owner.publish(Phase::Ready, Some(resource_error));
     let count = requests.load(Ordering::SeqCst);
     healthy.store(true, Ordering::SeqCst);
-    for _ in 0..3 {
-        owner.observe_health().await;
-    }
-    assert_eq!(owner.snapshot.phase(), Phase::Failed);
-    assert_eq!(requests.load(Ordering::SeqCst), count);
-    assert_eq!(owner.snapshot.system_proxy.enabled(), Some(false));
-    owner.stop().await.unwrap();
+    owner.observe_health().await;
+    assert_eq!(requests.load(Ordering::SeqCst), count + 2);
+    assert_eq!(owner.snapshot.version(), Some("confirmed"));
+    assert_eq!(owner.snapshot.system_proxy.enabled(), Some(true));
+    assert_eq!(owner.core_disconnect, None);
+    assert_eq!(owner.snapshot.label(), "运行中");
+    owner.refresh_resources().await.unwrap();
+    assert!(owner.snapshot.error().is_none());
+    assert!(owner.snapshot.resources.error.is_none());
+    owner.snapshot.error = Some("独立的设置错误".into());
+    owner.refresh_resources().await.unwrap();
+    assert_eq!(owner.snapshot.error(), Some("独立的设置错误"));
+    owner.stop_owned().await.unwrap();
+    assert_eq!(
+        unsafe { WaitForSingleObject(handle.as_raw_handle(), 1000) },
+        WAIT_OBJECT_0
+    );
     server.abort();
+}
+
+#[tokio::test]
+async fn start_after_failure_reaps_retained_child_before_preparing_configuration() {
+    let (_root, paths) = fixture(Some(SLEEPING_CORE));
+    let launch = Launch::prepare(&paths).await.unwrap();
+    let owned = child("sleep");
+    let handle = process_handle(&owned);
+    let mut owner = actor(paths);
+    owner.running = Some(running(launch, owned));
+    owner.publish(Phase::Failed, Some("test failure".into()));
+    std::fs::write(owner.paths.settings().join("mihomo.yaml"), b"{broken").unwrap();
+
+    assert!(owner.start().await.unwrap_err().contains("mihomo.yaml"));
+    assert!(owner.running.is_none());
+    assert_eq!(
+        unsafe { WaitForSingleObject(handle.as_raw_handle(), 1000) },
+        WAIT_OBJECT_0
+    );
 }
 
 #[tokio::test]

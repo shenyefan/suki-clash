@@ -3,12 +3,18 @@ use std::{collections::VecDeque, time::Duration};
 use anyhow::Result;
 use flexi_logger::{
     Cleanup, Criterion, DeferredNow, FileSpec, Naming, WriteMode,
-    writers::{FileLogWriter, FileLogWriterBuilder, LogWriter as _},
+    writers::{
+        ArcFileLogWriter, FileLogWriter, FileLogWriterBuilder, FileLogWriterHandle, LogWriter,
+    },
 };
 use log::{Level, Record};
 use once_cell::sync::{Lazy, OnceCell};
 use parking_lot::{Mutex, RwLock};
-use tracing_estuary::{Pipeline, PipelineBuilder};
+use tracing_log::NormalizeEvent as _;
+use tracing_subscriber::{
+    fmt::{FmtContext, FormatEvent, FormatFields, format::Writer, writer::MakeWriterExt as _},
+    registry::LookupSpan,
+};
 
 use crate::core::paths::{ensure_persistent_state_layout, service_paths};
 use crate::core::platform_security;
@@ -23,31 +29,85 @@ const SERVICE_LOG_MAX_SIZE: u64 = 10 * 1024 * 1024;
 const SERVICE_LOG_MAX_FILES: usize = 3;
 
 static GLOBAL_WRITER: RwLock<Option<FileLogWriter>> = RwLock::new(None);
-static SERVICE_LOG: OnceCell<Pipeline> = OnceCell::new();
+static SERVICE_LOG: OnceCell<(ArcFileLogWriter, FileLogWriterHandle)> = OnceCell::new();
 
 /// Logs to stdout and to the service log file, since launchd and the Windows SCM discard stdout.
 pub fn init_service_logging() {
-    let (pipeline, file_error) = match service_log_writer()
-        .and_then(|writer| PipelineBuilder::new().file_writer(writer).init())
+    let (file, file_error) = match service_log_writer()
+        .and_then(|writer| writer.try_build_with_handle().map_err(Into::into))
     {
-        Ok(pipeline) => (Ok(pipeline), None),
-        Err(error) => (PipelineBuilder::new().init(), Some(error)),
+        Ok((writer, handle)) => (Some((writer, handle)), None),
+        Err(error) => (None, Some(error)),
     };
-    match pipeline {
-        Ok(pipeline) => {
-            let _ = SERVICE_LOG.set(pipeline);
+    let subscriber = tracing_subscriber::fmt()
+        .with_ansi(false)
+        .event_format(ServiceFormat)
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+        );
+    let installed = if let Some((writer, handle)) = file {
+        let output = writer.clone();
+        let result = subscriber
+            .with_writer(std::io::stdout.and(move || output.clone()))
+            .try_init();
+        if result.is_ok() {
+            let _ = SERVICE_LOG.set((writer, handle));
         }
-        Err(error) => eprintln!("Failed to install service logging: {error:#}"),
+        result
+    } else {
+        subscriber.with_writer(std::io::stdout).try_init()
+    };
+    if let Err(error) = installed {
+        eprintln!("无法初始化服务日志：{error:#}");
     }
     if let Some(error) = file_error {
         tracing::warn!("服务日志文件不可用，仅输出到标准输出：{error:#}");
     }
 }
 
-/// Writes out queued service log lines before the process exits.
+struct ServiceFormat;
+
+impl<S, N> FormatEvent<S, N> for ServiceFormat
+where
+    S: tracing::Subscriber + for<'a> LookupSpan<'a>,
+    N: for<'a> FormatFields<'a> + 'static,
+{
+    fn format_event(
+        &self,
+        context: &FmtContext<'_, S, N>,
+        mut writer: Writer<'_>,
+        event: &tracing::Event<'_>,
+    ) -> std::fmt::Result {
+        let normalized = event.normalized_metadata();
+        let metadata = normalized.as_ref().unwrap_or_else(|| event.metadata());
+        let origin = match metadata.target() {
+            "suki_clash_service" => "service",
+            target => target
+                .strip_prefix("suki_clash_service::")
+                .unwrap_or(target),
+        };
+        let level = match *metadata.level() {
+            tracing::Level::WARN => "WARNING",
+            _ => metadata.level().as_str(),
+        };
+        let mut message = String::new();
+        context
+            .field_format()
+            .format_fields(Writer::new(&mut message), event)?;
+        writeln!(
+            writer,
+            "{} {level} [{origin}] {}",
+            DeferredNow::new().now().to_rfc3339(),
+            message.replace('\n', "\\n").replace('\r', "\\r")
+        )
+    }
+}
+
+/// Flushes buffered service log lines before the process exits.
 pub fn flush_service_log() {
-    if let Some(pipeline) = SERVICE_LOG.get() {
-        pipeline.flush_all();
+    if let Some((writer, _handle)) = SERVICE_LOG.get() {
+        let _ = LogWriter::flush(&**writer);
     }
 }
 
@@ -61,9 +121,10 @@ fn service_log_writer() -> anyhow::Result<FileLogWriterBuilder> {
             .basename(crate::SERVICE_SLUG)
             .suppress_timestamp(),
     )
-    .format(tracing_estuary::file_format_with_level)
-    // Unbuffered, so a killed service keeps its last lines.
-    .write_mode(WriteMode::Direct)
+    .write_mode(WriteMode::BufferAndFlushWith(
+        WRITE_BUFFER_CAPACITY,
+        WRITE_FLUSH_INTERVAL,
+    ))
     // A restart must not rotate the previous run away.
     .append()
     .rotate(
@@ -83,7 +144,14 @@ fn service_writer_builder(config: &WriterConfig) -> FileLogWriterBuilder {
             .basename("service")
             .suppress_timestamp(),
     )
-    .format(tracing_estuary::file_format_without_level)
+    .format(|writer, now, record| {
+        write!(
+            writer,
+            "[{}] {}",
+            now.format("%Y-%m-%d %H:%M:%S%.3f"),
+            record.args()
+        )
+    })
     .write_mode(WriteMode::BufferAndFlushWith(
         WRITE_BUFFER_CAPACITY,
         WRITE_FLUSH_INTERVAL,
@@ -247,5 +315,74 @@ mod ring_tests {
         let renewed = restarted.get_logs(8, latest.next, Some(ring.started_at));
         assert_eq!(renewed.entries.len(), 1);
         assert!(renewed.entries[0].stderr);
+    }
+
+    #[test]
+    fn service_file_and_console_use_program_format_and_preserve_original_causes() {
+        use std::io::Write as _;
+        use std::sync::{Arc, Mutex};
+
+        #[derive(Clone)]
+        struct Console(Arc<Mutex<Vec<u8>>>);
+        impl std::io::Write for Console {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let root = tempfile::tempdir().unwrap();
+        let (mut file, _handle) = FileLogWriter::builder(
+            FileSpec::default()
+                .directory(root.path())
+                .basename("service")
+                .suppress_timestamp(),
+        )
+        .try_build_with_handle()
+        .unwrap();
+        let console = Console(Default::default());
+        let captured = console.0.clone();
+        let output = file.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .with_ansi(false)
+            .event_format(ServiceFormat)
+            .with_max_level(tracing::Level::TRACE)
+            .with_writer((move || console.clone()).and(move || output.clone()))
+            .finish();
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::info!(target: "suki_clash_service::core::server", "内核已启动");
+            tracing::warn!(target: "suki_clash_service::core::manager", attempts = 3, "准备重试");
+            tracing::error!(target: "suki_clash_service::core::ipc", "Failed to write response: 管道已结束。 (os error 109)");
+            tracing_log::format_trace(
+                &log::Record::builder()
+                    .level(log::Level::Warn)
+                    .target("suki_clash_service::execution")
+                    .args(format_args!("第一行\n第二行\r结束"))
+                    .build(),
+            )
+            .unwrap();
+        });
+        file.flush().unwrap();
+        let console = String::from_utf8(captured.lock().unwrap().clone()).unwrap();
+        let saved = std::fs::read_dir(root.path())
+            .unwrap()
+            .map(|entry| std::fs::read_to_string(entry.unwrap().path()).unwrap())
+            .collect::<String>();
+        assert_eq!(saved, console);
+        let lines = saved.lines().collect::<Vec<_>>();
+        assert_eq!(lines.len(), 4);
+        assert!(lines[0].contains(" INFO [core::server] 内核已启动"));
+        assert!(lines[1].contains(" WARNING [core::manager] 准备重试 attempts=3"));
+        assert!(
+            lines[2].contains(
+                " ERROR [core::ipc] Failed to write response: 管道已结束。 (os error 109)"
+            )
+        );
+        assert!(lines[3].contains(" WARNING [execution] 第一行\\n第二行\\r结束"));
+        assert!(!saved.contains('\u{1b}'));
+        assert!(lines[0].split_once(' ').unwrap().0.contains('T'));
     }
 }

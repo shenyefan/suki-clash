@@ -75,14 +75,26 @@ pub(crate) fn core_firewall_records(cores: &std::path::Path) -> std::path::PathB
 }
 
 #[cfg(windows)]
+pub(crate) fn core_firewall_record(core: &std::path::Path) -> Result<std::path::PathBuf, Error> {
+    use anyhow::Context as _;
+    let records = core_firewall_records(core.parent().context("core path has no parent")?);
+    let mut name = core
+        .file_name()
+        .context("core path has no file name")?
+        .to_os_string();
+    name.push(".record");
+    Ok(records.join(name))
+}
+
+#[cfg(windows)]
 pub(crate) fn record_core_firewall_rule(core: &std::path::Path) -> Result<(), Error> {
     use anyhow::Context as _;
 
     // Record before changing the firewall. Independent empty files cannot truncate an
     // existing inventory if the installer crashes. The parent is installer-protected.
-    let records = core_firewall_records(core.parent().context("core path has no parent")?);
-    std::fs::create_dir_all(&records).context("failed to create firewall cleanup records")?;
-    let record = records.join(core.file_name().context("core path has no file name")?);
+    let record = core_firewall_record(core)?;
+    std::fs::create_dir_all(record.parent().context("record path has no parent")?)
+        .context("failed to create firewall cleanup records")?;
     match std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -151,6 +163,23 @@ pub(crate) fn netsh_firewall(arguments: &[&str]) -> Result<(), Error> {
 
 #[cfg(all(windows, test))]
 mod tests {
+    #[test]
+    fn firewall_cleanup_records_are_empty_markers_outside_core_directory() -> anyhow::Result<()> {
+        let root = tempfile::tempdir()?;
+        let core = root.path().join("cores").join("mihomo.exe");
+        super::record_core_firewall_rule(&core)?;
+        super::record_core_firewall_rule(&core)?;
+        let record = super::core_firewall_record(&core)?;
+        assert_eq!(
+            record,
+            root.path().join("core-firewall-rules/mihomo.exe.record")
+        );
+        assert_eq!(std::fs::metadata(&record)?.len(), 0);
+        assert_eq!(record.file_stem().unwrap(), core.file_name().unwrap());
+        assert!(!core.exists());
+        Ok(())
+    }
+
     #[test]
     fn netsh_ignores_caller_system_root() -> anyhow::Result<()> {
         const EXPECTED: &str = "CVR_TEST_EXPECTED_NETSH";

@@ -123,15 +123,7 @@ impl AppPaths {
                 }
             }
         }
-        let source = self.config.join("runtime-source.yaml");
-        match fs::remove_file(&source) {
-            Ok(()) => Ok(()),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(error) => Err(format!(
-                "{}：删除配置失败：{error}；重置未完成",
-                source.display()
-            )),
-        }
+        Ok(())
     }
     pub(crate) fn create(&self) -> Result<(), StorageError> {
         for kind in [
@@ -182,8 +174,6 @@ mod reset_tests {
             fs::create_dir_all(directory).unwrap();
             fs::write(directory.join("user-config"), b"configuration").unwrap();
         }
-        let source = paths.config.join("runtime-source.yaml");
-        fs::write(&source, b"configuration").unwrap();
         let kept = [
             DirectoryKind::Core,
             DirectoryKind::Logs,
@@ -197,7 +187,6 @@ mod reset_tests {
         }
         paths.reset_configuration().unwrap();
         assert!(deleted.iter().all(|path| !path.exists()));
-        assert!(!source.exists());
         for path in &kept {
             assert_eq!(fs::read(path).unwrap(), b"keep");
         }

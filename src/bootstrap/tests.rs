@@ -87,12 +87,6 @@ fn first_open_installs_all_files_and_second_open_keeps_user_versions() {
         fs::read(directory.join("Country.mmdb")).unwrap(),
         b"user update"
     );
-    assert!(
-        !paths
-            .directory(DirectoryKind::Config)
-            .join("runtime-source.yaml")
-            .exists()
-    );
 }
 
 #[test]

@@ -4,7 +4,7 @@ use anyhow::bail;
 use anyhow::{Context as _, Result};
 #[cfg(unix)]
 use std::fs::OpenOptions;
-#[cfg(any(unix, test))]
+#[cfg(unix)]
 use std::path::Path;
 #[cfg(unix)]
 use std::{fs::File, path::PathBuf};
@@ -38,28 +38,16 @@ impl CoreExecutionGuard {
         }
     }
 
-    #[cfg(any(unix, test))]
+    #[cfg(unix)]
     fn acquire_at(path: &Path) -> Result<Self> {
-        #[cfg(windows)]
-        {
-            Ok(Self {
-                _reservation: windows_lock::Reservation::try_acquire(&test_coordination_name(
-                    path,
-                ))?
-                .context("core execution is reserved")?,
-            })
-        }
-        #[cfg(unix)]
-        {
-            let file = open_coordination_file(path)?;
-            match file.try_lock() {
-                Ok(()) => Ok(Self { _file: file }),
-                Err(std::fs::TryLockError::WouldBlock) => {
-                    bail!("another Service or Sidecar owns core execution")
-                }
-                Err(std::fs::TryLockError::Error(error)) => {
-                    Err(error).context("could not reserve core execution")
-                }
+        let file = open_coordination_file(path)?;
+        match file.try_lock() {
+            Ok(()) => Ok(Self { _file: file }),
+            Err(std::fs::TryLockError::WouldBlock) => {
+                bail!("another Service or Sidecar owns core execution")
+            }
+            Err(std::fs::TryLockError::Error(error)) => {
+                Err(error).context("could not reserve core execution")
             }
         }
     }
@@ -105,20 +93,10 @@ impl CoreExecutionGuard {
     }
 }
 
-#[cfg(all(windows, test))]
-fn test_coordination_name(path: &Path) -> String {
-    use sha2::{Digest as _, Sha256};
-    let digest: String = Sha256::digest(path.as_os_str().as_encoded_bytes())
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect();
-    format!(r"Global\suki-clash-execution-test-{digest}")
-}
-
 #[cfg(unix)]
 fn process_has_exited(pid: u32) -> bool {
-    (unsafe { platform_lib::kill(pid as i32, 0) }) == -1
-        && std::io::Error::last_os_error().raw_os_error() == Some(platform_lib::ESRCH)
+    (unsafe { libc::kill(pid as i32, 0) }) == -1
+        && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
 }
 
 #[cfg(windows)]
@@ -178,7 +156,7 @@ fn open_coordination_file(path: &Path) -> Result<File> {
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
             let file = OpenOptions::new()
                 .read(true)
-                .custom_flags(platform_lib::O_NOFOLLOW | platform_lib::O_NONBLOCK)
+                .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
                 .open(path)?;
             anyhow::ensure!(
                 file.metadata()?.is_file(),
@@ -209,7 +187,7 @@ pub async fn stop_child(
     if let Some(pid) = child.id().and_then(|pid| i32::try_from(pid).ok())
         && !grace.is_zero()
     {
-        if unsafe { platform_lib::kill(pid, platform_lib::SIGTERM) } == 0 {
+        if unsafe { libc::kill(pid, libc::SIGTERM) } == 0 {
             match tokio::time::timeout(grace, child.wait()).await {
                 Ok(result) => return result.map(|_| ()),
                 Err(_) => log::warn!("内核收到 SIGTERM 后未退出，强制终止"),
@@ -284,9 +262,6 @@ mod child_shutdown_tests {
         stop_child(&mut child, Duration::from_millis(20))
             .await
             .unwrap();
-        assert_eq!(
-            child.wait().await.unwrap().signal(),
-            Some(platform_lib::SIGKILL)
-        );
+        assert_eq!(child.wait().await.unwrap().signal(), Some(libc::SIGKILL));
     }
 }

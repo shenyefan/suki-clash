@@ -43,7 +43,7 @@ where
                 Ok(result) => result,
                 Err(_) => {
                     return Err(previous.unwrap_or_else(|| {
-                        suki_service::RequestError::Unreachable("等待服务响应超时".into()).into()
+                        suki_service::RequestError::Unreachable("响应超时".into()).into()
                     }));
                 }
             }

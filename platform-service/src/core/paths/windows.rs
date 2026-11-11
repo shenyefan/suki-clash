@@ -85,8 +85,8 @@ fn registered_state_dir() -> io::Result<PathBuf> {
     use crate::core::trusted_core_location::{
         require_trusted_core_location, require_trusted_service_registration,
     };
-    use platform_lib::service::{ServiceAccess, ServiceType};
-    use platform_lib::service_manager::{ServiceManager, ServiceManagerAccess};
+    use windows_service::service::{ServiceAccess, ServiceType};
+    use windows_service::service_manager::{ServiceManager, ServiceManagerAccess};
 
     let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)
         .map_err(service_query_error)?;
@@ -124,9 +124,9 @@ fn registered_state_dir() -> io::Result<PathBuf> {
 }
 
 #[cfg(feature = "standalone")]
-fn service_query_error(error: platform_lib::Error) -> io::Error {
+fn service_query_error(error: windows_service::Error) -> io::Error {
     match error {
-        platform_lib::Error::Winapi(error) => error,
+        windows_service::Error::Winapi(error) => error,
         error => io::Error::other(error),
     }
 }

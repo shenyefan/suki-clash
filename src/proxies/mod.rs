@@ -60,7 +60,7 @@ impl ProxiesPage {
             .and_then(|value| value.parse().ok())
             .unwrap_or(5000);
         let runtime = session.read(cx).runtime();
-        let groups = if runtime.connected && session.read(cx).is_running() {
+        let groups = if session.read(cx).is_running() {
             ProxyGroup::observed(&runtime.proxies, runtime.mode, delay_timeout)
         } else {
             Vec::new()
@@ -114,7 +114,7 @@ impl ProxiesPage {
                     this.test_preferences = preferences;
                 }
                 let runtime = session.read(cx).runtime();
-                if runtime.connected && session.read(cx).is_running() {
+                if session.read(cx).is_running() {
                     if this.observed.proxies != runtime.proxies
                         || this.observed.mode != runtime.mode
                         || this.delay_timeout != delay_timeout

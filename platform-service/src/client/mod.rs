@@ -37,7 +37,10 @@ pub enum RequestError {
 impl std::fmt::Display for RequestError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Unreachable(message) => write!(f, "后台服务尚未可连接：{message}"),
+            Self::Unreachable(message) if message == "响应超时" => {
+                write!(f, "后台服务响应超时")
+            }
+            Self::Unreachable(message) => write!(f, "后台服务暂不可用：{message}"),
             Self::Rejected { code, message } => write!(f, "后台服务拒绝操作（{code}）：{message}"),
             Self::InvalidResponse(message) => write!(f, "后台服务响应无效：{message}"),
             Self::InvalidRequest(message) => write!(f, "后台服务请求无效：{message}"),
@@ -68,6 +71,34 @@ pub fn is_unreachable(error: &anyhow::Error) -> bool {
         error.downcast_ref::<RequestError>(),
         Some(RequestError::Unreachable(_))
     )
+}
+
+#[cfg(windows)]
+pub async fn service_transport_expected() -> Result<bool, String> {
+    tokio::task::spawn_blocking(|| {
+        use windows_service::service::{ServiceAccess, ServiceState};
+        use windows_service::service_manager::{ServiceManager, ServiceManagerAccess};
+
+        let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)
+            .map_err(|error| error.to_string())?;
+        let service =
+            match manager.open_service(crate::WINDOWS_SERVICE_NAME, ServiceAccess::QUERY_STATUS) {
+                Ok(service) => service,
+                Err(windows_service::Error::Winapi(error))
+                    if matches!(error.raw_os_error(), Some(1060 | 1072)) =>
+                {
+                    return Ok(false);
+                }
+                Err(error) => return Err(error.to_string()),
+            };
+        let status = service.query_status().map_err(|error| error.to_string())?;
+        Ok(!matches!(
+            status.current_state,
+            ServiceState::Stopped | ServiceState::StopPending
+        ))
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 pub fn response_data<T>(reply: Response<T>) -> Result<T> {
@@ -263,7 +294,7 @@ pub async fn get_clash_logs(
         credentials,
         Some(session),
         request,
-        None,
+        Some(LIFECYCLE_TIMEOUT),
     )
     .await
 }

@@ -11,12 +11,7 @@ pub(super) fn export(
     paths: &AppPaths,
 ) -> Result<Vec<String>, String> {
     let mut status = Vec::new();
-    let mut files = vec![(
-        "runtime-source.yaml".to_owned(),
-        paths
-            .directory(DirectoryKind::Config)
-            .join("runtime-source.yaml"),
-    )];
+    let mut files = Vec::new();
     for (area, root) in [
         ("settings", paths.settings()),
         ("indexes", paths.indexes()),

@@ -644,15 +644,13 @@ impl SettingsPage {
         match action {
             "退出应用" => crate::core::quit(cx),
             "重置程序" => {
-                let owner = cx.weak_entity();
                 window.open_alert_dialog(cx, move |dialog, window, cx| {
-                    let owner = owner.clone();
                     ui::modal_alert(dialog, window, cx)
                         .title("重置程序？")
-                        .description("删除全部设置、订阅、覆写、增强、节点选择和运行配置，随后退出程序。下次启动生成默认配置。保留内核、资源数据库、日志和备份。确认后等待 5 秒，期间可撤销。")
+                        .description("删除全部设置、订阅、覆写、增强、节点选择和运行配置，随后退出程序。下次启动生成默认配置。保留内核、资源数据库、日志和备份。")
                         .footer(ui::dialog_footer("重置程序"))
                         .on_ok(move |_, window, cx| {
-                            let _ = owner.update(cx, |this, cx| this.defer_destructive("重置程序", window, cx));
+                            crate::core::reset_program(window, cx);
                             true
                         })
                 });

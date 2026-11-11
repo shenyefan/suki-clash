@@ -8,11 +8,13 @@ use suki_clash_service::{
     acquire_service_owner, flush_service_log, init_service_logging, reconcile_service_startup,
     restore_desired_state, run_ipc_supervisor_until_shutdown,
 };
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 
 #[cfg(windows)]
 use {
-    platform_lib::{
+    std::ffi::OsString,
+    std::time::Duration,
+    windows_service::{
         define_windows_service,
         service::{
             ServiceControl, ServiceControlAccept, ServiceExitCode, ServiceState, ServiceStatus,
@@ -21,8 +23,6 @@ use {
         service_control_handler::{self, ServiceControlHandlerResult},
         service_dispatcher,
     },
-    std::ffi::OsString,
-    std::time::Duration,
 };
 
 fn main() -> Result<()> {
@@ -39,7 +39,7 @@ async fn run_daemon() -> Result<()> {
     init_service_logging();
     let result = run_standalone().await;
     if let Err(error) = &result {
-        warn!("服务异常退出：{error:#}");
+        error!("服务异常退出：{error:#}");
     }
     flush_service_log();
     result
@@ -48,7 +48,7 @@ async fn run_daemon() -> Result<()> {
 #[cfg(unix)]
 fn set_secure_process_umask() {
     unsafe {
-        platform_lib::umask(0o077);
+        libc::umask(0o077);
     }
 }
 
@@ -64,7 +64,7 @@ fn run_daemon() -> Result<()> {
             .map_err(anyhow::Error::from)
             .and_then(|rt| rt.block_on(run_standalone()));
         if let Err(error) = &result {
-            warn!("服务异常退出：{error:#}");
+            error!("服务异常退出：{error:#}");
         }
         flush_service_log();
         result?;
@@ -77,14 +77,14 @@ define_windows_service!(ffi_service_main, my_service_main);
 
 #[cfg(windows)]
 fn my_service_main(_args: Vec<OsString>) {
-    if let Err(e) = run_service() {
-        info!("服务运行失败：{}", e);
+    if let Err(error) = run_service() {
+        error!("服务运行失败：{error:#}");
     }
     flush_service_log();
 }
 
 #[cfg(windows)]
-fn run_service() -> platform_lib::Result<()> {
+fn run_service() -> windows_service::Result<()> {
     let (shutdown_tx, mut shutdown_rx) = tokio::sync::mpsc::channel::<()>(1);
 
     let event_handler = move |control_event| -> ServiceControlHandlerResult {
@@ -120,7 +120,7 @@ fn run_service() -> platform_lib::Result<()> {
             Ok(Some(owner_guard)) => owner_guard,
             Ok(None) => return false,
             Err(error) => {
-                tracing::warn!("获取服务所有权锁失败：{}", error);
+                error!("获取服务所有权锁失败：{error:#}");
                 return true;
             }
         };
@@ -142,7 +142,7 @@ fn run_service() -> platform_lib::Result<()> {
         })
         .await;
         if let Err(error) = result {
-            tracing::warn!("本地通道监督失败：{}", error);
+            error!("本地通道监督失败：{error:#}");
             drop(owner_guard);
             return true;
         }
@@ -172,8 +172,7 @@ fn run_service() -> platform_lib::Result<()> {
 
 async fn run_standalone() -> Result<()> {
     let pid = std::process::id();
-    info!("Suki Clash 服务独立模式");
-    info!("当前进程 PID {}", pid);
+    info!("服务已启动，独立模式，PID {pid}");
 
     let Some(_owner_guard) = acquire_service_owner().await? else {
         return Ok(());
@@ -199,7 +198,7 @@ async fn run_standalone() -> Result<()> {
         && error.is::<suki_clash_service::IpcRecoveryBudgetExhausted>()
     {
         // An intentional exhausted supervisor must not be relaunched forever by launchd.
-        warn!("服务恢复次数已耗尽，需要手动修复：{error:#}");
+        error!("服务恢复次数已耗尽，需要手动修复：{error:#}");
         return Ok(());
     }
     result?;

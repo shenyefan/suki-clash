@@ -177,8 +177,8 @@ fn owner_credentials() -> anyhow::Result<OwnerCredentials> {
     let app_data_dir = std::env::current_dir()?;
     #[cfg(unix)]
     let identity = OwnerIdentity::Unix {
-        uid: unsafe { platform_lib::geteuid() },
-        gid: unsafe { platform_lib::getegid() },
+        uid: unsafe { libc::geteuid() },
+        gid: unsafe { libc::getegid() },
     };
     #[cfg(windows)]
     let identity = OwnerIdentity::Windows {
@@ -205,7 +205,15 @@ fn mock_binary_path() -> anyhow::Result<String> {
     }
 
     let status = Command::new("cargo")
-        .args(["build", "--features", "test"])
+        .args([
+            "build",
+            "--manifest-path",
+            concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml"),
+            "--features",
+            "test",
+            "--bin",
+            "mock_binary",
+        ])
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
         .status()?;

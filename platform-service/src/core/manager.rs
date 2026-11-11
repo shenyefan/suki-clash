@@ -110,7 +110,7 @@ impl ChildGuard {
     async fn terminate(&mut self, grace: Duration) -> Result<()> {
         let Some(child) = self.child.as_mut() else {
             self.drain_output().await;
-            info!("未发现运行中的内核进程");
+            debug!("无运行中的内核进程");
             return Ok(());
         };
         let child_id = child.id();
@@ -125,7 +125,7 @@ impl ChildGuard {
         result?;
         self.child.take();
         self.drain_output().await;
-        info!("内核（{:?}）已停止", child_id);
+        debug!("内核进程已停止，PID {child_id:?}");
         Ok(())
     }
 
@@ -158,11 +158,11 @@ impl Drop for ChildGuard {
                 if let Err(e) = child.kill().await {
                     warn!("终止子进程（{:?}）失败：{e}", child.id());
                 } else {
-                    info!("已终止子进程（{:?}）", child.id());
+                    debug!("子进程已终止，PID {:?}", child.id());
                 }
             });
         } else {
-            info!("未发现运行中的内核进程");
+            debug!("无运行中的内核进程");
         }
     }
 }
@@ -537,7 +537,7 @@ impl CoreManager {
 
                     tokio::select! {
                         kill_by = &mut shutdown_rx => {
-                            info!("内核看护收到停止信号");
+                            debug!("内核看护收到停止信号");
                             let grace = term_grace(kill_by.unwrap_or(None));
                             if let Err(error) = current_guard.terminate(grace).await {
                                 *failed_child_arc.lock().await = Some(current_guard);
@@ -733,7 +733,7 @@ impl CoreManager {
 
         if let Some(handle) = self.watchdog_handle.lock().await.take() {
             handle.await.context("watchdog task failed to join")??;
-            info!("内核看护已停止");
+            debug!("内核看护已停止");
         }
 
         Ok(())
@@ -811,7 +811,7 @@ pub async fn run_with_logging(
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .pre_exec(|| {
-                platform_lib::umask(0o007);
+                libc::umask(0o007);
                 Ok(())
             })
             .spawn()?
@@ -867,12 +867,9 @@ fn prepare_core_ipc_socket(core_ipc_path: &str, owner: &OwnerIdentity) -> Result
         let directory_c = std::ffi::CString::new(directory.as_os_str().as_bytes())
             .map_err(|_| anyhow::anyhow!("core IPC directory contains NUL"))?;
         let fd = unsafe {
-            platform_lib::open(
+            libc::open(
                 directory_c.as_ptr(),
-                platform_lib::O_RDONLY
-                    | platform_lib::O_DIRECTORY
-                    | platform_lib::O_NOFOLLOW
-                    | platform_lib::O_CLOEXEC,
+                libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
             )
         };
         if fd < 0 {
@@ -881,22 +878,22 @@ fn prepare_core_ipc_socket(core_ipc_path: &str, owner: &OwnerIdentity) -> Result
         }
 
         let result = (|| -> Result<()> {
-            let mut stat = unsafe { std::mem::zeroed::<platform_lib::stat>() };
-            if unsafe { platform_lib::fstat(fd, &mut stat) } != 0 {
+            let mut stat = unsafe { std::mem::zeroed::<libc::stat>() };
+            if unsafe { libc::fstat(fd, &mut stat) } != 0 {
                 return Err(std::io::Error::last_os_error())
                     .context("failed to inspect core IPC directory");
             }
-            let effective_uid = unsafe { platform_lib::geteuid() };
-            if stat.st_mode & platform_lib::S_IFMT != platform_lib::S_IFDIR
+            let effective_uid = unsafe { libc::geteuid() };
+            if stat.st_mode & libc::S_IFMT != libc::S_IFDIR
                 || (stat.st_uid != 0 && stat.st_uid != *uid && stat.st_uid != effective_uid)
             {
                 anyhow::bail!("core IPC directory has an unexpected owner or file type");
             }
-            if unsafe { platform_lib::fchmod(fd, 0o700 as platform_lib::mode_t) } != 0 {
+            if unsafe { libc::fchmod(fd, 0o700 as libc::mode_t) } != 0 {
                 return Err(std::io::Error::last_os_error())
                     .context("failed to make core IPC directory private");
             }
-            if effective_uid == 0 && unsafe { platform_lib::fchown(fd, 0, 0) } != 0 {
+            if effective_uid == 0 && unsafe { libc::fchown(fd, 0, 0) } != 0 {
                 return Err(std::io::Error::last_os_error())
                     .context("failed to take ownership of core IPC directory");
             }
@@ -906,7 +903,7 @@ fn prepare_core_ipc_socket(core_ipc_path: &str, owner: &OwnerIdentity) -> Result
                 .context("core IPC path has no file name")?;
             let file_name_c = std::ffi::CString::new(file_name.as_bytes())
                 .map_err(|_| anyhow::anyhow!("core IPC file name contains NUL"))?;
-            if unsafe { platform_lib::unlinkat(fd, file_name_c.as_ptr(), 0) } != 0 {
+            if unsafe { libc::unlinkat(fd, file_name_c.as_ptr(), 0) } != 0 {
                 let error = std::io::Error::last_os_error();
                 if error.kind() != std::io::ErrorKind::NotFound {
                     return Err(error).context("failed to clear stale core IPC entry");
@@ -914,7 +911,7 @@ fn prepare_core_ipc_socket(core_ipc_path: &str, owner: &OwnerIdentity) -> Result
             }
             Ok(())
         })();
-        unsafe { platform_lib::close(fd) };
+        unsafe { libc::close(fd) };
         result
     }
 
@@ -935,27 +932,22 @@ fn grant_core_ipc_directory_to_owner(target: &std::path::Path, uid: u32, gid: u3
     let directory_c = std::ffi::CString::new(directory.as_os_str().as_bytes())
         .map_err(|_| anyhow::anyhow!("core IPC directory contains NUL"))?;
     let fd = unsafe {
-        platform_lib::open(
+        libc::open(
             directory_c.as_ptr(),
-            platform_lib::O_RDONLY
-                | platform_lib::O_DIRECTORY
-                | platform_lib::O_NOFOLLOW
-                | platform_lib::O_CLOEXEC,
+            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
         )
     };
     if fd < 0 {
         return Err(std::io::Error::last_os_error()).context("failed to reopen core IPC directory");
     }
-    let result = if unsafe { platform_lib::geteuid() } == 0
-        && unsafe { platform_lib::fchown(fd, uid, gid) } != 0
-    {
+    let result = if unsafe { libc::geteuid() } == 0 && unsafe { libc::fchown(fd, uid, gid) } != 0 {
         Err(std::io::Error::last_os_error()).context("failed to grant core IPC directory to owner")
-    } else if unsafe { platform_lib::fchmod(fd, 0o700 as platform_lib::mode_t) } != 0 {
+    } else if unsafe { libc::fchmod(fd, 0o700 as libc::mode_t) } != 0 {
         Err(std::io::Error::last_os_error()).context("failed to secure granted core IPC directory")
     } else {
         Ok(())
     };
-    unsafe { platform_lib::close(fd) };
+    unsafe { libc::close(fd) };
     result
 }
 
@@ -1003,14 +995,14 @@ async fn secure_core_ipc_socket(
         }
         let path = std::ffi::CString::new(target.as_os_str().as_bytes())
             .map_err(|_| anyhow::anyhow!("core IPC socket path contains NUL"))?;
-        let chown_ok = unsafe { platform_lib::geteuid() } != 0
-            || unsafe { platform_lib::lchown(path.as_ptr(), uid, gid) } == 0;
+        let chown_ok = unsafe { libc::geteuid() } != 0
+            || unsafe { libc::lchown(path.as_ptr(), uid, gid) } == 0;
         let chmod_ok = unsafe {
-            platform_lib::fchmodat(
-                platform_lib::AT_FDCWD,
+            libc::fchmodat(
+                libc::AT_FDCWD,
                 path.as_ptr(),
-                0o600 as platform_lib::mode_t,
-                platform_lib::AT_SYMLINK_NOFOLLOW,
+                0o600 as libc::mode_t,
+                libc::AT_SYMLINK_NOFOLLOW,
             )
         } == 0;
         let os_error = (!chown_ok || !chmod_ok).then(std::io::Error::last_os_error);
@@ -1161,8 +1153,8 @@ mod tests {
         let path = directory.join("suki-mihomo.sock");
         let listener = tokio::net::UnixListener::bind(&path)?;
         let owner = OwnerIdentity::Unix {
-            uid: unsafe { platform_lib::geteuid() },
-            gid: unsafe { platform_lib::getegid() },
+            uid: unsafe { libc::geteuid() },
+            gid: unsafe { libc::getegid() },
         };
 
         prepare_core_ipc_socket(&path.to_string_lossy(), &owner)?;

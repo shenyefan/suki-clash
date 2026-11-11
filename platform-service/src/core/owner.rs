@@ -103,12 +103,7 @@ fn try_acquire_owner_once(paths: &ServicePaths) -> Result<Option<ServiceOwnerGua
             .open(paths.owner_lock_path())
             .with_context(|| format!("failed to open owner lock {:?}", paths.owner_lock_path()))?;
 
-        let result = unsafe {
-            platform_lib::flock(
-                file.as_raw_fd(),
-                platform_lib::LOCK_EX | platform_lib::LOCK_NB,
-            )
-        };
+        let result = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
 
         if result == 0 {
             return ServiceOwnerGuard::new(file, paths.clone()).map(Some);

@@ -37,6 +37,29 @@ const PRIVATE_SERVICE_FILE_SDDL: &str = "O:SYD:P(A;;FA;;;SY)(A;;FA;;;BA)";
 #[cfg(feature = "test")]
 const PRIVATE_SERVICE_FILE_SDDL: &str = "D:P(A;;FA;;;OW)(A;;FA;;;SY)(A;;FA;;;BA)";
 
+pub(super) fn create_control_pipe(
+    path: &Path,
+    sddl: &str,
+    first: bool,
+) -> Result<tokio::net::windows::named_pipe::NamedPipeServer> {
+    let descriptor = LocalDescriptor::from_sddl(sddl)?;
+    let mut attributes = SECURITY_ATTRIBUTES {
+        nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+        lpSecurityDescriptor: descriptor.0,
+        bInheritHandle: 0,
+    };
+    // CreateNamedPipe copies the descriptor before this function releases it.
+    Ok(unsafe {
+        tokio::net::windows::named_pipe::ServerOptions::new()
+            .first_pipe_instance(first)
+            .reject_remote_clients(true)
+            .create_with_security_attributes_raw(
+                path,
+                (&mut attributes as *mut SECURITY_ATTRIBUTES).cast(),
+            )?
+    })
+}
+
 pub(crate) fn ensure_private_service_directory(path: &Path) -> Result<()> {
     ensure_private_directory(path, PRIVATE_SERVICE_DIRECTORY_SDDL)
 }

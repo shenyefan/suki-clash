@@ -101,9 +101,8 @@ pub(super) async fn run(
     mut targets: watch::Receiver<Option<Target>>,
     mut shutdown: watch::Receiver<bool>,
 ) {
-    let mut backoff = Duration::from_millis(250);
-    let mut failure = None;
-    let mut failures = 0u8;
+    let mut reconnect = super::streams::Reconnect::default();
+    let mut disconnected = false;
     let mut scope = None;
     let mut service_cursor = ServiceCursor::default();
     'supervisor: loop {
@@ -117,8 +116,8 @@ pub(super) async fn run(
         };
         if scope != Some((target.generation, target.epoch)) {
             scope = Some((target.generation, target.epoch));
-            failures = 0;
-            failure = None;
+            reconnect = super::streams::Reconnect::default();
+            disconnected = false;
         }
         let Some(mut source) = target.logs else {
             tokio::select! {_=shutdown.changed()=>break,changed=targets.changed()=>{if changed.is_err(){break;}}}
@@ -148,7 +147,8 @@ pub(super) async fn run(
                         match batch.and_then(suki_service::response_data) {
                             Ok(batch) => {
                                     if let Err(error) = service_cursor.publish(batch, &mut output, &source.settings.borrow().0, &feed) { rejected = true; break Err(error); }
-                                    failure = None; failures = 0; backoff = Duration::from_millis(250);
+                                    if disconnected { feed.emit(Level::Info, "logging", "内核日志获取已恢复"); disconnected = false; }
+                                    reconnect.recovered();
                             },
                             Err(error) => { rejected = !suki_service::is_unreachable(&error); break Err(error.to_string()); },
                         }
@@ -156,33 +156,37 @@ pub(super) async fn run(
                 }
             };
             if let Err(error) = result {
-                failures += 1;
-                if rejected || failures >= 3 {
+                let (first, delay) = reconnect.failed();
+                feed.emit(
+                    Level::Trace,
+                    "logging",
+                    &format!("服务内核日志获取失败，原因 {error}"),
+                );
+                if rejected {
                     feed.emit(
                         Level::Warning,
                         "logging",
-                        &if rejected {
-                            error.clone()
-                        } else {
-                            format!("{error}；已停止自动重连")
-                        },
+                        "内核日志获取被拒绝，等待连接目标更新",
                     );
-                } else if failure.as_ref() != Some(&error) {
-                    feed.emit(Level::Debug, "logging", &error);
-                    failure = Some(error);
+                } else if first {
+                    feed.emit(Level::Warning, "logging", "内核日志获取失败");
                 }
-                if rejected || failures >= 3 {
+                disconnected = true;
+                if rejected {
                     tokio::select! { _ = shutdown.changed() => break, changed = targets.changed() => { if changed.is_err() { break; } } }
                     continue;
                 }
-                tokio::select! { _ = shutdown.changed() => break, changed = targets.changed() => { if changed.is_err() { break; } }, _ = tokio::time::sleep(backoff) => {} }
-                backoff = (backoff * 2).min(Duration::from_secs(8));
+                tokio::select! { _ = shutdown.changed() => break, changed = targets.changed() => { if changed.is_err() { break; } }, _ = tokio::time::sleep(delay) => {} }
                 continue;
             }
         }
+        let mut rejected = false;
         let connection = tokio::select! {biased;_=shutdown.changed()=>break,changed=targets.changed()=>{if changed.is_err(){break;}continue;},result=target.client.websocket("/logs?level=debug")=>result};
         let result: Result<(), String> = match connection {
-            Err(error) => Err(error),
+            Err(error) => {
+                rejected = error.rejected;
+                Err(error.message)
+            }
             Ok(mut socket) => {
                 source.pipe_suppressed.store(true, Ordering::Release);
                 let _guard = PipeGuard(source.pipe_suppressed.clone());
@@ -196,7 +200,7 @@ pub(super) async fn run(
                     use tokio_tungstenite::tungstenite::Message;
                     tokio::select! {biased;
                         _=shutdown.changed()=>{let _=tokio::time::timeout(Duration::from_millis(250),socket.close(None)).await;break 'supervisor;},
-                        changed=targets.changed()=>{let _=tokio::time::timeout(Duration::from_millis(250),socket.close(None)).await;if changed.is_err(){break 'supervisor;}backoff=Duration::from_millis(250);continue 'supervisor;},
+                        changed=targets.changed()=>{let _=tokio::time::timeout(Duration::from_millis(250),socket.close(None)).await;if changed.is_err(){break 'supervisor;}continue 'supervisor;},
                         changed=source.settings.changed()=>{if changed.is_err(){break Err("内核日志设置通道已关闭".into());}let limits=source.settings.borrow_and_update().1;output.configure(&paths,limits);},
                         _=heartbeat.tick()=>{
                             // Mihomo only writes log frames; it does not read client Ping frames.
@@ -209,15 +213,40 @@ pub(super) async fn run(
                                 };
                                 if let Err(error) = health { break Err(error); }
                                 alive = tokio::time::Instant::now();
-                                failures = 0;
-                                failure = None;
+                                if disconnected { feed.emit(Level::Info, "logging", "内核日志获取已恢复"); disconnected = false; }
+                                reconnect.recovered();
                             }
                         },
                         next=socket.next()=>match next{
-                            Some(Ok(Message::Text(bytes)))=>{alive=tokio::time::Instant::now();match line(bytes.as_bytes()){Ok(line)=>output.write(line.as_bytes(),&source.settings.borrow().0,false),Err(error)=>break Err(error)}if connected_at.elapsed()>=Duration::from_secs(10){failures=0;}failure=None;backoff=Duration::from_millis(250);},
-                            Some(Ok(Message::Binary(bytes)))=>{alive=tokio::time::Instant::now();match line(&bytes){Ok(line)=>output.write(line.as_bytes(),&source.settings.borrow().0,false),Err(error)=>break Err(error)}},
+                            Some(Ok(Message::Text(bytes))) => {
+                                let value = match line(bytes.as_bytes()) {
+                                    Ok(value) => value,
+                                    Err(error) => { rejected = true; break Err(error); }
+                                };
+                                output.write(value.as_bytes(), &source.settings.borrow().0, false);
+                                alive = tokio::time::Instant::now();
+                                if disconnected {
+                                    feed.emit(Level::Info, "logging", "内核日志获取已恢复");
+                                    disconnected = false;
+                                }
+                                if connected_at.elapsed() >= Duration::from_secs(10) { reconnect.recovered(); }
+                            },
+                            Some(Ok(Message::Binary(bytes))) => {
+                                let value = match line(&bytes) {
+                                    Ok(value) => value,
+                                    Err(error) => { rejected = true; break Err(error); }
+                                };
+                                output.write(value.as_bytes(), &source.settings.borrow().0, false);
+                                alive = tokio::time::Instant::now();
+                                if disconnected {
+                                    feed.emit(Level::Info, "logging", "内核日志获取已恢复");
+                                    disconnected = false;
+                                }
+                                if connected_at.elapsed() >= Duration::from_secs(10) { reconnect.recovered(); }
+                            },
                             Some(Ok(Message::Ping(bytes)))=>{alive=tokio::time::Instant::now();if !matches!(tokio::time::timeout(Duration::from_secs(2),socket.send(Message::Pong(bytes))).await,Ok(Ok(()))){break Err("内核日志心跳响应失败".into());}},
-                            Some(Ok(Message::Pong(_)))=>{alive=tokio::time::Instant::now();if connected_at.elapsed()>=Duration::from_secs(10){failures=0;}},
+                            Some(Ok(Message::Pong(_)))=>{alive=tokio::time::Instant::now();if connected_at.elapsed()>=Duration::from_secs(10){reconnect.recovered();}},
+                            Some(Err(error)) if super::client::SocketError::is_rejected(&error)=>{rejected=true;break Err(crate::logging::diagnostic_error("内核日志协议错误".into(),error));},
                             Some(Ok(Message::Frame(_)))=>{},
                             _=>break Err("内核日志连接中断".into()),
                         }
@@ -225,27 +254,30 @@ pub(super) async fn run(
                 }
             }
         };
-        failures += 1;
+        let (first, delay) = reconnect.failed();
         if let Err(error) = result {
-            if failures >= 3 {
+            feed.emit(
+                Level::Trace,
+                "logging",
+                &format!("内核日志获取失败，原因 {error}"),
+            );
+            if rejected {
                 feed.emit(
                     Level::Warning,
                     "logging",
-                    &format!("{error}；已停止自动重连"),
+                    "内核日志获取被拒绝，等待连接目标更新",
                 );
-            } else if failure.as_ref() != Some(&error) {
-                feed.emit(Level::Debug, "logging", &error);
+            } else if first {
+                feed.emit(Level::Warning, "logging", "内核日志获取失败");
             }
-            failure = Some(error);
         }
-        if failures >= 3 {
+        disconnected = true;
+        if rejected {
             tokio::select! {biased;_=shutdown.changed()=>break,changed=targets.changed()=>if changed.is_err(){break;}}
-            failures = 0;
-            backoff = Duration::from_millis(250);
+            reconnect = super::streams::Reconnect::default();
             continue;
         }
-        tokio::select! {_=shutdown.changed()=>break,changed=targets.changed()=>{if changed.is_err(){break;}failures=0;},_=tokio::time::sleep(backoff)=>{}}
-        backoff = (backoff * 2).min(Duration::from_secs(8));
+        tokio::select! {_=shutdown.changed()=>break,changed=targets.changed()=>{if changed.is_err(){break;}},_=tokio::time::sleep(delay)=>{}}
     }
 }
 #[cfg(test)]
@@ -473,7 +505,7 @@ mod supervision_tests {
     }
 
     #[tokio::test]
-    async fn failed_log_connections_stop_after_three_and_publish_the_cause_once() {
+    async fn failed_log_connections_keep_retrying_and_warn_once() {
         let root = tempfile::tempdir().unwrap();
         let paths = AppPaths::isolated(root.path());
         paths.create().unwrap();
@@ -504,8 +536,8 @@ mod supervision_tests {
         let (shutdown, cancel) = watch::channel(false);
         let feed = Feed::default();
         let task = tokio::spawn(run(paths, feed.clone(), receiver, cancel));
-        for _ in 0..3 {
-            let (socket, _) = tokio::time::timeout(Duration::from_secs(3), listener.accept())
+        for _ in 0..4 {
+            let (socket, _) = tokio::time::timeout(Duration::from_secs(5), listener.accept())
                 .await
                 .unwrap()
                 .unwrap();
@@ -520,14 +552,16 @@ mod supervision_tests {
         assert_eq!(
             records
                 .iter()
-                .filter(|record| record.message.contains("握手失败"))
+                .filter(
+                    |record| record.level == Level::Warning && record.message.contains("握手失败")
+                )
                 .count(),
             1
         );
         assert!(
             records
                 .iter()
-                .any(|record| record.message.contains("停止自动重连"))
+                .any(|record| record.message.contains("将自动重连"))
         );
         assert!(!suppressed.load(Ordering::Acquire));
         let mut next = current;

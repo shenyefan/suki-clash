@@ -35,24 +35,18 @@ impl SettingsPage {
                 };
                 if matches!(action, crate::core::ServiceAction::Uninstall) {
                     use gpui_kit::component::WindowExt;
-                    let owner = cx.weak_entity();
                     window.open_alert_dialog(cx, move |dialog, window, cx| {
                         let action = action.clone();
-                        let owner = owner.clone();
                         ui::modal_alert(dialog, window, cx)
                             .title("卸载服务并关闭虚拟网卡？")
-                            .description(
-                                "系统代理设置保留；虚拟网卡将关闭。确认后等待 5 秒，期间可撤销。",
-                            )
+                            .description("系统代理设置保留；虚拟网卡将关闭。")
                             .footer(ui::dialog_footer("卸载服务"))
                             .on_ok(move |_, window, cx| {
-                                let _ = owner.update(cx, |this, cx| {
-                                    this.defer_action(
-                                        super::runtime::DeferredAction::Service(action.clone()),
-                                        window,
-                                        cx,
-                                    )
-                                });
+                                crate::core::request(
+                                    crate::core::Command::PlatformService(action.clone()),
+                                    window,
+                                    cx,
+                                );
                                 true
                             })
                     });

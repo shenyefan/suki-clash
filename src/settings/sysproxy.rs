@@ -290,9 +290,7 @@ mod tests {
         cx.run_until_parked();
         handle
             .update(cx, |_, window, cx| {
-                page.update(cx, |page, cx| {
-                    page.defer_destructive("重置程序", window, cx)
-                });
+                page.update(cx, |page, cx| page.defer_fake_ip(window, cx));
             })
             .unwrap();
         cx.run_until_parked();

@@ -102,11 +102,7 @@ impl History {
         if self.busy || self.pending.is_some() {
             return;
         }
-        let message = if matches!(command, Command::Restore(_)) {
-            "5 秒后恢复备份"
-        } else {
-            "5 秒后删除备份"
-        };
+        let message = "5 秒后删除备份";
         let owner = cx.weak_entity();
         ui::notifications::undo(window, message, cx, move |_, cx| {
             let _ = owner.update(cx, |this, cx| {
@@ -188,17 +184,62 @@ impl History {
         let delete = entry.id.clone();
         let disabled = self.busy || self.pending.is_some() || self.picker.is_some();
         let date: chrono::DateTime<chrono::Local> = entry.modified.into();
-        h_flex().w_full().gap(space::SM)
-            .child(v_flex().flex_1().min_w(space::NONE).child(date.format("%Y-%m-%d %H:%M:%S %:z").to_string()).child(ui::muted(entry.id.name(),cx).truncate()))
-            .child(Button::new(SharedString::from(format!("export-{}",entry.id.name()))).outline().icon(assets::IconName::FileOutput).label("导出").disabled(disabled).on_click(cx.listener(move|this,_,window,cx|this.export(export.clone(),window,cx))))
-            .child(Button::new(SharedString::from(format!("restore-{}",entry.id.name()))).outline().icon(assets::IconName::RotateCcw).label("恢复").disabled(disabled).on_click(cx.listener(move|_,_,window,cx|{
-                let owner=cx.weak_entity();let restore=restore.clone();
-                window.open_alert_dialog(cx,move|dialog,window,cx|{
-                    let owner=owner.clone();let restore=restore.clone();
-                    ui::modal_alert(dialog,window,cx).title("恢复此本地备份？").description("替换当前配置、订阅与覆写；本机同步设置保留。确认后等待 5 秒，期间可撤销。").footer(ui::dialog_footer("恢复备份")).on_ok(move|_,window,cx|{let _=owner.update(cx,|this,cx|this.defer(Command::Restore(restore.clone()),window,cx));true})
-                });
-            })))
-            .child(ui::icon_button(SharedString::from(format!("delete-{}",entry.id.name())),assets::IconName::Trash,"删除备份").disabled(disabled).on_click(cx.listener(move|this,_,window,cx|this.defer(Command::Delete(delete.clone()),window,cx))))
+        h_flex()
+            .w_full()
+            .gap(space::SM)
+            .child(
+                v_flex()
+                    .flex_1()
+                    .min_w(space::NONE)
+                    .child(date.format("%Y-%m-%d %H:%M:%S %:z").to_string())
+                    .child(ui::muted(entry.id.name(), cx).truncate()),
+            )
+            .child(
+                Button::new(SharedString::from(format!("export-{}", entry.id.name())))
+                    .outline()
+                    .icon(assets::IconName::FileOutput)
+                    .label("导出")
+                    .disabled(disabled)
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.export(export.clone(), window, cx)
+                    })),
+            )
+            .child(
+                Button::new(SharedString::from(format!("restore-{}", entry.id.name())))
+                    .outline()
+                    .icon(assets::IconName::RotateCcw)
+                    .label("恢复")
+                    .disabled(disabled)
+                    .on_click(cx.listener(move |_, _, window, cx| {
+                        let owner = cx.weak_entity();
+                        let restore = restore.clone();
+                        window.open_alert_dialog(cx, move |dialog, window, cx| {
+                            let owner = owner.clone();
+                            let restore = restore.clone();
+                            ui::modal_alert(dialog, window, cx)
+                                .title("恢复此本地备份？")
+                                .description("替换当前配置、订阅与覆写；本机同步设置保留。")
+                                .footer(ui::dialog_footer("恢复备份"))
+                                .on_ok(move |_, window, cx| {
+                                    let _ = owner.update(cx, |this, cx| {
+                                        this.run(Command::Restore(restore.clone()), window, cx)
+                                    });
+                                    true
+                                })
+                        });
+                    })),
+            )
+            .child(
+                ui::icon_button(
+                    SharedString::from(format!("delete-{}", entry.id.name())),
+                    assets::IconName::Trash,
+                    "删除备份",
+                )
+                .disabled(disabled)
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.defer(Command::Delete(delete.clone()), window, cx)
+                })),
+            )
             .into_any_element()
     }
 }

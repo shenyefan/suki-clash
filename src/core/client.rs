@@ -34,8 +34,30 @@ struct Version {
 pub(super) trait Ipc: AsyncRead + AsyncWrite + Unpin + Send {}
 impl<T: AsyncRead + AsyncWrite + Unpin + Send> Ipc for T {}
 pub(super) type Socket = tokio_tungstenite::WebSocketStream<Box<dyn Ipc>>;
+#[derive(Debug)]
+pub(super) struct SocketError {
+    pub(super) message: String,
+    pub(super) rejected: bool,
+}
+impl SocketError {
+    pub(super) fn is_rejected(error: &tokio_tungstenite::tungstenite::Error) -> bool {
+        match error {
+            tokio_tungstenite::tungstenite::Error::Http(response) => {
+                response.status().is_client_error()
+                    && !matches!(response.status().as_u16(), 408 | 429)
+            }
+            tokio_tungstenite::tungstenite::Error::Protocol(
+                tokio_tungstenite::tungstenite::error::ProtocolError::HandshakeIncomplete
+                | tokio_tungstenite::tungstenite::error::ProtocolError::ResetWithoutClosingHandshake,
+            ) => false,
+            tokio_tungstenite::tungstenite::Error::Capacity(_)
+            | tokio_tungstenite::tungstenite::Error::Protocol(_) => true,
+            _ => false,
+        }
+    }
+}
 impl Client {
-    async fn connect(&self) -> Result<Box<dyn Ipc>, String> {
+    async fn connect(&self) -> Result<Box<dyn Ipc>, SocketError> {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
         loop {
             let result: io::Result<Box<dyn Ipc>> = match &self.endpoint {
@@ -62,7 +84,10 @@ impl Client {
                         || error.raw_os_error()
                             == Some(windows_sys::Win32::Foundation::ERROR_PIPE_BUSY as i32);
                     if !transient || tokio::time::Instant::now() >= deadline {
-                        return Err(format!("连接内核本地通道失败：{error}"));
+                        return Err(SocketError {
+                            rejected: error.kind() == io::ErrorKind::PermissionDenied,
+                            message: format!("内核通道连接失败：{error}"),
+                        });
                     }
                     // Retry only opening the channel. No request has been sent,
                     // so writes cannot be repeated after a lost acknowledgement.
@@ -71,7 +96,7 @@ impl Client {
             }
         }
     }
-    pub(super) async fn websocket(&self, path: &str) -> Result<Socket, String> {
+    pub(super) async fn websocket(&self, path: &str) -> Result<Socket, SocketError> {
         use tokio_tungstenite::tungstenite::{
             client::IntoClientRequest, http::HeaderValue, protocol::WebSocketConfig,
         };
@@ -79,11 +104,18 @@ impl Client {
             let stream = self.connect().await?;
             let mut request = format!("ws://localhost{path}")
                 .into_client_request()
-                .map_err(|error| {
-                    crate::logging::diagnostic_error("无法构造内核 WebSocket 请求", error)
+                .map_err(|error| SocketError {
+                    message: crate::logging::diagnostic_error(
+                        "无法构造内核 WebSocket 请求".into(),
+                        error,
+                    ),
+                    rejected: true,
                 })?;
             let mut authorization = HeaderValue::from_str(&format!("Bearer {}", self.secret))
-                .map_err(|error| crate::logging::rejected("内核鉴权配置无效", error))?;
+                .map_err(|error| SocketError {
+                    message: crate::logging::rejected("内核鉴权配置无效", error).into(),
+                    rejected: true,
+                })?;
             authorization.set_sensitive(true);
             request.headers_mut().insert("Authorization", authorization);
             let config = WebSocketConfig::default()
@@ -97,19 +129,25 @@ impl Client {
                             "内核 WebSocket 握手失败：{}",
                             crate::logging::error_chain(&error)
                         );
-                        match error {
+                        let rejected = SocketError::is_rejected(&error);
+                        let message = match error {
                             tokio_tungstenite::tungstenite::Error::Http(response) => {
                                 format!("内核 WebSocket 返回 HTTP {}", response.status().as_u16())
                             }
                             _ => "内核 WebSocket 握手失败".into(),
-                        }
+                        };
+                        SocketError { message, rejected }
                     })?;
             Ok(socket)
         };
         tokio::time::timeout(Duration::from_secs(5), work)
             .await
-            .map_err(|error| {
-                crate::logging::diagnostic_error("内核 WebSocket 连接超时".to_owned(), error)
+            .map_err(|error| SocketError {
+                message: crate::logging::diagnostic_error(
+                    "内核 WebSocket 连接超时".to_owned(),
+                    error,
+                ),
+                rejected: false,
             })?
     }
     pub(super) async fn close_connections(&self, id: Option<&str>) -> Result<(), String> {
@@ -247,8 +285,13 @@ impl Client {
             None => format!("/proxies/{name}/delay?{query}"),
         };
         let (status, body) = tokio::time::timeout(Duration::from_millis(timeout), async {
-            self.exchange_response(self.connect().await?, Method::GET, &path, Vec::new())
-                .await
+            self.exchange_response(
+                self.connect().await.map_err(|error| error.message)?,
+                Method::GET,
+                &path,
+                Vec::new(),
+            )
+            .await
         })
         .await
         .map_err(|error| {
@@ -493,7 +536,7 @@ impl Client {
         timeout: Duration,
         payload: Vec<u8>,
     ) -> Result<Vec<u8>, String> {
-        let stream = self.connect().await?;
+        let stream = self.connect().await.map_err(|error| error.message)?;
         let read_only = method == Method::GET;
         tokio::time::timeout(timeout, self.exchange(stream, method, path, payload))
             .await
@@ -634,7 +677,7 @@ mod tests {
         let result = tokio::time::timeout(Duration::from_secs(4), client.version())
             .await
             .unwrap();
-        assert!(result.unwrap_err().contains("连接内核本地通道失败"));
+        assert!(result.unwrap_err().contains("内核通道连接失败"));
     }
 
     #[tokio::test]

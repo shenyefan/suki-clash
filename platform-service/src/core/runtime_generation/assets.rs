@@ -620,9 +620,9 @@ async fn prepare_owner_ipc_directory(owner: &AuthenticatedOwner) -> Result<(), S
         let directory = std::ffi::CString::new(directory.as_os_str().as_bytes())
             .map_err(|_| invalid_asset("owner IPC directory contains NUL"))?;
         let fd = unsafe {
-            platform_lib::open(
+            libc::open(
                 directory.as_ptr(),
-                platform_lib::O_DIRECTORY | platform_lib::O_NOFOLLOW | platform_lib::O_CLOEXEC,
+                libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
             )
         };
         if fd < 0 {
@@ -632,12 +632,12 @@ async fn prepare_owner_ipc_directory(owner: &AuthenticatedOwner) -> Result<(), S
             )));
         }
         let crate::OwnerIdentity::Unix { uid, .. } = owner.identity else {
-            unsafe { platform_lib::close(fd) };
+            unsafe { libc::close(fd) };
             return Err(invalid_asset("Unix IPC directory requires a Unix owner"));
         };
-        let mut stat = unsafe { std::mem::zeroed::<platform_lib::stat>() };
-        let inspected = unsafe { platform_lib::fstat(fd, &mut stat) } == 0;
-        let effective_uid = unsafe { platform_lib::geteuid() };
+        let mut stat = unsafe { std::mem::zeroed::<libc::stat>() };
+        let inspected = unsafe { libc::fstat(fd, &mut stat) } == 0;
+        let effective_uid = unsafe { libc::geteuid() };
         let test_process_owned = cfg!(feature = "test") && stat.st_uid == effective_uid;
         if !owner_ipc_directory_is_usable(
             inspected,
@@ -646,16 +646,15 @@ async fn prepare_owner_ipc_directory(owner: &AuthenticatedOwner) -> Result<(), S
             uid,
             test_process_owned,
         ) {
-            unsafe { platform_lib::close(fd) };
+            unsafe { libc::close(fd) };
             return Err(invalid_asset(
                 "owner IPC directory has an unexpected owner or file type",
             ));
         }
-        let chown_ok = unsafe { platform_lib::geteuid() } != 0
-            || unsafe { platform_lib::fchown(fd, 0, 0) } == 0;
-        let chmod_ok = unsafe { platform_lib::fchmod(fd, 0o700 as platform_lib::mode_t) } == 0;
+        let chown_ok = unsafe { libc::geteuid() } != 0 || unsafe { libc::fchown(fd, 0, 0) } == 0;
+        let chmod_ok = unsafe { libc::fchmod(fd, 0o700 as libc::mode_t) } == 0;
         let os_error = (!chown_ok || !chmod_ok).then(std::io::Error::last_os_error);
-        unsafe { platform_lib::close(fd) };
+        unsafe { libc::close(fd) };
         if let Some(error) = os_error {
             return Err(invalid_asset(format!(
                 "failed to secure owner IPC directory: {error}"
@@ -673,13 +672,13 @@ async fn prepare_owner_ipc_directory(owner: &AuthenticatedOwner) -> Result<(), S
 #[cfg(unix)]
 fn owner_ipc_directory_is_usable(
     inspected: bool,
-    mode: platform_lib::mode_t,
+    mode: libc::mode_t,
     directory_uid: u32,
     owner_uid: u32,
     process_owned: bool,
 ) -> bool {
     inspected
-        && mode & platform_lib::S_IFMT == platform_lib::S_IFDIR
+        && mode & libc::S_IFMT == libc::S_IFDIR
         && (directory_uid == 0 || directory_uid == owner_uid || process_owned)
 }
 
@@ -687,8 +686,8 @@ fn owner_ipc_directory_is_usable(
 mod owner_ipc_directory_tests {
     use super::owner_ipc_directory_is_usable;
 
-    const DIR: platform_lib::mode_t = platform_lib::S_IFDIR | 0o700;
-    const FILE: platform_lib::mode_t = platform_lib::S_IFREG | 0o600;
+    const DIR: libc::mode_t = libc::S_IFDIR | 0o700;
+    const FILE: libc::mode_t = libc::S_IFREG | 0o600;
 
     #[test]
     fn accepts_a_root_owned_directory() {
@@ -890,8 +889,8 @@ mod tests {
             std::fs::create_dir_all(root).expect("test IPC root must be creatable");
         }
 
-        let uid = unsafe { platform_lib::geteuid() };
-        let gid = unsafe { platform_lib::getegid() };
+        let uid = unsafe { libc::geteuid() };
+        let gid = unsafe { libc::getegid() };
         AuthenticatedOwner {
             key: uid.to_string(),
             identity: OwnerIdentity::Unix { uid, gid },

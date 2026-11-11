@@ -13,8 +13,8 @@ pub fn test_owner_credentials(app_data_root: &Path) -> Result<OwnerCredentials> 
     #[cfg(unix)]
     let (identity, token) = (
         OwnerIdentity::Unix {
-            uid: unsafe { platform_lib::geteuid() },
-            gid: unsafe { platform_lib::getegid() },
+            uid: unsafe { libc::geteuid() },
+            gid: unsafe { libc::getegid() },
         },
         None,
     );
@@ -33,7 +33,7 @@ pub fn test_owner_credentials_for_uid(app_data_root: &Path, uid: u32) -> Result<
     std::fs::create_dir_all(app_data_root)?;
     let identity = OwnerIdentity::Unix {
         uid,
-        gid: unsafe { platform_lib::getegid() },
+        gid: unsafe { libc::getegid() },
     };
     let token = format!(
         "{SYNTHETIC_TEST_OWNER_TOKEN_PREFIX}{}",

@@ -217,17 +217,51 @@ fn install(service: Option<Service>, snapshot: Snapshot, cx: &mut App) {
                                 return vec![];
                             }
                             let mut errors = vec![];
-                            for (current, previous, level) in [
-                                (&runtime.error, &this.runtime.error, "ERROR"),
-                                (&runtime.history_error, &this.runtime.history_error, "ERROR"),
-                                (&runtime.stream_error, &this.runtime.stream_error, "WARNING"),
-                                (&runtime.probe_error, &this.runtime.probe_error, "WARNING"),
-                            ] {
-                                if current != previous
-                                    && let Some(error) = current
-                                    && !errors.iter().any(|(_, _, message)| message == error)
-                                {
-                                    errors.push((level, "statistics", error.clone()));
+                            let statistics_failed =
+                                runtime.error.is_some() || runtime.stream_error.is_some();
+                            let statistics_was_failed = runtime.generation == this.runtime.generation
+                                && runtime.epoch == this.runtime.epoch
+                                && (this.runtime.error.is_some()
+                                    || this.runtime.stream_error.is_some());
+                            if runtime.error != this.runtime.error
+                                && let Some(error) = &runtime.error
+                            {
+                                log::trace!(target: "statistics", "控制数据获取失败，原因 {error}");
+                            }
+                            if runtime.stream_error != this.runtime.stream_error
+                                && let Some(error) = &runtime.stream_error
+                            {
+                                log::trace!(target: "statistics", "实时数据获取失败，原因 {error}");
+                            }
+                            if statistics_failed && !statistics_was_failed {
+                                errors.push((
+                                    "WARNING",
+                                    "statistics",
+                                    "统计数据获取失败".to_owned(),
+                                ));
+                            } else if !statistics_failed && statistics_was_failed {
+                                crate::integration::announce_module(
+                                    "INFO",
+                                    "statistics",
+                                    "统计数据获取已恢复".into(),
+                                    cx,
+                                );
+                            }
+                            if this.runtime.history_error.is_none()
+                                && let Some(error) = &runtime.history_error
+                            {
+                                errors.push(("ERROR", "statistics", error.clone()));
+                            }
+                            if runtime.probe_error != this.runtime.probe_error
+                                && let Some(error) = &runtime.probe_error
+                            {
+                                log::trace!(target: "statistics", "出口信息获取失败，原因 {error}");
+                                if this.runtime.probe_error.is_none() {
+                                    errors.push((
+                                        "WARNING",
+                                        "statistics",
+                                        "出口信息获取失败".to_owned(),
+                                    ));
                                 }
                             }
                             if runtime.icons.error != this.runtime.icons.error

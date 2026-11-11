@@ -29,6 +29,8 @@ mod auth;
 mod desired;
 #[cfg(feature = "standalone")]
 mod installation;
+#[cfg(feature = "standalone")]
+mod ipc;
 
 #[cfg(feature = "standalone")]
 mod logger;

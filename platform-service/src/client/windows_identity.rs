@@ -3,9 +3,9 @@ use anyhow::{Context as _, Result, bail};
 use std::ffi::OsStr;
 
 #[cfg(not(feature = "test"))]
-use platform_lib::service::ServiceAccess;
+use windows_service::service::ServiceAccess;
 #[cfg(not(feature = "test"))]
-use platform_lib::service_manager::{ServiceManager, ServiceManagerAccess};
+use windows_service::service_manager::{ServiceManager, ServiceManagerAccess};
 
 fn is_local_system_account(account: &OsStr) -> bool {
     matches!(
@@ -56,7 +56,7 @@ fn verify_registered_service_process_id_inner(pipe_process_id: u32) -> Result<()
 }
 
 #[cfg(not(feature = "test"))]
-pub(super) fn verify_pipe(
+pub(super) async fn verify_pipe(
     pipe: &tokio::net::windows::named_pipe::NamedPipeClient,
 ) -> Result<(), super::RequestError> {
     use std::os::windows::io::AsRawHandle as _;
@@ -72,7 +72,9 @@ pub(super) fn verify_pipe(
             std::io::Error::last_os_error().to_string(),
         ));
     }
-    verify_registered_service_process_id_inner(pid)
+    tokio::task::spawn_blocking(move || verify_registered_service_process_id_inner(pid))
+        .await
+        .map_err(|error| super::RequestError::AccessDenied(error.to_string()))?
         .map_err(|error| super::RequestError::AccessDenied(format!("{error:#}")))
 }
 

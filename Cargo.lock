@@ -4566,33 +4566,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e2db585e1d738fc771bf08a151420d3ed193d9d895a36df7f6f8a9456b911ddc"
 
 [[package]]
-name = "kode-bridge"
-version = "0.5.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cdb14ea1ba42eebb57b46bcdd67a20f11a3f076d846ddf772c68d7439f6c6eca"
-dependencies = [
- "bytes",
- "futures",
- "http",
- "httparse",
- "libc",
- "parking_lot",
- "path-tree",
- "pin-project-lite",
- "rand 0.10.3",
- "serde",
- "serde_json",
- "thiserror 2.0.21",
- "tokio",
- "tokio-stream",
- "tokio-util",
- "toml 1.1.8+spec-1.1.0",
- "tracing",
- "url",
- "windows-sys 0.61.2",
-]
-
-[[package]]
 name = "kqueue"
 version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6021,15 +5994,6 @@ name = "pastey"
 version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2ee67f1008b1ba2321834326597b8e186293b049a023cdef258527550b9935b4"
-
-[[package]]
-name = "path-tree"
-version = "0.8.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c2a97453bc21a968f722df730bfe11bd08745cb50d1300b0df2bda131dece136"
-dependencies = [
- "smallvec",
-]
 
 [[package]]
 name = "pathfinder_geometry"
@@ -8055,7 +8019,7 @@ checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
 
 [[package]]
 name = "suki-clash"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "age",
  "anyhow",
@@ -8111,14 +8075,12 @@ dependencies = [
 
 [[package]]
 name = "suki-clash-service"
-version = "2.7.6"
+version = "0.1.1"
 dependencies = [
  "anyhow",
- "embed-resource",
  "http-body-util",
  "hyper",
  "hyper-util",
- "kode-bridge",
  "libc",
  "log",
  "once_cell",
@@ -8131,7 +8093,6 @@ dependencies = [
  "system-configuration 0.8.0",
  "thiserror 2.0.21",
  "tokio",
- "url",
  "windows 0.62.2",
  "windows-service",
  "windows-sys 0.61.2",
@@ -8576,17 +8537,6 @@ dependencies = [
  "either",
  "futures-util",
  "thiserror 1.0.69",
- "tokio",
-]
-
-[[package]]
-name = "tokio-stream"
-version = "0.1.19"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a3d06f0b082ba57c26b79407372e57cf2a1e28124f78e9479fe80322cf53420b"
-dependencies = [
- "futures-core",
- "pin-project-lite",
  "tokio",
 ]
 

@@ -1,7 +1,7 @@
 <component name="ProjectRunConfigurationManager">
-  <configuration default="false" name="Xwin Build" type="CargoCommandRunConfiguration" factoryName="Cargo Command">
-    <option name="command" value="xwin build --release --target x86_64-pc-windows-msvc" />
-    <option name="workingDirectory" value="file://$PROJECT_DIR$" />
+  <configuration default="false" name="Service Build" type="CargoCommandRunConfiguration" factoryName="Cargo Command">
+    <option name="command" value="build --features standalone --bin suki-clash-service" />
+    <option name="workingDirectory" value="file://$PROJECT_DIR$/platform-service" />
     <envs />
     <option name="emulateTerminal" value="true" />
     <option name="channel" value="DEFAULT" />

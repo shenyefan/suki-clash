@@ -120,13 +120,7 @@ fn acquire_stopped_service_guard() -> Result<StoppedServiceGuard> {
             .create(true)
             .truncate(false)
             .open(paths.owner_lock_path())?;
-        if unsafe {
-            platform_lib::flock(
-                file.as_raw_fd(),
-                platform_lib::LOCK_EX | platform_lib::LOCK_NB,
-            )
-        } != 0
-        {
+        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
             return Err(std::io::Error::last_os_error()).context(
                 "service owner lock is held; stop the service before stale-owner maintenance",
             );

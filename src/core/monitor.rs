@@ -112,7 +112,7 @@ impl Runtime {
                 }
                 Err(error) => {
                     if self.memory_error.is_none() {
-                        log::warn!("解析内核内存流失败：{error}");
+                        log::trace!("内存数据解析失败，原因 {error}");
                     }
                     self.memory_live = false;
                     self.memory_error = Some("内存流响应无效".into());
@@ -197,7 +197,6 @@ pub(super) async fn run(
     let mut timer = tokio::time::interval(Duration::from_secs(1));
     timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut last_control: Option<Instant> = None;
-    let mut control_failures = 0u8;
     let mut probe_requested = true;
     let mut probe_revision = refresh
         .as_ref()
@@ -235,7 +234,6 @@ pub(super) async fn run(
             history.set_proxies(&Proxies::default());
             scope = next_scope;
             last_control = None;
-            control_failures = 0;
             probe_requested = true;
             connection_error = None;
             traffic_error = None;
@@ -272,8 +270,8 @@ pub(super) async fn run(
                             else {
                                 let request = receiver.borrow_and_update().clone();
                                 if probe_revision != request.revision { probe_requested=true; probe_revision=request.revision; }
-                                if control_revision != request.proxies { last_control=None; control_failures=0; control_revision=request.proxies; }
-                                if !visible && request.visible { last_control=None; control_failures=0; }
+                                if control_revision != request.proxies { last_control=None; control_revision=request.proxies; }
+                                if !visible && request.visible { last_control=None; }
                                 visible=request.visible;
                                 send(&runtime,&updates,&observer);
                             }
@@ -323,7 +321,7 @@ pub(super) async fn run(
                             #[derive(serde::Deserialize)] struct Traffic {up:u64,down:u64}
                             match serde_json::from_slice::<Traffic>(&packet.bytes) {
                                 Ok(rate)=> {runtime.statistics.upload_rate=Some(rate.up);runtime.statistics.download_rate=Some(rate.down);runtime.statistics.rates=recorder.record_rate(chrono::Local::now(),rate.up,rate.down);runtime.traffic_live=true;traffic_error=None;},
-                                Err(error)=>{if traffic_error.is_none(){log::warn!("解析内核流量流失败：{error}");}traffic_error=Some("流量流响应无效".into());runtime.traffic_live=false;runtime.statistics.upload_rate=None;runtime.statistics.download_rate=None;runtime.statistics.rates.clear();recorder.gap();}
+                                Err(error)=>{if traffic_error.is_none(){log::trace!("流量数据解析失败，原因 {error}");}traffic_error=Some("流量流响应无效".into());runtime.traffic_live=false;runtime.statistics.upload_rate=None;runtime.statistics.download_rate=None;runtime.statistics.rates.clear();recorder.gap();}
                             }
                         } else {recorder.gap();runtime.traffic_live=false;runtime.statistics.upload_rate=None;runtime.statistics.download_rate=None;traffic_error=state.error;}
                     },
@@ -333,12 +331,11 @@ pub(super) async fn run(
                     },
                     _=timer.tick()=> {
                         let Some(current)=target.borrow().clone() else {continue;};
-                        if control_failures < 3 && (last_control.is_none() || visible && last_control.is_some_and(|last|last.elapsed()>=Duration::from_secs(15))) {
+                        if last_control.is_none() || visible && last_control.is_some_and(|last|last.elapsed()>=Duration::from_secs(15)) {
                             last_control=Some(Instant::now());
                             let observed=tokio::select! {biased;_=shutdown.changed()=>break,changed=target.changed()=>{if changed.is_err(){break;}continue;},result=read_control(&current)=>result};
                             match observed {
                                 Ok((mode,dns,mut proxies,port))=>{
-                                    control_failures=0;
                                     history.set_proxies(&proxies);
                                     let delays=delay_events.borrow();
                                     if scope==Some((delays.generation,delays.epoch)){proxies.measurements=delays.results.clone();proxies.testing=delays.testing.clone();proxies.batches=delays.batches.clone();}
@@ -347,12 +344,9 @@ pub(super) async fn run(
                                     icon_requests.send_if_modified(|old|{if old.as_ref().is_some_and(|old|old.target.generation==request.target.generation && old.target.epoch==request.target.epoch && old.sources==request.sources){false}else{*old=Some(request);true}});
                                     runtime.connected=true;runtime.mode=Some(mode);runtime.dns_mode=dns.or_else(||current.dns_mode.clone());runtime.error=proxies.provider_error.clone();runtime.proxies=proxies;runtime.proxy_port=port;},
                                 Err(error)=>{
-                                    control_failures+=1;
-                                    log::debug!("代理视图读取失败（{control_failures}/3）：{error}");
-                                    if control_failures>=3 {
-                                        runtime.connected=false;
-                                        runtime.error=Some(format!("{error}；已停止自动重试"));
-                                    }
+                                    log::trace!("代理视图获取失败，原因 {error}");
+                                    runtime.connected=false;
+                                    runtime.error=Some(format!("{error}；正在自动重试"));
                                 }
                             }
                         }

@@ -196,7 +196,7 @@ pub(crate) fn lowercase_root(mapping: Mapping) -> Mapping {
 }
 
 /// `profile` is the identity of the supplied source, not a UI selection.
-/// The development runtime-source has no profile identity, so only globals apply.
+/// A basic runtime has no profile identity, so only global overrides apply.
 /// Control-channel/platform protection runs afterwards in the lifecycle owner.
 pub(crate) fn compose(
     source: &[u8],

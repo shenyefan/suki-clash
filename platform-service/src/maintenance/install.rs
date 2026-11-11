@@ -696,11 +696,11 @@ fn env_u32(key: &str) -> Option<u32> {
 fn lookup_group_name(gid: u32, mut buffer_size: usize) -> std::io::Result<Option<String>> {
     const MAX_BUFFER_SIZE: usize = 1024 * 1024;
     loop {
-        let mut group = unsafe { std::mem::zeroed::<platform_lib::group>() };
-        let mut buffer = vec![0 as platform_lib::c_char; buffer_size];
+        let mut group = unsafe { std::mem::zeroed::<libc::group>() };
+        let mut buffer = vec![0 as libc::c_char; buffer_size];
         let mut result = std::ptr::null_mut();
         let status = unsafe {
-            platform_lib::getgrgid_r(
+            libc::getgrgid_r(
                 gid,
                 &mut group,
                 buffer.as_mut_ptr(),
@@ -714,7 +714,7 @@ fn lookup_group_name(gid: u32, mut buffer_size: usize) -> std::io::Result<Option
                 let name = unsafe { std::ffi::CStr::from_ptr(group.gr_name) };
                 return Ok(Some(name.to_string_lossy().into_owned()));
             }
-            platform_lib::ERANGE if buffer_size < MAX_BUFFER_SIZE => {
+            libc::ERANGE if buffer_size < MAX_BUFFER_SIZE => {
                 buffer_size = (buffer_size * 2).min(MAX_BUFFER_SIZE);
             }
             error => return Err(std::io::Error::from_raw_os_error(error)),
@@ -912,7 +912,9 @@ fn install_platform(mut options: InstallOptions) -> Result<bool, Error> {
 
 #[cfg(windows)]
 fn install_platform(mut options: InstallOptions) -> anyhow::Result<bool> {
-    use platform_lib::{
+    use std::ffi::{OsStr, OsString};
+    use std::{thread, time::Duration};
+    use windows_service::{
         Error as WindowsServiceError,
         service::{
             ServiceAccess, ServiceErrorControl, ServiceInfo, ServiceStartType, ServiceState,
@@ -920,8 +922,6 @@ fn install_platform(mut options: InstallOptions) -> anyhow::Result<bool> {
         },
         service_manager::{ServiceManager, ServiceManagerAccess},
     };
-    use std::ffi::{OsStr, OsString};
-    use std::{thread, time::Duration};
 
     let _gate = enter_repair_gate()?;
     prepare_requested_cores(&mut options.cores)?;
@@ -1040,12 +1040,12 @@ fn install_platform(mut options: InstallOptions) -> anyhow::Result<bool> {
 
 #[cfg(windows)]
 fn configure_windows_service_recovery(
-    service: &platform_lib::service::Service,
-) -> platform_lib::Result<()> {
-    use platform_lib::service::{
+    service: &windows_service::service::Service,
+) -> windows_service::Result<()> {
+    use std::time::Duration;
+    use windows_service::service::{
         ServiceAction, ServiceActionType, ServiceFailureActions, ServiceFailureResetPeriod,
     };
-    use std::time::Duration;
 
     let actions = [5, 10, 30]
         .into_iter()

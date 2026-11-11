@@ -406,11 +406,7 @@ impl History {
         if self.busy || self.pending.is_some() {
             return;
         }
-        let message = if matches!(command, Command::Restore(_)) {
-            "5 秒后恢复备份"
-        } else {
-            "5 秒后删除备份"
-        };
+        let message = "5 秒后删除备份";
         let owner = cx.weak_entity();
         ui::notifications::undo(window, message, cx, move |_, cx| {
             let _ = owner.update(cx, |this, cx| {
@@ -442,7 +438,7 @@ impl History {
                 let owner = cx.weak_entity(); let restore = restore.clone();
                 window.open_alert_dialog(cx, move |dialog, window, cx| {
                     let owner = owner.clone(); let restore = restore.clone();
-                    ui::modal_alert(dialog, window, cx).title("恢复此 Gist 备份？").description("替换当前配置、订阅与覆写；Gist凭据和本机同步设置保留；换源的订阅鉴权需重新填写。确认后等待 5 秒，期间可撤销。").footer(ui::dialog_footer("恢复备份")).on_ok(move |_, window, cx| { let _ = owner.update(cx, |this, cx| this.defer(Command::Restore(restore.clone()), window, cx)); true })
+                    ui::modal_alert(dialog, window, cx).title("恢复此 Gist 备份？").description("替换当前配置、订阅与覆写；Gist凭据和本机同步设置保留；换源的订阅鉴权需重新填写。").footer(ui::dialog_footer("恢复备份")).on_ok(move |_, window, cx| { let _ = owner.update(cx, |this, cx| this.run(Command::Restore(restore.clone()), window, cx)); true })
                 });
             })))
             .child(ui::icon_button(SharedString::from(format!("gist-delete-{}", entry.id)), assets::IconName::Trash, "删除备份").disabled(disabled).on_click(cx.listener(move |this, _, window, cx| this.defer(Command::Delete(delete.clone()), window, cx))))

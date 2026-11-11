@@ -1,3 +1,4 @@
+use super::ipc::{self, HttpResponse, RequestContext};
 use crate::core::auth::{
     AuthenticatedOwner, ServiceError, authenticate_owner, hash_session_token,
     ipc_request_context_to_auth_context,
@@ -26,9 +27,9 @@ use crate::{
     RuntimeBundle, RuntimeFileRequest, SERVICE_PROTOCOL_HEADER, StartClashRequest,
     StartClashResult, WriterConfig,
 };
+use anyhow::Result;
 use anyhow::{Context as _, Result as AnyResult, anyhow};
 use http::StatusCode;
-use kode_bridge::{IpcHttpServer, Result, Router, ServerConfig, ipc_http_server::HttpResponse};
 use once_cell::sync::Lazy;
 use serde::{Serialize, de::DeserializeOwned};
 use std::{
@@ -43,7 +44,7 @@ use tracing::{info, trace, warn};
 const IPC_MAX_RESTARTS: u32 = 3;
 const IPC_RESTART_WINDOW: Duration = Duration::from_secs(10);
 const IPC_MAX_BACKOFF: Duration = Duration::from_millis(500);
-const IPC_HANDLER_TIMEOUT: Duration = Duration::from_secs(25);
+const IPC_HANDLER_TIMEOUT: Duration = ipc::HANDLER_TIMEOUT;
 /// Handler time a takeover needs after stopping the previous core.
 const TAKEOVER_RESERVE: Duration = CORE_IPC_READY_TIMEOUT.saturating_add(Duration::from_secs(4));
 /// Handler time a stop needs after the core has exited.
@@ -298,77 +299,38 @@ async fn rollback_started_owner(
 // Serializes listener replacement so old cleanup cannot remove the new socket.
 static IPC_LIFECYCLE_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
 
-/// Listener state, replaced independently while `IPC_LIFECYCLE_LOCK` serializes supervisors.
-static IPC_SERVER: Lazy<Mutex<Option<IpcHttpServer>>> = Lazy::new(|| Mutex::new(None));
 static IPC_SHUTDOWN_SENDER: Lazy<Mutex<Option<oneshot::Sender<()>>>> =
     Lazy::new(|| Mutex::new(None));
 static IPC_SHUTDOWN_DONE: Lazy<Mutex<Option<oneshot::Receiver<()>>>> =
     Lazy::new(|| Mutex::new(None));
-
-/// Shuts down the listener before dropping its handle.
-async fn shutdown_ipc_server() {
-    let mut guard = IPC_SERVER.lock().await;
-    if let Some(server) = guard.as_mut() {
-        server.shutdown();
-    }
-    *guard = None;
-}
 
 pub async fn run_ipc_server() -> Result<JoinHandle<Result<()>>> {
     let _lifecycle_guard = IPC_LIFECYCLE_LOCK.lock().await;
 
     make_ipc_dir().await?;
     cleanup_stale_ipc_socket().await?;
-    init_ipc_state().await?;
-
-    let (shutdown_tx, mut shutdown_rx) = oneshot::channel::<()>();
+    let listener = create_ipc_listener()?;
+    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
     let (done_tx, done_rx) = oneshot::channel::<()>();
-
     *IPC_SHUTDOWN_SENDER.lock().await = Some(shutdown_tx);
     *IPC_SHUTDOWN_DONE.lock().await = Some(done_rx);
-
-    if let Some(mut server) = IPC_SERVER.lock().await.take() {
-        let handle = tokio::spawn(async move {
-            let res = tokio::select! {
-                res = server.serve() => res,
-                _ = &mut shutdown_rx => Ok(()),
-            };
-
-            let _ = done_tx.send(());
-            res
-        });
-        Ok(handle)
-    } else {
-        Err(kode_bridge::KodeBridgeError::configuration(
-            "IPC server not initialized".to_string(),
-        ))
-    }
+    Ok(tokio::spawn(async move {
+        let result = ipc::serve(listener, shutdown_rx).await;
+        let _ = done_tx.send(());
+        result
+    }))
 }
 
 pub async fn stop_ipc_server() -> Result<()> {
     let _lifecycle_guard = IPC_LIFECYCLE_LOCK.lock().await;
-
-    CORE_MANAGER
-        .lock()
-        .await
-        .stop_core()
-        .await
-        .map_err(|error| kode_bridge::KodeBridgeError::custom(error.to_string()))?;
-
     if let Some(sender) = IPC_SHUTDOWN_SENDER.lock().await.take() {
         let _ = sender.send(());
     }
-
     if let Some(done) = IPC_SHUTDOWN_DONE.lock().await.take() {
         let _ = done.await;
     }
-
-    shutdown_ipc_server().await;
-
+    CORE_MANAGER.lock().await.stop_core().await?;
     cleanup_ipc_path().await?;
-    #[cfg(windows)]
-    tokio::time::sleep(std::time::Duration::from_millis(70)).await;
-
     Ok(())
 }
 
@@ -535,50 +497,23 @@ async fn cleanup_stale_ipc_socket() -> Result<()> {
     Ok(())
 }
 
-async fn init_ipc_state() -> Result<()> {
-    let server = create_ipc_server()?;
-    let router = create_ipc_router()?;
-    let server = server.router(router);
-    *IPC_SERVER.lock().await = Some(server);
-    Ok(())
-}
-
-fn create_ipc_server() -> Result<IpcHttpServer> {
+fn create_ipc_listener() -> Result<ipc::Listener> {
     let paths = service_paths()?;
-
-    let server = IpcHttpServer::with_config(
-        paths.ipc_path(),
-        ServerConfig {
-            write_timeout: IPC_HANDLER_TIMEOUT,
-            ..ServerConfig::default()
-        },
-    )?;
-
     #[cfg(unix)]
     {
-        use platform_lib::{S_IRGRP, S_IROTH, S_IRUSR, S_IWGRP, S_IWOTH, S_IWUSR, mode_t};
-
-        let mode: mode_t =
-            platform_lib::mode_t::from(S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH | S_IWOTH);
-        let server = server.with_listener_mode(mode);
-        Ok(server)
+        ipc::bind(paths.ipc_path())
     }
-
     #[cfg(windows)]
     {
-        // Tests need create-instance access normally held by the production SYSTEM account.
         #[cfg(feature = "test")]
         let descriptor = WINDOWS_TEST_CONTROL_PIPE_SDDL;
         #[cfg(not(feature = "test"))]
         let descriptor = WINDOWS_CONTROL_PIPE_SDDL;
-        let server = server.with_listener_security_descriptor(descriptor);
-        Ok(server)
+        ipc::Listener::bind(paths.ipc_path(), descriptor)
     }
 }
 
-fn require_protocol_version(
-    ctx: &kode_bridge::RequestContext,
-) -> std::result::Result<(), ServiceError> {
+fn require_protocol_version(ctx: &RequestContext) -> std::result::Result<(), ServiceError> {
     let supplied = ctx
         .headers
         .get(SERVICE_PROTOCOL_HEADER)
@@ -612,7 +547,7 @@ impl<T> OwnerRequestEnvelope for AuthenticatedSessionRequest<T> {
 /// Validates protocol, parses the envelope, then authenticates its owner.
 /// Lifecycle locking remains separate so `StartClash` can validate before waiting on the lock.
 fn authenticate_request<E>(
-    ctx: &kode_bridge::RequestContext,
+    ctx: &RequestContext,
 ) -> ControlFlow<Result<HttpResponse>, (E, AuthenticatedOwner)>
 where
     E: DeserializeOwned + OwnerRequestEnvelope,
@@ -660,19 +595,25 @@ async fn enter_owner_lifecycle(
     }
 }
 
-fn create_ipc_router() -> Result<Router> {
-    let router = Router::new()
-        .get(IpcCommand::Magic.as_ref(), |ctx| async move {
+pub(super) async fn handle_request(ctx: RequestContext) -> Result<HttpResponse> {
+    match (ctx.method.as_str(), ctx.uri.path().parse::<IpcCommand>()) {
+        ("GET", Ok(IpcCommand::Magic)) => {
             trace!("收到握手命令");
-            ipc_request_context_to_auth_context(&ctx)?;
-            Ok(HttpResponse::builder().text("Tunglies!").build())
-        })
-        .get(IpcCommand::GetVersion.as_ref(), |ctx| async move {
-            ipc_request_context_to_auth_context(&ctx)?;
+            if let Err(error) = ipc_request_context_to_auth_context(&ctx) {
+                return service_error(error);
+            }
+            Ok(ipc::text_response(StatusCode::OK, "Tunglies!"))
+        }
+        ("GET", Ok(IpcCommand::GetVersion)) => {
+            if let Err(error) = ipc_request_context_to_auth_context(&ctx) {
+                return service_error(error);
+            }
             ok_json(ProtocolInfo::current())
-        })
-        .post(IpcCommand::InspectInstallation.as_ref(), |ctx| async move {
-            ipc_request_context_to_auth_context(&ctx)?;
+        }
+        ("POST", Ok(IpcCommand::InspectInstallation)) => {
+            if let Err(error) = ipc_request_context_to_auth_context(&ctx) {
+                return service_error(error);
+            }
             if let Err(error) = require_protocol_version(&ctx) {
                 return service_error(error);
             }
@@ -692,8 +633,8 @@ fn create_ipc_router() -> Result<Router> {
                     service_unavailable(format!("Failed to inspect installation: {error:#}"))
                 }
             }
-        })
-        .get(IpcCommand::Status.as_ref(), |ctx| async move {
+        }
+        ("GET", Ok(IpcCommand::Status)) => {
             trace!("收到状态查询命令");
             let (_request, owner) = match authenticate_request::<AuthenticatedRequest<()>>(&ctx) {
                 ControlFlow::Continue(authenticated) => authenticated,
@@ -710,8 +651,8 @@ fn create_ipc_router() -> Result<Router> {
                     service_unavailable(format!("Failed to collect service status: {error:#}"))
                 }
             }
-        })
-        .post(IpcCommand::StartClash.as_ref(), |ctx| async move {
+        }
+        ("POST", Ok(IpcCommand::StartClash)) => {
             let handler_deadline = Instant::now() + IPC_HANDLER_TIMEOUT;
             trace!("收到启动内核命令");
             let (request, owner) =
@@ -777,8 +718,8 @@ fn create_ipc_router() -> Result<Router> {
                 },
                 proxy_outcome,
             })
-        })
-        .get(IpcCommand::GetClashLogs.as_ref(), |ctx| async move {
+        }
+        ("GET", Ok(IpcCommand::GetClashLogs)) => {
             trace!("收到读取内核日志命令");
             let (request, owner) = match authenticate_request::<
                 AuthenticatedSessionRequest<crate::CoreLogRequest>,
@@ -801,8 +742,8 @@ fn create_ipc_router() -> Result<Router> {
                 request.payload.after,
                 request.payload.stream_started_at,
             ))
-        })
-        .get(IpcCommand::GetClashLogSnapshot.as_ref(), |ctx| async move {
+        }
+        ("GET", Ok(IpcCommand::GetClashLogSnapshot)) => {
             trace!("收到读取内核日志快照命令");
             let (_request, owner) = match authenticate_request::<AuthenticatedRequest<()>>(&ctx) {
                 ControlFlow::Continue(authenticated) => authenticated,
@@ -829,8 +770,8 @@ fn create_ipc_router() -> Result<Router> {
                     service_unavailable(format!("Failed to read core log snapshot: {error}"))
                 }
             }
-        })
-        .delete(IpcCommand::StopClash.as_ref(), |ctx| async move {
+        }
+        ("DELETE", Ok(IpcCommand::StopClash)) => {
             let handler_deadline = Instant::now() + IPC_HANDLER_TIMEOUT;
             trace!("收到停止内核命令");
             let (request, owner) =
@@ -866,8 +807,8 @@ fn create_ipc_router() -> Result<Router> {
                 return service_unavailable(format!("Failed to clear active owner: {}", e));
             }
             ok_empty("内核已停止")
-        })
-        .post(IpcCommand::WindowsNetwork.as_ref(), |ctx| async move {
+        }
+        ("POST", Ok(IpcCommand::WindowsNetwork)) => {
             let (request, owner) = match authenticate_request::<
                 AuthenticatedRequest<crate::windows_network::Request>,
             >(&ctx)
@@ -888,8 +829,8 @@ fn create_ipc_router() -> Result<Router> {
                 Ok(Err(error)) => service_unavailable(error.to_string()),
                 Err(error) => service_unavailable(error.to_string()),
             }
-        })
-        .put(IpcCommand::StageRuntime.as_ref(), |ctx| async move {
+        }
+        ("PUT", Ok(IpcCommand::StageRuntime)) => {
             trace!("收到暂存运行时命令");
             let (request, owner) =
                 match authenticate_request::<AuthenticatedSessionRequest<RuntimeBundle>>(&ctx) {
@@ -911,8 +852,8 @@ fn create_ipc_router() -> Result<Router> {
                 Ok(outcome) => ok_json(outcome),
                 Err(error) => service_error(error),
             }
-        })
-        .get(IpcCommand::ReadRuntimeFile.as_ref(), |ctx| async move {
+        }
+        ("GET", Ok(IpcCommand::ReadRuntimeFile)) => {
             trace!("收到读取运行文件命令");
             let (request, owner) =
                 match authenticate_request::<AuthenticatedSessionRequest<RuntimeFileRequest>>(&ctx)
@@ -936,8 +877,8 @@ fn create_ipc_router() -> Result<Router> {
                 Ok(outcome) => ok_json(outcome),
                 Err(error) => service_error(error),
             }
-        })
-        .put(IpcCommand::UpdateWriter.as_ref(), |ctx| async move {
+        }
+        ("PUT", Ok(IpcCommand::UpdateWriter)) => {
             trace!("收到更新写入配置命令");
             let (request, owner) =
                 match authenticate_request::<AuthenticatedSessionRequest<WriterConfig>>(&ctx) {
@@ -976,8 +917,8 @@ fn create_ipc_router() -> Result<Router> {
                 return service_unavailable(format!("Failed to persist writer config: {}", e));
             }
             ok_empty("Update Writer successfully")
-        })
-        .put(IpcCommand::SetSystemProxy.as_ref(), |ctx| async move {
+        }
+        ("PUT", Ok(IpcCommand::SetSystemProxy)) => {
             trace!("收到设置系统代理命令");
             let (request, owner) = match authenticate_request::<
                 AuthenticatedSessionRequest<crate::proxy_owner::Operation>,
@@ -1003,14 +944,15 @@ fn create_ipc_router() -> Result<Router> {
                 Ok(outcome) => ok_json(outcome),
                 Err(error) => service_error(ServiceError::proxy_apply_failed(error.to_string())),
             }
-        });
-    Ok(router)
+        }
+        _ => Ok(ipc::text_response(StatusCode::NOT_FOUND, "Not found")),
+    }
 }
 
 async fn read_log_snapshot(path: &std::path::Path) -> std::io::Result<String> {
     use tokio::io::{AsyncReadExt as _, AsyncSeekExt as _};
 
-    // Stay below kode-bridge's 10 MiB in-memory response limit after hex encoding.
+    // Limit the raw snapshot to 4 MiB before hex encoding.
     const MAX_SNAPSHOT_BYTES: u64 = 4 * 1024 * 1024;
     let mut file = tokio::fs::File::open(path).await?;
     let length = file.metadata().await?.len();
@@ -1121,10 +1063,12 @@ fn json_response<T: Serialize>(
         message: message.into(),
         data,
     };
-    Ok(HttpResponse::builder()
+    Ok(hyper::Response::builder()
         .status(status)
-        .json(&json_value)?
-        .build())
+        .header(hyper::header::CONTENT_TYPE, "application/json")
+        .body(http_body_util::Full::new(hyper::body::Bytes::from(
+            serde_json::to_vec(&json_value)?,
+        )))?)
 }
 
 static OWNER_LIFECYCLE_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
