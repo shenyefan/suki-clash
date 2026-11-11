@@ -378,6 +378,8 @@ fn apply(theme: &mut Theme, translucent: bool) {
     theme.font_family = text::FONT.into();
     theme.mono_font_family = text::FONT.into();
     theme.font_size = text::BASE;
+    // Keep native focus borders without an outer ring that scroll regions can clip.
+    theme.focus_ring = false;
     theme.notification.placement = Anchor::TopCenter;
     theme.radius = radius::CONTROL;
     theme.radius_lg = radius::SURFACE;
