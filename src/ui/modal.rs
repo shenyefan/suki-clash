@@ -36,21 +36,16 @@ pub(crate) fn modal_content(
     build: impl Fn(&mut Window, &mut App) -> AnyElement + 'static,
 ) -> impl Fn(DialogContent, &mut Window, &mut App) -> DialogContent {
     move |content, window, cx| {
-        let available = (window.viewport_size().height
-            - layout::DIALOG_RESERVED_HEIGHT.to_pixels(window.rem_size()))
-        .max(space::NONE.to_pixels(window.rem_size()));
-        let height = available.min(max_height.to_pixels(window.rem_size()));
         let body = build(window, cx);
         content
             .flex_initial()
-            .flex_shrink_0()
             .min_h(space::NONE)
-            .max_h(height)
+            .max_h(max_height)
             .child(
                 div()
                     .w_full()
+                    .flex_initial()
                     .min_h(space::NONE)
-                    .max_h(height)
                     .child(body)
                     .overflow_y_scrollbar()
                     .id(id),
@@ -97,17 +92,12 @@ pub(crate) fn modal_panel(
     build: impl Fn(&mut Window, &mut App) -> AnyElement + 'static,
 ) -> impl Fn(DialogContent, &mut Window, &mut App) -> DialogContent {
     move |content, window, cx| {
-        let available = (window.viewport_size().height
-            - layout::DIALOG_RESERVED_HEIGHT.to_pixels(window.rem_size()))
-        .max(Pixels::ZERO);
-        let height = available.min(preferred_height.to_pixels(window.rem_size()));
         let body = build(window, cx);
         content
             .flex_initial()
-            .flex_shrink_0()
-            .h(height)
+            .h(preferred_height)
             .min_h(space::NONE)
-            .child(div().w_full().h(height).min_h(space::NONE).child(body))
+            .child(div().size_full().min_h(space::NONE).child(body))
     }
 }
 
@@ -202,6 +192,10 @@ mod motion_tests {
                 let footer = window.find("modal-fit-footer").bounds();
                 let cancel = window.find("dialog-cancel").bounds();
                 let submit = window.find("dialog-commit").bounds();
+                assert!(
+                    footer.bottom() <= surface.bottom(),
+                    "dialog footer escaped the surface: {footer:?} {surface:?}"
+                );
                 assert!((submit.right() - footer.right()).abs() <= px(1.));
                 assert!((submit.origin.y - cancel.origin.y).abs() <= px(1.));
                 assert!(cancel.right() < submit.left());

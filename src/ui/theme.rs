@@ -75,7 +75,6 @@ pub(crate) mod layout {
     pub(crate) const EDITOR_HEIGHT: Rems = rems(24.);
     pub(crate) const DIALOG_COMPACT_HEIGHT: Rems = rems(14.);
     pub(crate) const DIALOG_FORM_HEIGHT: Rems = rems(22.);
-    pub(crate) const DIALOG_RESERVED_HEIGHT: Rems = rems(12.);
     pub(crate) const FORM_MAX_HEIGHT: Rems = rems(28.);
     pub(crate) const METRIC_WIDTH: Rems = rems(4.);
     pub(crate) const DETAIL_LABEL_WIDTH: Rems = rems(5.);

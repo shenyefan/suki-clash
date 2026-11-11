@@ -71,35 +71,6 @@ pub(super) fn anchor(event: &tray_icon::TrayIconEvent, cx: &App) -> Result<Bound
     }
 }
 
-/// Prefer the side with room, then clamp to the usable display (including negative origins).
-/// Content never affects this size; only the display work area can constrain it.
-pub(super) fn bounds(
-    anchor: Bounds<Pixels>,
-    work: Bounds<Pixels>,
-    desired: Size<Pixels>,
-    gap: Pixels,
-) -> Bounds<Pixels> {
-    let panel_size = size(
-        desired.width.min(work.size.width),
-        desired.height.min(work.size.height),
-    );
-    let below = anchor.bottom() + gap;
-    let above = anchor.top() - gap - panel_size.height;
-    let y = if below + panel_size.height <= work.bottom() {
-        below
-    } else {
-        above
-    };
-    let x = anchor.right() - panel_size.width;
-    Bounds::new(
-        point(
-            x.clamp(work.left(), work.right() - panel_size.width),
-            y.clamp(work.top(), work.bottom() - panel_size.height),
-        ),
-        panel_size,
-    )
-}
-
 pub(super) fn options(anchor: Bounds<Pixels>, cx: &App) -> Result<WindowOptions, String> {
     let display = cx
         .displays()
@@ -135,43 +106,4 @@ pub(super) fn options(anchor: Bounds<Pixels>, cx: &App) -> Result<WindowOptions,
         window_background: WindowBackgroundAppearance::Transparent,
         ..Default::default()
     })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::bounds;
-    use gpui_kit::{Bounds, point, px, size};
-    #[test]
-    fn edges_dpi_and_content_do_not_change_popup_size_or_leave_work_area() {
-        for work in [
-            Bounds::new(point(px(0.), px(24.)), size(px(1920.), px(1016.))),
-            Bounds::new(point(px(-1280.), px(-200.)), size(px(1280.), px(960.))),
-        ] {
-            for scale in [1., 1.25, 1.5, 2.] {
-                let desired = size(px(375.), px(540.));
-                for origin in [work.origin, work.bottom_right(), work.center()] {
-                    let anchor = Bounds::new(origin, size(px(24. / scale), px(24. / scale)));
-                    let result = bounds(anchor, work, desired, px(4.));
-                    assert_eq!(result.size, desired);
-                    assert!(result.left() >= work.left() && result.top() >= work.top());
-                    assert!(result.right() <= work.right() && result.bottom() <= work.bottom());
-                }
-            }
-        }
-    }
-    #[test]
-    fn tiny_display_constrains_once_and_prefers_below_or_above_icon() {
-        let work = Bounds::new(point(px(0.), px(24.)), size(px(300.), px(400.)));
-        let anchor = Bounds::new(point(px(280.), px(0.)), size(px(20.), px(24.)));
-        assert_eq!(
-            bounds(anchor, work, size(px(375.), px(540.)), px(4.)).size,
-            work.size
-        );
-        let work = Bounds::new(point(px(0.), px(24.)), size(px(1920.), px(1032.)));
-        let bottom = Bounds::new(point(px(1800.), px(1056.)), size(px(24.), px(24.)));
-        assert_eq!(
-            bounds(bottom, work, size(px(375.), px(540.)), px(4.)).bottom(),
-            bottom.top() - px(4.)
-        );
-    }
 }

@@ -160,7 +160,7 @@ pub(super) fn rows(
                 Some(crate::session::ProxyMode::Direct) => IconName::ArrowRight,
                 _ => IconName::Globe,
             },
-            ready && !busy,
+            !busy,
             Page::Modes,
         );
         row.detail = model::mode_label(runtime.connected.then_some(runtime.mode).flatten()).into();
@@ -198,7 +198,7 @@ pub(super) fn rows(
             "groups",
             "代理组",
             IconName::Network,
-            ready && !busy,
+            !busy,
             Page::Groups,
         ));
     }

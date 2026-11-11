@@ -2,7 +2,7 @@
 use super::menu::{self, Page, Row, Target};
 use crate::{
     core, integration,
-    ui::theme::{layout, space, text},
+    ui::theme::{layout, space, stroke, text},
 };
 use gpui_kit::{
     assets::IconName,
@@ -39,8 +39,13 @@ impl ListDelegate for Delegate {
         let measure = owner.clone();
         let depth = self.depth;
         let id = row.id.clone();
+        let rem = cx.theme().font_size;
         let mut surface = ListItem::new(SharedString::from(id.clone()))
-            .h(layout::TRAY_ROW_HEIGHT)
+            .h(layout::TRAY_ROW_HEIGHT.to_pixels(rem).ceil())
+            .rounded(
+                (cx.theme().radius - space::XS.to_pixels(rem).ceil() - stroke::HAIRLINE)
+                    .max(px(0.)),
+            )
             .px(space::SM)
             .py_0()
             .relative()
@@ -133,7 +138,7 @@ struct Layer {
     list: Entity<ListState<Delegate>>,
     _subscription: Subscription,
     anchor: Bounds<Pixels>,
-    size: Size<Pixels>,
+    width: Pixels,
     bounds: Rc<Cell<Bounds<Pixels>>>,
     rows_bounds: BTreeMap<String, Bounds<Pixels>>,
     hovered: Option<String>,
@@ -216,9 +221,6 @@ impl Panel {
             (label_width + detail_width + space::REGION.to_pixels(rem) + space::LG.to_pixels(rem))
                 .max(layout::TRAY_MIN_WIDTH.to_pixels(rem))
                 .min(max_width);
-        let height = (layout::TRAY_ROW_HEIGHT.to_pixels(rem) * rows.len().max(1) as f32
-            + space::SM.to_pixels(rem))
-        .min(window.bounds().size.height - space::LG.to_pixels(rem));
         let depth = self.layers.len();
         let delegate = Delegate {
             owner: cx.weak_entity(),
@@ -245,7 +247,7 @@ impl Panel {
             list: list.clone(),
             _subscription: subscription,
             anchor,
-            size: size(width, height),
+            width,
             bounds: Default::default(),
             rows_bounds: Default::default(),
             hovered: None,
@@ -384,7 +386,7 @@ impl Panel {
                 cx.notify();
             });
         }
-        // Existing surfaces keep the size captured when opened, including during live refresh.
+        // Existing surfaces retain their width during live refresh.
         cx.notify();
     }
 }
@@ -408,23 +410,31 @@ impl Render for Panel {
             .on_mouse_down(MouseButton::Right, cx.listener(Self::outside));
         for (depth, layer) in self.layers.iter().enumerate() {
             let measure = layer.bounds.clone();
+            let padding = gap.ceil();
+            let inset = padding + stroke::HAIRLINE;
             let surface = div()
                 .id(("tray-menu", depth))
-                .w(layer.size.width)
-                .h(layer.size.height)
-                .p(space::XS)
+                .w(layer.width)
+                .p(padding)
                 .bg(crate::ui::theme::tray_tint(cx))
                 .text_color(cx.theme().popover_foreground)
-                .border_1()
+                .border(stroke::HAIRLINE)
                 .border_color(cx.theme().border)
                 .rounded(cx.theme().radius)
                 .shadow_sm()
                 .occlude()
-                .child(List::new(&layer.list).size_full().scroll_bounce(false));
+                .child(
+                    List::new(&layer.list)
+                        .w_full()
+                        .h_auto()
+                        .max_h(window.viewport_size().height - (gap + inset) * 2.)
+                        .scroll_bounce(false),
+                );
             let positioner = if depth == 0 {
-                let bounds =
-                    super::placement::bounds(layer.anchor, window.bounds(), layer.size, gap);
-                Positioner::corner(Anchor::TopLeft, bounds.origin)
+                Positioner::side(layer.anchor)
+                    .placement(Placement::Bottom)
+                    .align(Align::End)
+                    .offset(gap)
             } else {
                 Positioner::side(layer.anchor)
                     .placement(Placement::Right)
@@ -495,8 +505,8 @@ mod tests {
             .update_window(handle, |_, window, cx| {
                 window.render_frame(cx);
                 assert!(window.try_find("tray-back").is_none());
-                assert!(panel.read(cx).layers[0].size.height < px(400.));
-                let original = panel.read(cx).layers[0].size;
+                assert!(panel.read(cx).layers[0].bounds.get().size.height < px(400.));
+                let original = panel.read(cx).layers[0].bounds.get().size;
                 window.click("more", cx);
                 original
             })
@@ -506,7 +516,7 @@ mod tests {
             window.render_frame(cx);
             assert_eq!(panel.read(cx).layers.len(), 2);
             let layers = &panel.read(cx).layers;
-            assert_eq!(layers[0].size, original);
+            assert_eq!(layers[0].bounds.get().size, original);
             assert_eq!(layers[1].page, Page::More);
             assert!(
                 layers[1].bounds.get().right() <= layers[0].bounds.get().left(),
@@ -529,7 +539,7 @@ mod tests {
             );
             panel.update(cx, |panel, cx| panel.sync(window, cx));
             window.render_frame(cx);
-            assert_eq!(panel.read(cx).layers[0].size, original);
+            assert_eq!(panel.read(cx).layers[0].bounds.get().size, original);
             assert!(window.find("more").visible());
         })
         .unwrap();
