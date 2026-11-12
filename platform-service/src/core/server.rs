@@ -743,6 +743,28 @@ pub(super) async fn handle_request(ctx: RequestContext) -> Result<HttpResponse> 
                 request.payload.stream_started_at,
             ))
         }
+        ("GET", Ok(IpcCommand::GetServiceLogSnapshot)) => {
+            if let ControlFlow::Break(response) =
+                authenticate_request::<AuthenticatedRequest<()>>(&ctx)
+            {
+                return response;
+            }
+            let snapshot = async {
+                super::logger::flush_service_log();
+                let path = service_paths()?
+                    .logs_dir()
+                    .join(format!("{}_latest.log", crate::SERVICE_SLUG));
+                let content = read_log_tail(&path, 2 * 1024 * 1024).await?;
+                Ok::<_, std::io::Error>(String::from_utf8_lossy(&content).into_owned())
+            }
+            .await;
+            match snapshot {
+                Ok(snapshot) => ok_json(snapshot),
+                Err(error) => {
+                    service_unavailable(format!("Failed to read service log snapshot: {error}"))
+                }
+            }
+        }
         ("GET", Ok(IpcCommand::GetClashLogSnapshot)) => {
             trace!("收到读取内核日志快照命令");
             let (_request, owner) = match authenticate_request::<AuthenticatedRequest<()>>(&ctx) {
@@ -950,29 +972,30 @@ pub(super) async fn handle_request(ctx: RequestContext) -> Result<HttpResponse> 
 }
 
 async fn read_log_snapshot(path: &std::path::Path) -> std::io::Result<String> {
-    use tokio::io::{AsyncReadExt as _, AsyncSeekExt as _};
-
     // Limit the raw snapshot to 4 MiB before hex encoding.
-    const MAX_SNAPSHOT_BYTES: u64 = 4 * 1024 * 1024;
-    let mut file = tokio::fs::File::open(path).await?;
-    let length = file.metadata().await?.len();
-    if length > MAX_SNAPSHOT_BYTES {
-        file.seek(std::io::SeekFrom::Start(length - MAX_SNAPSHOT_BYTES))
-            .await?;
-    }
-    let mut content = Vec::with_capacity(length.min(MAX_SNAPSHOT_BYTES) as usize);
-    file.read_to_end(&mut content).await?;
-    if length > MAX_SNAPSHOT_BYTES
-        && let Some(first_newline) = content.iter().position(|byte| *byte == b'\n')
-    {
-        content.drain(..=first_newline);
-    }
+    let content = read_log_tail(path, 4 * 1024 * 1024).await?;
     let mut encoded = String::with_capacity(content.len() * 2);
     for byte in content {
         use std::fmt::Write as _;
         let _ = write!(encoded, "{byte:02x}");
     }
     Ok(encoded)
+}
+
+async fn read_log_tail(path: &std::path::Path, limit: u64) -> std::io::Result<Vec<u8>> {
+    use tokio::io::{AsyncReadExt as _, AsyncSeekExt as _};
+    let mut file = tokio::fs::File::open(path).await?;
+    let length = file.metadata().await?.len();
+    file.seek(std::io::SeekFrom::Start(length.saturating_sub(limit)))
+        .await?;
+    let mut content = Vec::with_capacity(length.min(limit) as usize);
+    file.take(limit).read_to_end(&mut content).await?;
+    if length > limit
+        && let Some(first_newline) = content.iter().position(|byte| *byte == b'\n')
+    {
+        content.drain(..=first_newline);
+    }
+    Ok(content)
 }
 
 fn ok_json<T: Serialize>(data: T) -> Result<HttpResponse> {
@@ -1086,6 +1109,32 @@ mod owner_lifecycle_tests {
     };
     use crate::{OwnerIdentity, OwnerSessionProof, ProxyApplyOutcome};
     use serial_test::serial;
+
+    #[tokio::test]
+    async fn log_tail_is_bounded_and_discards_a_partial_first_line() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("service.log");
+        tokio::fs::write(&path, b"older line\nlatest line\n")
+            .await
+            .unwrap();
+        assert_eq!(
+            super::read_log_tail(&path, 16).await.unwrap(),
+            b"latest line\n"
+        );
+        assert_eq!(
+            super::read_log_tail(&path, 100).await.unwrap(),
+            b"older line\nlatest line\n"
+        );
+        tokio::fs::write(&path, b"unbroken-long-line")
+            .await
+            .unwrap();
+        assert_eq!(super::read_log_tail(&path, 4).await.unwrap(), b"line");
+        assert!(
+            super::read_log_tail(&root.path().join("missing.log"), 4)
+                .await
+                .is_err()
+        );
+    }
 
     #[test]
     fn recovery_budget_is_distinct_from_listener_and_cleanup_failure() {

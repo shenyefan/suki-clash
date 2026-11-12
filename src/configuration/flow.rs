@@ -343,19 +343,19 @@ pub(crate) fn validate_settings(kind: SettingsKind, values: &Values) -> Result<(
             .and_then(Value::as_mapping)
             .ok_or("DNS 配置缺少 dns 对象")?;
         if dns.get("enable").and_then(Value::as_bool) == Some(true) {
-            if let Some(listen) = dns.get("listen")
-                && !listen
-                    .as_str()
-                    .is_some_and(preferences::schema::valid_dns_listen)
-            {
-                return Err("DNS 监听地址无效，例如 :53、127.0.0.1:53".into());
-            }
-            if !dns
+            if dns
                 .get("nameserver")
                 .and_then(Value::as_sequence)
-                .is_some_and(|items| !items.is_empty())
+                .is_some_and(Vec::is_empty)
             {
-                return Err("至少填写一个主 DNS 服务器".into());
+                return Err("启用 DNS 时 nameserver 不能为空".into());
+            }
+            if let Some(listen) = dns.get("listen")
+                && !listen.as_str().is_some_and(|text| {
+                    text.is_empty() || preferences::schema::valid_dns_listen(text)
+                })
+            {
+                return Err("DNS 监听地址无效，例如 :53、127.0.0.1:53".into());
             }
         }
         if let Some(mode) = dns.get("enhanced-mode")
@@ -369,10 +369,22 @@ pub(crate) fn validate_settings(kind: SettingsKind, values: &Values) -> Result<(
             if let Some(value) = dns.get(key)
                 && !value
                     .as_str()
-                    .is_some_and(|text| text.parse::<ipnet::IpNet>().is_ok())
+                    .is_some_and(|text| text.is_empty() || text.parse::<ipnet::IpNet>().is_ok())
             {
                 return Err(format!("dns.{key} 需为 CIDR"));
             }
+        }
+        if let Some(value) = get(&root, "dns.fallback-filter.ipcidr")
+            && !value.as_sequence().is_some_and(|items| {
+                items.iter().all(|item| {
+                    item.as_str().is_some_and(|text| {
+                        text.parse::<ipnet::IpNet>().is_ok()
+                            || text.parse::<std::net::IpAddr>().is_ok()
+                    })
+                })
+            })
+        {
+            return Err("备用 DNS 的 IP 地址段需填写有效的 IP 或 CIDR".into());
         }
         for key in ["nameserver-policy", "proxy-server-nameserver-policy"] {
             if let Some(value) = dns.get(key) {
@@ -463,8 +475,28 @@ pub(crate) fn validate_settings(kind: SettingsKind, values: &Values) -> Result<(
 mod tests {
     use super::*;
     #[test]
+    fn dns_kernel_defaults_allow_missing_upstreams_but_explicit_empty_upstreams_are_invalid() {
+        for (yaml, valid) in [
+            ("dns: {enable: true}", true),
+            ("dns: {enable: true, nameserver: []}", false),
+            ("dns: {enable: false, nameserver: []}", true),
+            (
+                "dns: {enable: true, nameserver: [1.1.1.1], listen: '', fake-ip-range: ''}",
+                true,
+            ),
+        ] {
+            let values = Values::from([("DnsYaml".into(), yaml.into())]);
+            assert_eq!(
+                validate_settings(SettingsKind::Dns, &values).is_ok(),
+                valid,
+                "{yaml}"
+            );
+        }
+    }
+    #[test]
     fn dns_listen_form_and_yaml_accept_kernel_wildcard_and_ip_forms() {
         for listen in [
+            "",
             ":53",
             "0.0.0.0:1053",
             "127.0.0.1:53",
@@ -483,7 +515,6 @@ mod tests {
             validate_settings(SettingsKind::Dns, &values).unwrap();
         }
         for listen in [
-            "",
             ":",
             ":65536",
             ":-1",

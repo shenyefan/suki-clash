@@ -150,7 +150,7 @@ pub(super) async fn run(
                                     if disconnected { feed.emit(Level::Info, "logging", "内核日志获取已恢复"); disconnected = false; }
                                     reconnect.recovered();
                             },
-                            Err(error) => { rejected = !suki_service::is_unreachable(&error); break Err(error.to_string()); },
+                            Err(error) => { rejected = !suki_service::is_read_unavailable(&error); break Err(error.to_string()); },
                         }
                     },
                 }

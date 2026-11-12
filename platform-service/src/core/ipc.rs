@@ -278,6 +278,21 @@ mod tests {
             ("GET", "/magic", "", b"".as_slice(), 401),
             ("POST", "/magic", auth.as_str(), b"".as_slice(), 404),
             ("GET", "/missing", auth.as_str(), b"".as_slice(), 404),
+            ("GET", "/service/log-snapshot", "", b"".as_slice(), 422),
+            (
+                "GET",
+                "/service/log-snapshot",
+                auth.as_str(),
+                b"{}".as_slice(),
+                422,
+            ),
+            (
+                "GET",
+                "/service/log-snapshot",
+                protocol.as_str(),
+                b"{}".as_slice(),
+                400,
+            ),
             ("POST", "/installation", auth.as_str(), b"{".as_slice(), 422),
             (
                 "POST",

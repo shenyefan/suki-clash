@@ -27,7 +27,7 @@ pub(super) async fn require_ready() -> Result<(), String> {
         .map_err(|error| error.to_string())
 }
 
-/// Only an unavailable transport may settle with time. Rejections stop immediately.
+/// Retry read-only probes while service availability is unknown.
 async fn await_protocol<F, Fut>(budget: std::time::Duration, mut probe: F) -> anyhow::Result<()>
 where
     F: FnMut() -> Fut,
@@ -51,7 +51,7 @@ where
         match result {
             Ok(reply) => return suki_service::validate_protocol_response(reply),
             Err(error) => {
-                if !suki_service::is_unreachable(&error) {
+                if !suki_service::is_read_unavailable(&error) {
                     return Err(error);
                 }
                 let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
@@ -190,6 +190,34 @@ mod policy_tests {
             .unwrap_err();
         assert!(suki_service::is_unreachable(&error));
         assert!(started.elapsed() < Duration::from_secs(1));
+    }
+
+    #[tokio::test]
+    async fn service_http_failures_retry_the_read_only_protocol_probe() {
+        use std::{cell::Cell, time::Duration};
+        for code in [408, 500, 503] {
+            let attempts = Cell::new(0);
+            super::await_protocol(Duration::from_secs(1), || {
+                let attempt = attempts.get();
+                attempts.set(attempt + 1);
+                std::future::ready(if attempt == 0 {
+                    Err(suki_service::RequestError::Rejected {
+                        code,
+                        message: "service handler unavailable".into(),
+                    }
+                    .into())
+                } else {
+                    Ok(suki_service::Response {
+                        code: 0,
+                        message: String::new(),
+                        data: Some(suki_service::ProtocolInfo::current()),
+                    })
+                })
+            })
+            .await
+            .unwrap();
+            assert_eq!(attempts.get(), 2);
+        }
     }
 
     #[test]
@@ -483,7 +511,7 @@ pub(crate) enum State {
 }
 impl State {
     fn from_error(error: anyhow::Error) -> Self {
-        if suki_service::is_unreachable(&error) {
+        if suki_service::is_read_unavailable(&error) {
             Self::Unreachable(error.to_string())
         } else {
             Self::Rejected(error.to_string())

@@ -7,7 +7,7 @@ use gpui_kit::{
     assets::IconName,
     component::{
         Disableable, Icon, Sizable,
-        button::Button,
+        button::{Button, ButtonVariants},
         input::{Editor, Input},
         scroll::ScrollableElement,
         switch::Switch,
@@ -186,20 +186,43 @@ impl SettingsPage {
                     workspace.child(ui::workspace_footer().child(div().flex_1()).when(
                         matches!(self.kind, SettingsKind::Dns | SettingsKind::Sniffer),
                         |footer| {
-                            footer.child(
-                                Button::new("dns-edit-mode")
-                                    .icon(IconName::FileCode)
-                                    .outline()
-                                    .with_size(control::STANDARD)
-                                    .label(if self.dns_raw {
-                                        "表单编辑"
-                                    } else {
-                                        "YAML 编辑"
-                                    })
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.switch_dns_mode(!this.dns_raw, window, cx)
-                                    })),
-                            )
+                            footer
+                                .child(
+                                    Button::new("dns-edit-mode")
+                                        .icon(IconName::FileCode)
+                                        .outline()
+                                        .with_size(control::STANDARD)
+                                        .disabled(self.saving || self.session.read(cx).core_busy())
+                                        .label(if self.dns_raw {
+                                            "表单编辑"
+                                        } else {
+                                            "YAML 编辑"
+                                        })
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.switch_dns_mode(!this.dns_raw, window, cx)
+                                        })),
+                                )
+                                .when(self.dns_raw, |footer| {
+                                    footer.child(
+                                        Button::new("save-dns-editor")
+                                            .icon(IconName::Save)
+                                            .label("保存")
+                                            .primary()
+                                            .disabled(
+                                                self.saving
+                                                    || self.session.read(cx).core_busy()
+                                                    || !self
+                                                        .values(cx)
+                                                        .get(crate::preferences::native::flag(
+                                                            self.kind,
+                                                        ))
+                                                        .is_some_and(|value| value == "true"),
+                                            )
+                                            .on_click(cx.listener(|this, _, window, cx| {
+                                                this.save_dns(window, cx);
+                                            })),
+                                    )
+                                })
                         },
                     ))
                 },

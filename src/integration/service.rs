@@ -31,7 +31,6 @@ pub(crate) enum Command {
     },
     OpenDirectory(DirectoryKind),
     OpenDocument(PathBuf),
-    Diagnostics,
 }
 impl Command {
     pub(crate) fn label(&self) -> &'static str {
@@ -41,7 +40,6 @@ impl Command {
             Self::Save { .. } => "保存配置",
             Self::OpenDirectory(_) => "打开应用目录",
             Self::OpenDocument(_) => "打开配置文件",
-            Self::Diagnostics => "导出诊断信息",
         }
     }
 }
@@ -133,9 +131,8 @@ impl Service {
             .name("suki-storage".into())
             .spawn(move || {
                 while let Ok(request) = receiver.recv_blocking() {
-                    let result =
-                        execute(&repository, &writer_snapshot, request.command, &writer_logs)
-                            .map_err(ServiceError::from);
+                    let result = execute(&repository, &writer_snapshot, request.command)
+                        .map_err(ServiceError::from);
                     // The window may have gone away. Its pending write still completes.
                     let _ = request.reply.try_send(result);
                 }
@@ -238,7 +235,6 @@ fn execute(
     repository: &Repository,
     _snapshot: &Snapshot,
     command: Command,
-    logs: &crate::logging::Feed,
 ) -> Result<Outcome, StorageError> {
     match command {
         Command::Flush => Ok(Outcome::Saved),
@@ -330,9 +326,6 @@ fn execute(
             }
             Ok(Outcome::Document(path))
         }
-        Command::Diagnostics => crate::diagnostics::export(repository, logs)
-            .map(Outcome::Document)
-            .map_err(|error| std::io::Error::other(error).into()),
         Command::OpenDirectory(kind) => Ok(Outcome::Directory(repository.paths().directory(kind))),
     }
 }

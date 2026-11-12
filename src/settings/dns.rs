@@ -73,7 +73,6 @@ impl SettingsPage {
                     };
                     self.dns_document =
                         crate::preferences::native::patch(self.kind, &root, &changes)?;
-                    self.commit_core(changes, window, cx);
                 }
                 self.dns_to_yaml(cx).map(|source| {
                     self.dns_source
@@ -81,16 +80,34 @@ impl SettingsPage {
                 })
             })
         } else {
-            self.read_dns_yaml(window, cx).map(|()| {
-                // A mode-button click may precede the editor's blur event.
-                self.commit_core(self.values(cx), window, cx);
-            })
+            self.read_dns_yaml(window, cx)
         };
         match result {
             Ok(()) => self.dns_raw = raw,
             Err(error) => ui::show_error(error, window, cx),
         }
         cx.notify();
+    }
+
+    pub(super) fn save_dns(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Err(error) = self.read_dns_yaml(window, cx) {
+            ui::show_error(error, window, cx);
+            return;
+        }
+        match self.dns_to_yaml(cx) {
+            Ok(yaml) => {
+                let Some(key) = crate::preferences::native::key(self.kind) else {
+                    return;
+                };
+                let patch = crate::storage::Values::from([(key.into(), yaml)]);
+                self.saving_dns_document = true;
+                self.commit_core(patch, window, cx);
+                if !self.saving {
+                    self.saving_dns_document = false;
+                }
+            }
+            Err(error) => ui::show_error(error, window, cx),
+        }
     }
 }
 
@@ -129,6 +146,152 @@ mod synchronization_tests {
     use gpui_kit::component::WindowExt;
     use gpui_kit::test::TestWindowExt;
     use gpui_kit::{AppContext, Bounds, TestAppContext, WindowBounds, WindowOptions, px, size};
+
+    #[gpui_kit::test]
+    fn yaml_drafts_require_save_and_search_keeps_every_character(cx: &mut TestAppContext) {
+        use gpui_kit::test::TestEventExt;
+        let root = tempfile::tempdir().unwrap();
+        let repository =
+            crate::storage::Repository::open(crate::storage::AppPaths::isolated(root.path()))
+                .unwrap();
+        let mut values = crate::preferences::native::decode(
+            SettingsKind::Dns,
+            b"dns: {enable: true, nameserver: [1.1.1.1]}",
+        )
+        .unwrap();
+        values.insert("DnsOverrideEnabled".into(), "true".into());
+        repository
+            .save(&crate::storage::Namespace::parse("dns").unwrap(), &values)
+            .unwrap();
+        let service = crate::integration::Service::start(repository).unwrap();
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            crate::integration::init(service, None, cx);
+            cx.set_reduce_motion(true);
+        });
+        let (handle, page) = cx.update(|cx| {
+            gpui_kit::open_window(
+                WindowOptions {
+                    window_bounds: Some(WindowBounds::Windowed(Bounds::new(
+                        Default::default(),
+                        size(px(1100.), px(800.)),
+                    ))),
+                    ..Default::default()
+                },
+                cx,
+                |window, cx| {
+                    let session = cx.new(crate::session::Session::new);
+                    cx.new(|cx| SettingsPage::new(SettingsKind::Dns, session, window, cx))
+                },
+            )
+            .unwrap()
+        });
+        cx.run_until_parked();
+        handle
+            .update(cx, |_, window, cx| {
+                window.render_frame(cx);
+                window.click("dns-edit-mode", cx);
+                let editor = page.read(cx).dns_source.clone();
+                editor.update(cx, |state, cx| {
+                    state.focus(window, cx);
+                    state.select_all(window, cx);
+                });
+                window.input("dns:\n  enable: true\n  nameserver: [9.9.9.9]\n", cx);
+            })
+            .unwrap();
+        cx.run_until_parked();
+        handle
+            .update(cx, |_, window, cx| {
+                let draft = page.read(cx).dns_source.read(cx).value();
+                page.update(cx, |page, cx| {
+                    page.toggle("DnsOverrideEnabled", false, window, cx);
+                    assert!(page.error.is_some());
+                    page.error = None;
+                });
+                assert_eq!(page.read(cx).dns_source.read(cx).value(), draft);
+                window.clear_notifications(cx);
+                window.click("dns-edit-mode", cx);
+            })
+            .unwrap();
+        cx.run_until_parked();
+        handle
+            .update(cx, |_, window, cx| {
+                let editor = page.read(cx).dns_source.clone();
+                assert!(!page.read(cx).dns_raw);
+                assert!(!page.read(cx).saving);
+                assert!(page.read(cx).error.is_none());
+                assert_eq!(page.read(cx).values(cx)["Nameserver"], "9.9.9.9");
+                window.render_frame(cx);
+                assert!(window.try_find("save-dns-editor").is_none());
+                assert!(window.try_find("save-Nameserver").is_none());
+                window.click("dns-edit-mode", cx);
+                assert!(page.read(cx).error.is_none());
+                let mode = window.find("dns-edit-mode").bounds();
+                let save = window.find("save-dns-editor").bounds();
+                assert!(mode.left() > window.viewport_size().width / 2.);
+                assert!(mode.right() <= save.left());
+                window.click("save-dns-editor", cx);
+                // This fixture has no lifecycle executor: only explicit Save reaches it.
+                assert!(page.read(cx).error.is_some());
+                assert!(editor.read(cx).value().contains("9.9.9.9"));
+                window.clear_notifications(cx);
+
+                editor.update(cx, |state, cx| {
+                    state.set_selected_range(0..0, cx);
+                    state.focus(window, cx);
+                    state.open_search(false, cx);
+                });
+                window.render_frame(cx);
+                let search = window
+                    .within("search-panel")
+                    .find_all_by_role(gpui_kit::Role::TextInput)
+                    .into_iter()
+                    .find(|input| input.visible())
+                    .unwrap();
+                let position = search.bounds().center();
+                window.pointer_down(position, gpui_kit::MouseButton::Left, cx);
+                window.pointer_up(position, gpui_kit::MouseButton::Left, cx);
+                window.press("secondary-a", cx);
+            })
+            .unwrap();
+        cx.run_until_parked();
+        for (character, expected) in [("h", "h"), ("o", "ho"), ("s", "hos"), ("t", "host")] {
+            handle
+                .update(cx, |_, window, cx| {
+                    window.input(character, cx);
+                })
+                .unwrap();
+            cx.run_until_parked();
+            handle
+                .update(cx, |_, window, cx| {
+                    window.render_frame(cx);
+                    assert_eq!(
+                        page.read(cx).dns_source.read(cx).search_session().query,
+                        expected
+                    );
+                    assert_eq!(
+                        window
+                            .within("search-panel")
+                            .find_all_by_role(gpui_kit::Role::TextInput)
+                            .into_iter()
+                            .find(|input| input.visible())
+                            .unwrap()
+                            .value(),
+                        Some(expected),
+                    );
+                })
+                .unwrap();
+        }
+        handle
+            .update(cx, |_, window, cx| {
+                page.update(cx, |page, cx| page.reopen(window, cx));
+                assert!(!page.read(cx).dns_raw);
+                assert_eq!(page.read(cx).values(cx)["Nameserver"], "1.1.1.1");
+                assert!(!page.read(cx).dirty);
+            })
+            .unwrap();
+        crate::integration::finish_test_services(cx);
+    }
     #[gpui_kit::test]
     fn form_switches_and_yaml_share_the_complete_persisted_document(cx: &mut TestAppContext) {
         let root = tempfile::tempdir().unwrap();

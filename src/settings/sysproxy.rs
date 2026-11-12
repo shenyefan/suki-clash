@@ -8,7 +8,7 @@ use gpui_kit::{
     assets::IconName,
     component::{
         Disableable, Sizable,
-        button::ButtonVariants,
+        button::{Button, ButtonVariants},
         h_flex,
         input::Editor,
         scroll::ScrollableElement,
@@ -16,6 +16,7 @@ use gpui_kit::{
         tab::{Tab, TabBar},
         v_flex,
     },
+    prelude::FluentBuilder,
     *,
 };
 impl SettingsPage {
@@ -106,10 +107,21 @@ impl SettingsPage {
                         .on_click(cx.listener(
                             move |this, _, window, cx| {
                                 if let FieldControl::Multiline(state) = &this.fields[key].control {
+                                    let owner = cx.weak_entity();
                                     ui::editor::expand(
                                         state.clone(),
                                         SharedString::from(this.fields[key].spec.label),
                                         false,
+                                        pac.then(|| {
+                                            std::rc::Rc::new(
+                                                move |window: &mut Window, cx: &mut App| {
+                                                    let _ = owner.update(cx, |this, cx| {
+                                                        this.commit_core_field(key, window, cx);
+                                                    });
+                                                },
+                                            )
+                                                as ui::editor::SaveEditor
+                                        }),
                                         window,
                                         cx,
                                     );
@@ -129,22 +141,38 @@ impl SettingsPage {
             );
         }
         editor = editor.child(ui::muted(field.spec.description, cx));
-        ui::workspace().child(header).child(
-            ui::workspace_body().child(
-                div()
-                    .id("system-proxy-scroll")
-                    .size_full()
-                    .overflow_y_scrollbar()
-                    .child(
-                        v_flex()
-                            .w_full()
-                            .gap(space::SECTION)
-                            .py(space::SM)
-                            .child(ui::preferences_group("常规", rows, cx))
-                            .child(editor),
+        ui::workspace()
+            .child(header)
+            .child(
+                ui::workspace_body().child(
+                    div()
+                        .id("system-proxy-scroll")
+                        .size_full()
+                        .overflow_y_scrollbar()
+                        .child(
+                            v_flex()
+                                .w_full()
+                                .gap(space::SECTION)
+                                .py(space::SM)
+                                .child(ui::preferences_group("常规", rows, cx))
+                                .child(editor),
+                        ),
+                ),
+            )
+            .when(pac, |workspace| {
+                workspace.child(
+                    ui::workspace_footer().child(div().flex_1()).child(
+                        Button::new("save-system-proxy-editor")
+                            .icon(IconName::Save)
+                            .label("保存")
+                            .primary()
+                            .disabled(busy)
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.commit_core_field(key, window, cx);
+                            })),
                     ),
-            ),
-        )
+                )
+            })
     }
 }
 
@@ -186,6 +214,9 @@ mod tests {
             .unwrap()
         });
         let page = retained.borrow_mut().take().unwrap();
+        handle
+            .update(cx, |_, window, _| window.activate_window())
+            .unwrap();
         cx.run_until_parked();
         handle
             .update(cx, |_, window, cx| {
@@ -227,10 +258,15 @@ mod tests {
                             )
                         });
                     }
+                    window.render_frame(cx);
                     let mode = window.within("system-proxy-mode").find(index);
                     assert!(mode.bounds().origin.x > window.viewport_size().width / 2.);
                     assert!(window.try_find("runtime-tabs").is_none());
                     assert!(window.try_find("runtime-save").is_none());
+                    assert_eq!(
+                        window.try_find("save-system-proxy-editor").is_some(),
+                        index == 1
+                    );
                 })
                 .unwrap();
             cx.wait_for(handle, Duration::from_secs(5), |_, cx| {
@@ -247,6 +283,7 @@ mod tests {
                     );
                     window.click("system-proxy-expand-editor", cx);
                     assert!(window.has_active_dialog(cx));
+                    page.update(cx, |page, _| page.error = None);
                     let state = match &page.read(cx).fields[key].control {
                         FieldControl::Multiline(state) => state.clone(),
                         _ => unreachable!(),
@@ -255,7 +292,17 @@ mod tests {
                     state.read(cx).focus_handle(cx).focus(window, cx);
                     window.render_frame(cx);
                     let before = state.read(cx).value().to_string();
-                    window.input(" ", cx);
+                    window.input(if index == 0 { "example.test" } else { " " }, cx);
+                    assert_ne!(state.read(cx).value().as_ref(), before);
+                    window.click("copy-source", cx);
+                    if index == 1 {
+                        assert!(page.read(cx).error.is_none());
+                        assert!(!page.read(cx).saving);
+                        window.click("save-source", cx);
+                        assert!(page.read(cx).error.is_some());
+                    } else {
+                        assert!(window.try_find("save-source").is_none());
+                    }
                     assert_ne!(state.read(cx).value().as_ref(), before);
                     window.close_dialog(cx);
                     window.render_frame(cx);
@@ -266,6 +313,31 @@ mod tests {
                     );
                 })
                 .unwrap();
+            cx.run_until_parked();
+            if index == 0 {
+                handle
+                    .update(cx, |_, window, cx| {
+                        window.render_frame(cx);
+                        if let FieldControl::Multiline(state) = &page.read(cx).fields[key].control {
+                            state.read(cx).focus_handle(cx).focus(window, cx);
+                        }
+                        window.render_frame(cx);
+                    })
+                    .unwrap();
+                cx.run_until_parked();
+                handle
+                    .update(cx, |_, window, cx| {
+                        if let FieldControl::Text(input) =
+                            &page.read(cx).fields["SystemProxyHost"].control
+                        {
+                            input.read(cx).focus_handle(cx).focus(window, cx);
+                        }
+                        window.render_frame(cx);
+                    })
+                    .unwrap();
+                cx.run_until_parked();
+                cx.update(|cx| assert!(page.read(cx).error.is_some(), "{key} did not submit"));
+            }
         }
         handle
             .update(cx, |_, window, cx| {

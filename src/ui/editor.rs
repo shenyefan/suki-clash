@@ -1,8 +1,12 @@
 //! One native editing configuration for multiline values and source files.
+use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     component::input::{EditorState, TabSize},
     *,
 };
+use std::rc::Rc;
+
+pub(crate) type SaveEditor = Rc<dyn Fn(&mut Window, &mut App)>;
 
 pub(crate) fn state(
     language: &str,
@@ -28,11 +32,16 @@ pub(crate) fn expand(
     state: Entity<EditorState>,
     title: SharedString,
     readonly: bool,
+    save: Option<SaveEditor>,
     window: &mut Window,
     cx: &mut App,
 ) {
     use crate::ui::{self, theme::layout};
-    use gpui_kit::component::{WindowExt, button::Button, input::Editor};
+    use gpui_kit::component::{
+        WindowExt,
+        button::{Button, ButtonVariants},
+        input::Editor,
+    };
     window.open_dialog(cx, move |dialog, window, cx| {
         let state = state.clone();
         let label = title.clone();
@@ -67,7 +76,16 @@ pub(crate) fn expand(
                         }),
                 )
                 .child(div().flex_1())
-                .child(ui::modal_close("完成")),
+                .child(ui::modal_close("关闭"))
+                .when_some(save.clone(), |footer, save| {
+                    footer.child(
+                        Button::new("save-source")
+                            .icon(assets::IconName::Save)
+                            .label("保存")
+                            .primary()
+                            .on_click(move |_, window, cx| save(window, cx)),
+                    )
+                }),
         )
     });
 }

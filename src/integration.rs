@@ -125,11 +125,7 @@ pub(crate) fn execute(
         },
         _ => "storage".to_owned(),
     };
-    let success_level = if matches!(&command, Command::Diagnostics) {
-        "INFO"
-    } else {
-        "DEBUG"
-    };
+    let success_level = "DEBUG";
     announce_module("DEBUG", module.clone(), format!("开始{label}"), cx);
     let pending = match cx.global_mut::<Bridge>().service.submit(command) {
         Ok(pending) => pending,

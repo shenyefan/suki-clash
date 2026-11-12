@@ -44,7 +44,6 @@ impl SocketError {
         match error {
             tokio_tungstenite::tungstenite::Error::Http(response) => {
                 response.status().is_client_error()
-                    && !matches!(response.status().as_u16(), 408 | 429)
             }
             tokio_tungstenite::tungstenite::Error::Protocol(
                 tokio_tungstenite::tungstenite::error::ProtocolError::HandshakeIncomplete
@@ -299,9 +298,8 @@ impl Client {
             MeasurementError::Timeout
         })?
         .map_err(MeasurementError::Failed)?;
-        if status == hyper::StatusCode::GATEWAY_TIMEOUT
-            || status == hyper::StatusCode::REQUEST_TIMEOUT
-        {
+        // hub/route/proxies.go returns 504 for URLTest context expiration.
+        if status == hyper::StatusCode::GATEWAY_TIMEOUT {
             return Err(MeasurementError::Timeout);
         }
         if !status.is_success() {
@@ -933,7 +931,47 @@ mod tests {
 #[cfg(all(test, windows))]
 mod pipe_tests {
     use super::*;
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
     use tokio::net::windows::named_pipe::{ClientOptions, ServerOptions};
+    #[tokio::test]
+    async fn measurement_distinguishes_the_core_timeout_status_from_operation_failures() {
+        use crate::proxies::runtime::MeasurementError;
+        for status in [200, 504, 503, 500, 408] {
+            let path = format!(
+                r"\\.\pipe\suki-measurement-test-{}",
+                random_token().unwrap()
+            );
+            let server = ServerOptions::new()
+                .first_pipe_instance(true)
+                .create(&path)
+                .unwrap();
+            let serving = tokio::spawn(async move {
+                server.connect().await.unwrap();
+                let mut server = server;
+                let mut request = [0; 4096];
+                assert!(server.read(&mut request).await.unwrap() > 0);
+                let body = r#"{"delay":42,"message":"timeout"}"#;
+                server.write_all(format!(
+                    "HTTP/1.1 {status} test\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()
+                ).as_bytes()).await.unwrap();
+            });
+            let client = Client::new(Endpoint::Pipe(path), String::new());
+            let result = client
+                .node_delay("node", None, "https://example.test", 2000)
+                .await;
+            match status {
+                200 => assert_eq!(result, Ok(42)),
+                504 => assert_eq!(result, Err(MeasurementError::Timeout)),
+                _ => assert_eq!(
+                    result,
+                    Err(MeasurementError::Failed(format!(
+                        "内核本地 API 返回 HTTP {status}"
+                    )))
+                ),
+            }
+            serving.await.unwrap();
+        }
+    }
     #[tokio::test]
     async fn busy_pipe_connects_when_the_next_server_instance_is_available() {
         let path = format!(r"\\.\pipe\suki-client-test-{}", random_token().unwrap());

@@ -3423,6 +3423,126 @@ async fn global_dns_saves_while_stopped_and_invalid_edits_preserve_committed_yam
 }
 
 #[tokio::test]
+async fn sequential_settings_patch_only_the_owned_path_and_preserve_other_documents() {
+    use crate::{preferences::SettingsKind, storage::Values};
+    let (_root, paths) = fixture(None);
+    let mut owner = actor(paths.clone());
+    owner.save_settings(SettingsKind::Dns, Values::from([
+        ("DnsOverrideEnabled".into(), "true".into()),
+        ("DnsYaml".into(), "dns: {enable: true, ipv6: false, nameserver: [9.9.9.9], fallback-filter: {geoip: false, domain: [retained.example]}, custom: retained}\nhosts: {retained.example: 127.0.0.1}".into())
+    ])).await.unwrap();
+    owner
+        .save_settings(
+            SettingsKind::Dns,
+            Values::from([("DnsIpv6".into(), "true".into())]),
+        )
+        .await
+        .unwrap();
+    owner
+        .save_settings(
+            SettingsKind::Dns,
+            Values::from([("FallbackGeoIp".into(), "true".into())]),
+        )
+        .await
+        .unwrap();
+    let dns_before_core = std::fs::read(paths.settings().join("dns.yaml")).unwrap();
+    owner
+        .save_settings(
+            SettingsKind::Core,
+            Values::from([("Ipv6".into(), "false".into())]),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        std::fs::read(paths.settings().join("dns.yaml")).unwrap(),
+        dns_before_core
+    );
+    let core_before_dns = std::fs::read(paths.settings().join("mihomo.yaml")).unwrap();
+    owner
+        .save_settings(
+            SettingsKind::Dns,
+            Values::from([("Nameserver".into(), "1.1.1.1".into())]),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        std::fs::read(paths.settings().join("mihomo.yaml")).unwrap(),
+        core_before_dns
+    );
+    let dns: serde_yaml_ng::Value =
+        serde_yaml_ng::from_slice(&std::fs::read(paths.settings().join("dns.yaml")).unwrap())
+            .unwrap();
+    assert_eq!(dns["dns"]["ipv6"], true);
+    assert_eq!(dns["dns"]["fallback-filter"]["geoip"], true);
+    assert_eq!(
+        dns["dns"]["fallback-filter"]["domain"][0],
+        "retained.example"
+    );
+    assert_eq!(dns["dns"]["custom"], "retained");
+    assert_eq!(dns["hosts"]["retained.example"], "127.0.0.1");
+    assert!(dns.get("ipv6").is_none());
+    assert!(owner.running.is_none());
+}
+
+#[tokio::test]
+async fn ordered_overrides_specialize_global_dns_and_sniffer_without_crossing_ipv6_levels() {
+    use crate::{
+        preferences::SettingsKind,
+        profiles::{
+            model::{Document, DocumentKind},
+            override_repository,
+        },
+        storage::Values,
+    };
+    let (_root, paths) = fixture(None);
+    let mut owner = actor(paths.clone());
+    owner
+        .save_settings(
+            SettingsKind::Dns,
+            Values::from([
+                ("DnsOverrideEnabled".into(), "true".into()),
+                (
+                    "DnsYaml".into(),
+                    "dns: {enable: true, ipv6: false, nameserver: [9.9.9.9]}".into(),
+                ),
+            ]),
+        )
+        .await
+        .unwrap();
+    owner
+        .save_settings(
+            SettingsKind::Sniffer,
+            Values::from([
+                ("SnifferOverrideEnabled".into(), "true".into()),
+                (
+                    "SnifferYaml".into(),
+                    "sniffer: {enable: true, override-destination: true}".into(),
+                ),
+            ]),
+        )
+        .await
+        .unwrap();
+    owner
+        .save_settings(
+            SettingsKind::Tun,
+            Values::from([("IsTunEnabled".into(), "true".into())]),
+        )
+        .await
+        .unwrap();
+    let mut document = Document::new(1, DocumentKind::Yaml);
+    document.content =
+        "dns: {ipv6: false, nameserver: [1.1.1.1]}\nsniffer: {override-destination: false}".into();
+    override_repository::commit(&paths, &[], &[document]).unwrap();
+    let launch = Launch::preview(&paths).await.unwrap();
+    let config: serde_yaml_ng::Value = serde_yaml_ng::from_str(&launch.composed).unwrap();
+    assert_eq!(config["ipv6"], true);
+    assert_eq!(config["dns"]["ipv6"], false);
+    assert_eq!(config["dns"]["nameserver"][0], "1.1.1.1");
+    assert_eq!(config["sniffer"]["enable"], true);
+    assert_eq!(config["sniffer"]["override-destination"], false);
+}
+
+#[tokio::test]
 async fn stopped_native_settings_save_intent_but_system_proxy_requires_a_ready_core() {
     use crate::{preferences::SettingsKind, storage::Values};
     let (_root, paths) = fixture(None);

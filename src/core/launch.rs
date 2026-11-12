@@ -376,7 +376,7 @@ impl Launch {
         } else {
             source.content().to_vec()
         };
-        // Global DNS supplies the base; ordered user overrides can specialize it.
+        // Global DNS/sniffer settings supply the base; ordered overrides can specialize it.
         let enhanced: Value = serde_yaml_ng::from_slice(&enhanced)
             .map_err(|error| crate::logging::rejected("订阅配置无效", error))?;
         let mut base = match enhanced {
@@ -384,6 +384,7 @@ impl Launch {
             _ => return Err("订阅配置需为对象".into()),
         };
         configuration::flow::apply_dns(paths, options.flow.as_ref(), &mut base)?;
+        configuration::flow::apply_settings(paths, options.flow.as_ref(), &mut base)?;
         let enhanced = serde_yaml_ng::to_string(&base)
             .map_err(|error| crate::logging::diagnostic_error("无法编码 DNS 基础配置", error))?
             .into_bytes();
@@ -438,11 +439,6 @@ impl Launch {
         let mut mapped: Value = serde_yaml_ng::from_slice(&bytes)
             .map_err(|error| crate::logging::rejected("合成结果无效", error))?;
         preferences.overlay(mapped.as_mapping_mut().ok_or("合成结果必须为对象")?);
-        configuration::flow::apply_settings(
-            paths,
-            options.flow.as_ref(),
-            mapped.as_mapping_mut().ok_or("合成结果必须为对象")?,
-        )?;
         configuration::tun::prepare(mapped.as_mapping_mut().ok_or("合成结果必须为对象")?)?;
         let chain = match options.chain {
             Some(chain) => chain,

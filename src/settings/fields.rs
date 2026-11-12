@@ -229,11 +229,13 @@ impl SettingsPage {
                                                     IconName::Maximize,
                                                     "展开编辑",
                                                 )
+                                                .disabled(disabled)
                                                 .on_click(move |_, w, cx| {
                                                     ui::editor::expand(
                                                         state.clone(),
                                                         title.clone(),
-                                                        disabled,
+                                                        false,
+                                                        None,
                                                         w,
                                                         cx,
                                                     )

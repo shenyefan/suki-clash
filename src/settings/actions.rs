@@ -62,19 +62,41 @@ impl SettingsPage {
                 cx,
             ),
             "导出诊断信息" => {
-                storage::execute(
-                    storage::Command::Diagnostics,
-                    window,
-                    cx,
-                    |result, window, cx| match result {
-                        Ok(storage::Outcome::Document(path)) => {
-                            cx.reveal_path(&path);
-                            ui::notifications::push(window, "诊断包已导出", cx);
-                        }
-                        Err(error) => ui::show_error(error.to_string(), window, cx),
-                        _ => {}
-                    },
+                let name = format!(
+                    "suki-diagnostics-{}.zip",
+                    chrono::Local::now().format("%Y%m%dT%H%M%S")
                 );
+                let picker = cx.prompt_for_new_path(
+                    &dirs::download_dir().unwrap_or_else(std::env::temp_dir),
+                    Some(&name),
+                );
+                self.pending_action = Some(cx.spawn_in(window, async move |owner, cx| {
+                    let result = picker.await;
+                    let _ = owner.update_in(cx, |this, window, cx| {
+                        this.pending_action = None;
+                        match result {
+                            Ok(Ok(Some(target))) => {
+                                let reveal = target.clone();
+                                if let Err(error) = crate::core::execute(
+                                    crate::core::Command::Diagnostics(target),
+                                    window,
+                                    cx,
+                                    move |result, _, cx| {
+                                        if result.is_ok() {
+                                            cx.reveal_path(&reveal);
+                                        }
+                                    },
+                                ) {
+                                    ui::show_error(error, window, cx);
+                                }
+                            }
+                            Ok(Ok(None)) => {}
+                            Ok(Err(error)) => ui::show_error(error.to_string(), window, cx),
+                            Err(error) => ui::show_error(error.to_string(), window, cx),
+                        }
+                        cx.notify();
+                    });
+                }));
             }
             "查看运行配置" => {
                 if let Err(error) = crate::core::execute(
@@ -91,7 +113,14 @@ impl SettingsPage {
                             if let Some(content) = content {
                                 let editor = cx
                                     .new(|cx| ui::editor::state("yaml", content, true, window, cx));
-                                ui::editor::expand(editor, "运行配置".into(), true, window, cx);
+                                ui::editor::expand(
+                                    editor,
+                                    "运行配置".into(),
+                                    true,
+                                    None,
+                                    window,
+                                    cx,
+                                );
                             }
                         }
                     },

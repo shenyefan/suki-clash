@@ -1,13 +1,13 @@
 [package]
 name = "suki-clash"
-version = "0.6.1"
+version = "0.6.2"
 edition = "2024"
 
 [dependencies]
 suki_service = { package = "suki-clash-service", path = "platform-service", features = ["client"] }
-anyhow = "1.0"
-log = { version = "0.4", features = ["std"] }
-gpui-kit = { version = "0.9.0", features = ["tree-sitter-yaml", "tree-sitter-javascript"] }
+anyhow = "1.0.104"
+log = { version = "0.4.35", features = ["std"] }
+gpui-kit = { version = "0.9.1", features = ["tree-sitter-yaml", "tree-sitter-javascript"] }
 regex = "1.13.1"
 url = "2.5.8"
 percent-encoding = "2.3.2"
@@ -25,14 +25,14 @@ chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
 tokio = { version = "1.54.1", features = ["rt", "net", "process", "sync", "time", "io-util", "macros", "fs"] }
 hyper = { version = "1.12.0", features = ["client", "server", "http1"] }
 hyper-util = { version = "0.1.21", features = ["tokio"] }
-http-body-util = "0.1.3"
+http-body-util = "0.1.5"
 reqwest = { version = "0.13.5", default-features = false, features = ["rustls", "stream", "socks", "system-proxy"] }
 tokio-tungstenite = { version = "0.30.0", default-features = false, features = ["handshake"] }
-futures-util = { version = "0.3.32", features = ["sink"] }
+futures-util = { version = "0.3.34", features = ["sink"] }
 netdev = { version = "0.47.0", default-features = false, features = ["gateway"] }
-sysinfo = { version = "0.40.0", default-features = false, features = ["system", "disk", "gpu"] }
+sysinfo = { version = "0.40.1", default-features = false, features = ["system", "disk", "gpu"] }
 ipnet = "2.12.2"
-zip = { version = "9.3.0", default-features = false, features = ["deflate-flate2"] }
+zip = { version = "9.4.0", default-features = false, features = ["deflate-flate2"] }
 sha2 = "0.11.1"
 base64 = "0.23.1"
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp", "ico"] }
@@ -47,7 +47,7 @@ velopack = { version = "=1.3.39-g8d2844f", default-features = false }
 embed-resource = "3.0.12"
 
 [dev-dependencies]
-gpui-kit = { version = "0.9.0", features = ["test-support"] }
+gpui-kit = { version = "0.9.1", features = ["test-support"] }
 
 [target.'cfg(windows)'.dependencies]
 raw-window-handle = "0.6.2"

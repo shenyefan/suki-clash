@@ -86,6 +86,7 @@ pub(crate) struct SettingsPage {
     core_versions: Vec<String>,
     resource_generation: Option<u64>,
     dns_raw: bool,
+    saving_dns_document: bool,
     dns_source: Entity<EditorState>,
     dns_document: serde_yaml_ng::Value,
     error: Option<String>,
@@ -139,6 +140,7 @@ impl SettingsPage {
                                     window,
                                     cx,
                                 );
+                                this.saving_dns_document = false;
                                 if this.error.is_none()
                                     && submitted
                                         .get("CoreReleaseIndex")
@@ -202,16 +204,13 @@ impl SettingsPage {
         subscriptions.push(cx.subscribe_in(
             &dns_source,
             window,
-            |this, _, event: &InputEvent, window, cx| {
+            |this, _, event: &InputEvent, _, cx| {
                 if this.core_syncing || !this.dns_raw {
                     return;
                 }
                 if matches!(event, InputEvent::Change) {
                     this.dirty = true;
                     cx.notify();
-                }
-                if matches!(event, InputEvent::Blur) {
-                    this.commit_core(this.values(cx), window, cx);
                 }
             },
         ));
@@ -292,7 +291,7 @@ impl SettingsPage {
                             if this.core_syncing {
                                 return;
                             }
-                            if matches!(event, InputEvent::Blur) {
+                            if matches!(event, InputEvent::Blur) && key != "PacScript" {
                                 this.commit_core_field(key, window, cx);
                             }
                             if matches!(event, InputEvent::Change) {
@@ -387,6 +386,7 @@ impl SettingsPage {
             core_versions: Vec::new(),
             resource_generation: None,
             dns_raw: false,
+            saving_dns_document: false,
             dns_source,
             dns_document,
             error: None,
@@ -521,20 +521,8 @@ impl SettingsPage {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let native_raw =
-            self.dns_raw && matches!(self.kind, SettingsKind::Dns | SettingsKind::Sniffer);
-        if native_raw && let Err(error) = self.read_dns_yaml(window, cx) {
-            ui::show_error(error, window, cx);
-            return;
-        }
         if let Some(field) = self.fields.get_mut(key) {
             field.control = FieldControl::Toggle(value);
-        }
-        if native_raw && let Ok(source) = self.dns_to_yaml(cx) {
-            self.core_syncing = true;
-            self.dns_source
-                .update(cx, |state, cx| state.set_value(source, window, cx));
-            self.core_syncing = false;
         }
         if key == "AutoRoute"
             && !value

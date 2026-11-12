@@ -4,21 +4,39 @@ mod environment;
 use crate::storage::{AppPaths, DirectoryKind, Repository};
 use std::{
     io::{Read as _, Write as _},
-    path::PathBuf,
+    path::{Path, PathBuf},
 };
 
 pub(crate) fn export(
     repository: &Repository,
     logs: &crate::logging::Feed,
+    target: &Path,
+    service_log: Result<&str, &str>,
 ) -> Result<PathBuf, String> {
     let paths = repository.paths();
-    let directory = paths.directory(DirectoryKind::Backups);
-    let mut temporary = tempfile::NamedTempFile::new_in(&directory)
+    let directory = target.parent().ok_or("诊断包保存位置无效")?;
+    let mut temporary = tempfile::NamedTempFile::new_in(directory)
         .map_err(|error| crate::logging::diagnostic_error("无法创建诊断文件", error))?;
     {
         let mut zip = zip::ZipWriter::new(temporary.as_file_mut());
         for warning in configuration::export(&mut zip, paths)? {
             logs.emit(crate::logging::Level::Warning, "diagnostics", &warning);
+        }
+        match service_log {
+            Ok(text) => {
+                zip.start_file(
+                    "logs/service-current.log",
+                    zip::write::SimpleFileOptions::default(),
+                )
+                .map_err(|error| crate::logging::diagnostic_error("无法写入服务日志", error))?;
+                zip.write_all(redact(text, paths).as_bytes())
+                    .map_err(|error| crate::logging::diagnostic_error("无法写入服务日志", error))?;
+            }
+            Err(error) => logs.emit(
+                crate::logging::Level::Warning,
+                "diagnostics",
+                &format!("服务日志未导出：{error}"),
+            ),
         }
         for warning in export_logs(&mut zip, paths, logs)? {
             logs.emit(crate::logging::Level::Warning, "diagnostics", &warning);
@@ -41,14 +59,10 @@ pub(crate) fn export(
         .as_file_mut()
         .sync_all()
         .map_err(|error| crate::logging::diagnostic_error("无法保存诊断包", error))?;
-    let path = directory.join(format!(
-        "suki-diagnostics-{}.zip",
-        chrono::Utc::now().format("%Y%m%dT%H%M%S%.f")
-    ));
     temporary
-        .persist_noclobber(&path)
+        .persist(target)
         .map_err(|error| crate::logging::diagnostic_error("无法提交诊断包", error))?;
-    Ok(path)
+    Ok(target.to_path_buf())
 }
 fn export_logs(
     zip: &mut zip::ZipWriter<&mut std::fs::File>,
@@ -155,7 +169,42 @@ fn redact(message: &str, paths: &AppPaths) -> String {
 }
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn export_uses_the_chosen_destination_and_reports_missing_service_logs() {
+        use std::io::Read as _;
+        let root = tempfile::tempdir().unwrap();
+        let destination = tempfile::tempdir().unwrap();
+        let paths = super::AppPaths::isolated(root.path());
+        let repository = super::Repository::open(paths.clone()).unwrap();
+        let target = destination.path().join("chosen.zip");
+        let output = super::export(
+            &repository,
+            &crate::logging::Feed::default(),
+            &target,
+            Err("service unavailable"),
+        )
+        .unwrap();
+        assert_eq!(output, target);
+        let mut zip = zip::ZipArchive::new(std::fs::File::open(output).unwrap()).unwrap();
+        assert!(zip.by_name("logs/service-current.log").is_err());
+        let mut status = String::new();
+        zip.by_name("logs/program-current.log")
+            .unwrap()
+            .read_to_string(&mut status)
+            .unwrap();
+        assert!(status.contains("服务日志未导出：service unavailable"));
+        assert!(!paths.data().join("backups").join("chosen.zip").exists());
+    }
     use super::*;
+    fn export(repository: &Repository, logs: &crate::logging::Feed) -> Result<PathBuf, String> {
+        let target = repository.paths().data().join("chosen-diagnostics.zip");
+        super::export(
+            repository,
+            logs,
+            &target,
+            Ok("service diagnostic tail token=service-private\n"),
+        )
+    }
     #[test]
     fn export_includes_actual_settings_and_configuration_with_nested_secrets_removed() {
         let root = tempfile::tempdir().unwrap();
@@ -269,6 +318,8 @@ mod tests {
         let contents = files.values().cloned().collect::<String>();
         assert!(contents.contains("test-node"));
         assert!(contents.contains("1.1.1.1"));
+        assert!(files["logs/service-current.log"].contains("service diagnostic tail"));
+        assert!(!contents.contains("service-private"));
         for secret in [
             "controller-private",
             "password-private",

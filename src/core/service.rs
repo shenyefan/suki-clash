@@ -16,6 +16,7 @@ pub(crate) enum Command {
     ToggleSystemProxy,
     Gist(super::gist::Command),
     LocalBackup(super::local_backup::Command),
+    Diagnostics(std::path::PathBuf),
     AppUpdate(super::app_update::Command),
     ProxyPreferences {
         profile: Option<u64>,
@@ -83,6 +84,7 @@ impl Command {
             Self::PlatformService(super::privileged::Action::Uninstall) => "卸载服务",
             Self::Gist(_) => "Gist 备份操作",
             Self::LocalBackup(_) => "本地备份操作",
+            Self::Diagnostics(_) => "导出诊断信息",
             Self::AppUpdate(_) => "应用更新操作",
             Self::ProxyPreferences { .. } => "保存代理偏好",
             Self::Profiles(super::ProfileCommand::Save { .. }) => "保存订阅",
@@ -787,6 +789,25 @@ impl Actor {
                             },
                             Command::Gist(command) => self.gist(command).await,
                             Command::LocalBackup(command) => self.local_backup(command).await,
+                            Command::Diagnostics(target) => {
+                                let service_log = async {
+                                    let credentials = super::service_identity::current_owner_credentials_for_root(self.paths.data())
+                                        .map_err(crate::logging::error_message)?;
+                                    let reply = suki_service::get_service_log_snapshot(&credentials).await
+                                        .map_err(|error| error.to_string())?;
+                                    suki_service::response_data(reply).map_err(|error| error.to_string())
+                                }.await;
+                                let paths = self.paths.clone();
+                                let logs = self.logs.clone();
+                                tokio::task::spawn_blocking(move || {
+                                    let repository = crate::storage::Repository::open(paths)
+                                        .map_err(crate::logging::error_message)?;
+                                    crate::diagnostics::export(&repository, &logs, &target,
+                                        service_log.as_deref().map_err(String::as_str)).map(|_| ())
+                                }).await.map_err(|error| crate::logging::diagnostic_error("诊断导出任务异常退出", error))??;
+                                self.completed("诊断包已导出".into());
+                                Ok(())
+                            },
                             Command::AppUpdate(command) => self.app_update(command, update_shutdown).await,
                             Command::ToggleSystemProxy => self.toggle_system_proxy().await,
                             Command::ToggleTun => {
@@ -887,7 +908,7 @@ impl Actor {
                             log::error!("{error}（{operation_name}）");
                         }
                         // Preparation failure must preserve an existing ready child.
-                        let phase = if matches!(&request.command, Command::Gist(_) | Command::LocalBackup(_) | Command::AppUpdate(_)) { self.snapshot.phase } else if self.running.is_some() && self.snapshot.phase == Phase::Ready { Phase::Ready } else { Phase::Failed };
+                        let phase = if matches!(&request.command, Command::Gist(_) | Command::LocalBackup(_) | Command::AppUpdate(_) | Command::Diagnostics(_)) { self.snapshot.phase } else if self.running.is_some() && self.snapshot.phase == Phase::Ready { Phase::Ready } else { Phase::Failed };
                         self.publish_snapshot(phase, Some(error), true);
                     } else {
                         log::debug!("{}已完成", operation_name);
@@ -1048,7 +1069,7 @@ impl Actor {
                 }
             }
             Err(error) => {
-                let unreachable = suki_service::is_unreachable(&error);
+                let unreachable = suki_service::is_read_unavailable(&error);
                 self.owner_failures = self.owner_failures.saturating_add(1);
                 let error = error.to_string();
                 if unreachable {
@@ -2765,7 +2786,7 @@ impl Actor {
                 if let Process::Service(session) = &mut running.child
                     && let Err(error) = session.status().await
                 {
-                    if !suki_service::is_unreachable(&error) {
+                    if !suki_service::is_read_unavailable(&error) {
                         return Err(error.to_string());
                     }
                     last_error = Some(error.to_string());

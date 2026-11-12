@@ -1751,36 +1751,6 @@ pub(crate) fn valid_dns_listen(value: &str) -> bool {
 
 fn validate_flow_settings(values: &BTreeMap<String, String>) -> Option<String> {
     let on = |key: &str| values.get(key).is_some_and(|value| value == "true");
-    if on("DnsOverrideEnabled") && on("DnsEnabled") {
-        if let Some(listen) = values.get("DnsListen")
-            && !valid_dns_listen(listen)
-        {
-            return Some("DNS 监听地址无效，例如 :53、127.0.0.1:53".into());
-        }
-        if values
-            .get("EnhancedModeIndex")
-            .is_some_and(|value| value == "fake-ip")
-        {
-            for key in ["FakeIpRange", "FakeIpRange6"] {
-                if let Some(value) = values.get(key)
-                    && (!value.contains('/') || !valid_cidr(value))
-                {
-                    return Some("Fake-IP 地址池需填写有效的 CIDR 地址段".into());
-                }
-            }
-        }
-        if values
-            .get("Nameserver")
-            .is_none_or(|value| value.trim().is_empty())
-        {
-            return Some("至少填写一个主 DNS 服务器".into());
-        }
-        if let Some(value) = values.get("FallbackIpCidr")
-            && !split_entries(value).all(valid_cidr)
-        {
-            return Some("备用 DNS 的 IP 地址段需填写有效的 IP 或 CIDR".into());
-        }
-    }
     if on("SnifferOverrideEnabled") && on("SnifferEnabled") {
         for key in ["HttpPorts", "TlsPorts", "QuicPorts"] {
             if let Some(value) = values.get(key)
@@ -1945,7 +1915,7 @@ mod tests {
             &values
         ));
         assert!(!super::field_enabled(SettingsKind::Dns, "Hosts", &values));
-        assert!(super::validate_flow_settings(&values).is_some());
+        assert!(crate::configuration::flow::validate_settings(SettingsKind::Dns, &values).is_err());
         values.insert("DnsOverrideEnabled".into(), "false".into());
         assert!(super::validate_flow_settings(&values).is_none());
         assert!(!super::field_enabled(

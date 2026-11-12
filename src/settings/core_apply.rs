@@ -17,7 +17,11 @@ impl SettingsPage {
         if let FieldControl::Multiline(state) = &self.fields[key].control {
             state.update(cx, |state, cx| state.set_value(default.clone(), window, cx));
         }
-        self.commit_core_field(key, window, cx);
+        self.dirty = true;
+        if key != "PacScript" {
+            self.commit_core_field(key, window, cx);
+        }
+        cx.notify();
         let owner = cx.weak_entity();
         ui::notifications::undo(window, "已恢复默认内容", cx, move |window, cx| {
             owner
@@ -33,7 +37,11 @@ impl SettingsPage {
                     if let FieldControl::Multiline(state) = &this.fields[key].control {
                         state.update(cx, |state, cx| state.set_value(before.clone(), window, cx));
                     }
-                    this.commit_core_field(key, window, cx);
+                    this.dirty = true;
+                    if key != "PacScript" {
+                        this.commit_core_field(key, window, cx);
+                    }
+                    cx.notify();
                     true
                 })
                 .unwrap_or(true)
@@ -68,62 +76,12 @@ impl SettingsPage {
     }
     pub(super) fn commit_core(
         &mut self,
-        mut patch: Values,
+        patch: Values,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         if self.core_syncing {
             return;
-        }
-        if matches!(
-            self.kind,
-            super::SettingsKind::Dns | super::SettingsKind::Sniffer
-        ) {
-            if self.dns_raw {
-                if let Err(error) = self.read_dns_yaml(window, cx) {
-                    self.restore_core_fields(&patch, true, window, cx);
-                    ui::show_error(error, window, cx);
-                    return;
-                }
-                patch = self.values(cx);
-            } else {
-                let initial = if self.dns_document.is_null() {
-                    crate::preferences::native::initial(self.kind)
-                } else {
-                    Ok(self.dns_document.clone())
-                };
-                match initial
-                    .and_then(|root| crate::preferences::native::patch(self.kind, &root, &patch))
-                {
-                    Ok(root) => self.dns_document = root,
-                    Err(error) => {
-                        self.restore_core_fields(&patch, true, window, cx);
-                        ui::show_error(error, window, cx);
-                        return;
-                    }
-                }
-            }
-            let yaml = serde_yaml_ng::to_string(&self.dns_document).map_err(|error| {
-                crate::logging::diagnostic_error("无法编码配置".to_owned(), error)
-            });
-            match yaml {
-                Ok(yaml) => {
-                    patch.insert(
-                        if self.kind == super::SettingsKind::Dns {
-                            "DnsYaml"
-                        } else {
-                            "SnifferYaml"
-                        }
-                        .into(),
-                        yaml,
-                    );
-                }
-                Err(error) => {
-                    self.restore_core_fields(&patch, true, window, cx);
-                    ui::show_error(error, window, cx);
-                    return;
-                }
-            }
         }
         let committed = crate::integration::read(self.kind.id(), cx);
         let patch: Values = patch
@@ -163,6 +121,7 @@ impl SettingsPage {
         cx.notify();
     }
     pub(super) fn sync_committed_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.dirty = false;
         let touched = self
             .fields
             .keys()
@@ -181,6 +140,7 @@ impl SettingsPage {
         cx: &mut Context<Self>,
     ) {
         let values = crate::integration::read(self.kind.id(), cx);
+        let preserve_document = self.dirty && !self.saving_dns_document;
         self.core_syncing = true;
         for key in touched.keys() {
             let Some(field) = self.fields.get_mut(key.as_str()) else {
@@ -231,7 +191,7 @@ impl SettingsPage {
             self.kind,
             super::SettingsKind::Dns | super::SettingsKind::Sniffer
         ) {
-            if !preserve_inputs {
+            if !preserve_inputs && !preserve_document {
                 self.dns_document = values
                     .get(if self.kind == super::SettingsKind::Dns {
                         "DnsYaml"
@@ -248,7 +208,7 @@ impl SettingsPage {
                             matches!(
                                 field.control,
                                 FieldControl::Toggle(_) | FieldControl::Select(_)
-                            )
+                            ) || !preserve_inputs
                         })
                     })
                     .filter_map(|key| values.get(key).map(|value| (key.clone(), value.clone())))
@@ -260,7 +220,8 @@ impl SettingsPage {
                 }
             }
             let yaml = self.dns_to_yaml(cx);
-            if (!preserve_inputs || !self.dns_raw)
+            if !preserve_document
+                && (!preserve_inputs || !self.dns_raw)
                 && let Ok(yaml) = yaml
             {
                 self.dns_source
@@ -313,6 +274,20 @@ impl SettingsPage {
                 .unwrap_or(self.fields[key.as_str()].spec.default);
             value != previous
         });
+        if matches!(
+            self.kind,
+            super::SettingsKind::Dns | super::SettingsKind::Sniffer
+        ) {
+            let committed = crate::preferences::native::key(self.kind)
+                .and_then(|key| values.get(key))
+                .and_then(|yaml| serde_yaml_ng::from_str::<serde_yaml_ng::Value>(yaml).ok());
+            let draft = if self.dns_raw {
+                serde_yaml_ng::from_str(self.dns_source.read(cx).value().as_ref()).ok()
+            } else {
+                Some(self.dns_document.clone())
+            };
+            self.dirty |= draft.is_none() || draft != committed;
+        }
         cx.notify();
     }
     pub(super) fn commit_panels(&mut self, window: &mut Window, cx: &mut Context<Self>) {

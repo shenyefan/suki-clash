@@ -119,7 +119,7 @@ pub(crate) fn enabled(config: &Value) -> Result<bool, String> {
         None => Ok(false),
     }
 }
-/// CV enables DNS only for fake-ip/unspecified mode and inherits explicit DNS options.
+/// Fill missing fake-IP options for TUN without replacing explicit DNS settings.
 pub(crate) fn prepare(config: &mut Mapping) -> Result<(), String> {
     if !enabled(&Value::Mapping(config.clone()))? {
         return Ok(());
@@ -128,19 +128,20 @@ pub(crate) fn prepare(config: &mut Mapping) -> Result<(), String> {
         Some(value) => value.as_mapping().cloned().ok_or("DNS 配置必须是对象")?,
         None => Mapping::new(),
     };
-    let ipv6 = config.get("ipv6").and_then(Value::as_bool).unwrap_or(false);
+    if dns.get("enable").and_then(Value::as_bool) == Some(false) {
+        return Ok(());
+    }
     if dns
         .get("enhanced-mode")
         .and_then(Value::as_str)
         .is_none_or(|mode| mode == "fake-ip")
     {
-        dns.insert("enable".into(), true.into());
-        dns.insert("ipv6".into(), ipv6.into());
+        dns.entry("enable".into()).or_insert(true.into());
         dns.entry("enhanced-mode".into())
             .or_insert("fake-ip".into());
         dns.entry("fake-ip-range".into())
             .or_insert("198.18.0.1/16".into());
-        if ipv6 {
+        if dns.get("ipv6").and_then(Value::as_bool) == Some(true) {
             dns.entry("fake-ip-range6".into())
                 .or_insert("2001:2::0/64".into());
         }
@@ -223,7 +224,7 @@ mod tests {
     }
     #[test]
     fn dns_preparation_matches_cv_modes_and_preserves_explicit_ranges() {
-        let mut config:Mapping=serde_yaml_ng::from_str("tun: {enable: true}\nipv6: true\ndns: {fake-ip-range: 198.19.0.1/16, nameserver: ['1.1.1.1']}").unwrap();
+        let mut config:Mapping=serde_yaml_ng::from_str("tun: {enable: true}\nipv6: false\ndns: {ipv6: true, fake-ip-range: 198.19.0.1/16, nameserver: ['1.1.1.1']}").unwrap();
         prepare(&mut config).unwrap();
         assert_eq!(config["dns"]["enable"], true);
         assert_eq!(config["dns"]["ipv6"], true);
@@ -240,6 +241,34 @@ mod tests {
         let mut disabled: Mapping = serde_yaml_ng::from_str("tun: {enable: false}").unwrap();
         prepare(&mut disabled).unwrap();
         assert!(disabled.get("dns").is_none());
+    }
+    #[test]
+    fn tun_does_not_copy_top_level_ipv6_or_replace_explicit_dns_choices() {
+        for global in [false, true] {
+            for nested in [None, Some(false), Some(true)] {
+                let mut config: Mapping = serde_yaml_ng::from_str(&format!(
+                    "ipv6: {global}\ntun: {{enable: true}}\ndns: {{enable: true}}"
+                ))
+                .unwrap();
+                if let Some(ipv6) = nested {
+                    config["dns"]["ipv6"] = ipv6.into();
+                }
+                prepare(&mut config).unwrap();
+                assert_eq!(config["ipv6"], global);
+                assert_eq!(config["dns"].get("ipv6").and_then(Value::as_bool), nested);
+                assert_eq!(
+                    config["dns"].get("fake-ip-range6").is_some(),
+                    nested == Some(true)
+                );
+            }
+        }
+        let mut config: Mapping = serde_yaml_ng::from_str(
+            "ipv6: true\ntun: {enable: true}\ndns: {enable: false, ipv6: false}",
+        )
+        .unwrap();
+        let before = config.clone();
+        prepare(&mut config).unwrap();
+        assert_eq!(config, before);
     }
 
     #[cfg(target_os = "macos")]

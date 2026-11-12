@@ -18,7 +18,7 @@ use crate::{
     core::structure::{JsonConvert, Response},
 };
 
-/// A transport without a reply may become available; a readable rejection is final.
+/// Status observation may recover after transport, handler or service availability failures.
 #[derive(Debug)]
 pub enum RequestError {
     Unreachable(String),
@@ -70,6 +70,19 @@ pub fn is_unreachable(error: &anyhow::Error) -> bool {
     matches!(
         error.downcast_ref::<RequestError>(),
         Some(RequestError::Unreachable(_))
+    )
+}
+
+/// Only read observations may retry these HTTP failures; they do not prove
+/// the service/core stopped and must not authorize write replay or takeover.
+pub fn is_read_unavailable(error: &anyhow::Error) -> bool {
+    matches!(
+        error.downcast_ref::<RequestError>(),
+        Some(
+            RequestError::Unreachable(_)
+                // ipc::dispatch emits 408/500; server::service_unavailable emits 503.
+                | RequestError::Rejected { code: 408 | 500 | 503, .. }
+        )
     )
 }
 
@@ -311,6 +324,19 @@ pub async fn get_clash_log_snapshot(credentials: &OwnerCredentials) -> Result<Re
     .await
 }
 
+/// Bounded service log tail, available to authenticated clients even with the core stopped.
+pub async fn get_service_log_snapshot(credentials: &OwnerCredentials) -> Result<Response<String>> {
+    protected_call(
+        Verb::Get,
+        IpcCommand::GetServiceLogSnapshot,
+        credentials,
+        None,
+        (),
+        None,
+    )
+    .await
+}
+
 pub async fn stop_clash(
     credentials: &OwnerCredentials,
     session: &OwnerSessionProof,
@@ -443,6 +469,14 @@ pub async fn windows_network(
 mod failure_tests {
     use super::*;
     #[test]
+    fn actual_service_observation_failures_are_recoverable_but_request_rejections_are_final() {
+        for code in [400, 401, 403, 404, 408, 409, 413, 422, 431, 500, 503] {
+            let error = decode::<()>(StatusCode::from_u16(code).unwrap(), b"").unwrap_err();
+            assert!(!is_unreachable(&error));
+            assert_eq!(is_read_unavailable(&error), matches!(code, 408 | 500 | 503));
+        }
+    }
+    #[test]
     fn service_rejections_missing_results_and_transport_failures_stay_distinct() {
         let rejected = response_data::<()>(Response {
             code: 403,
@@ -543,7 +577,7 @@ mod failure_tests {
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn readable_http_rejection_and_malformed_body_are_terminal_and_keep_no_body_secrets() {
+    async fn http_failures_keep_their_classification_without_exposing_body_secrets() {
         use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
         for (status, body) in [
             (403, r#"{"code":403,"message":"owner denied","data":null}"#),
@@ -576,6 +610,7 @@ mod failure_tests {
             .unwrap();
             let error = decode::<ProtocolInfo>(status, &reply).unwrap_err();
             assert!(!is_unreachable(&error));
+            assert_eq!(is_read_unavailable(&error), status == 500);
             assert!(!error.to_string().contains("secret-body"));
             if status == 403 {
                 assert!(error.to_string().contains("owner denied"));

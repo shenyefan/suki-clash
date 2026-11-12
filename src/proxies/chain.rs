@@ -704,6 +704,7 @@ impl Render for ChainFooter {
         let save = self.editor.clone();
         ui::modal_footer()
             .w_full()
+            .child(div().flex_1())
             .when(editor.expected.enabled, |row| {
                 row.child(
                     Button::new("disconnect-chain")
@@ -731,7 +732,6 @@ impl Render for ChainFooter {
                         mode.update(cx, |this, cx| this.mode(!this.raw, window, cx));
                     }),
             )
-            .child(div().flex_1())
             .child(
                 Button::new("cancel-chain")
                     .icon(IconName::X)

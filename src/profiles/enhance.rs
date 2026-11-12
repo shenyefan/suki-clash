@@ -809,6 +809,7 @@ impl Render for EnhancementFooter {
         let mode_owner = editor.clone();
         ui::modal_footer()
             .w_full()
+            .child(div().flex_1())
             .child(
                 Button::new("enhance-mode")
                     .icon(IconName::FileCode)
@@ -820,7 +821,6 @@ impl Render for EnhancementFooter {
                         mode_owner.update(cx, |this, cx| this.mode(!this.raw, window, cx))
                     }),
             )
-            .child(div().flex_1())
             .child(ui::dialog_footer_pending("保存", saving))
     }
 }
@@ -1942,7 +1942,7 @@ mod ui_tests {
             assert!(add.left() > tabs.right());
             assert!((add.center().y - tabs.center().y).abs() < px(1.));
             let viewport = window.find("enhancement-viewport").bounds();
-            assert!((mode.left() - viewport.left()).abs() <= px(1.));
+            assert!(mode.left() > viewport.center().x);
             assert!((footer.right() - viewport.right()).abs() <= px(1.));
             assert!(footer.size.width < viewport.size.width / 3.);
             assert!(viewport.top() >= search.bottom());
