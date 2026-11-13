@@ -259,16 +259,11 @@ impl SettingsPage {
         }
         if key == "TunService" {
             let state = self.session.read(cx).core().service_state();
-            let ready = matches!(state, crate::core::ServiceState::Ready);
             let checking = matches!(state, crate::core::ServiceState::Checking);
-            let actions: &[&str] =
-                if ready || matches!(state, crate::core::ServiceState::Rejected(_)) {
-                    &["修复服务", "卸载服务"]
-                } else {
-                    &["安装服务", "修复服务"]
-                };
+            let actions = state.actions();
             let buttons = h_flex()
                 .gap(space::SM)
+                .child(control)
                 .children(actions.iter().map(|action| {
                     let action = *action;
                     Button::new(SharedString::from(format!("service-{action}")))
@@ -276,6 +271,7 @@ impl SettingsPage {
                         .label(action)
                         .icon(match action {
                             "安装服务" => IconName::Download,
+                            "更新服务" => IconName::RefreshCw,
                             "修复服务" => IconName::Wrench,
                             _ => IconName::Trash,
                         })

@@ -872,8 +872,7 @@ mod startup_notice_tests {
             crate::integration::init(service, None, cx);
             cx.set_reduce_motion(true);
             super::controller(cx).update(cx, |owner, _| {
-                owner.snapshot.service_state =
-                    super::super::ServiceState::Unreachable("not installed".into());
+                owner.snapshot.service_state = super::super::ServiceState::NotInstalled;
             });
         });
         let window = cx.open_window(size(px(1220.), px(820.)), |window, cx| {
@@ -914,7 +913,8 @@ mod startup_notice_tests {
                     super::controller(cx).read(cx).snapshot().service_state()
                 );
                 assert!(window.find("service-安装服务").visible());
-                assert!(window.find("service-修复服务").visible());
+                assert!(window.find_all("service-修复服务").is_empty());
+                assert!(window.find_all("service-卸载服务").is_empty());
                 assert!(!super::controller(cx).read(cx).is_busy());
                 assert_eq!(super::controller(cx).read(cx).snapshot().request_id(), None);
                 assert_ne!(super::controller(cx).read(cx).snapshot().tun(), Some(true));
@@ -925,6 +925,22 @@ mod startup_notice_tests {
             })
             .unwrap();
         }
+        cx.update(|cx| {
+            super::controller(cx).update(cx, |owner, cx| {
+                owner.snapshot.service_state =
+                    super::super::ServiceState::VersionMismatch("older-service".into());
+                cx.notify();
+            });
+        });
+        cx.run_until_parked();
+        cx.update_window(window.into(), |_, window, cx| {
+            window.render_frame(cx);
+            assert!(window.find("service-更新服务").visible());
+            assert!(window.find("service-卸载服务").visible());
+            assert!(window.find_all("service-安装服务").is_empty());
+            assert!(window.find_all("service-修复服务").is_empty());
+        })
+        .unwrap();
         crate::integration::finish_test_services(cx);
     }
 

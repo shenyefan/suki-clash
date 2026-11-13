@@ -17,7 +17,8 @@ def main():
     options = []
     if channel.startswith("win-"):
         pack_dir, main_exe = stage, "suki-clash.exe"
-        options = ["--icon", str(ROOT / "assets/logo.ico")]
+        options = ["--icon", str(ROOT / "assets/logo.ico"),
+                   "--msi", "--instLocation", "PerMachine"]
     elif channel.startswith("osx-"):
         pack_dir, main_exe = stage / "Suki Clash.app", "suki-clash"
     else:

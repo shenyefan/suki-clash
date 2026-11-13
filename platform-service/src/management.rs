@@ -21,6 +21,37 @@ pub struct CoreSource {
 pub const FIREWALL_WARNING_EXIT_CODE: u32 = 2;
 const INSTALLATION_SUCCESS_PREFIX: &str = "SUKI_INSTALLATION_RESULT=";
 
+/// Registration is independent of IPC availability: a stopped service is still installed.
+pub fn is_installed() -> Result<bool> {
+    #[cfg(windows)]
+    {
+        use windows_service::service::ServiceAccess;
+        use windows_service::service_manager::{ServiceManager, ServiceManagerAccess};
+        let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)?;
+        match manager.open_service(crate::WINDOWS_SERVICE_NAME, ServiceAccess::QUERY_STATUS) {
+            Ok(_) => Ok(true),
+            Err(windows_service::Error::Winapi(error)) if error.raw_os_error() == Some(1060) => {
+                Ok(false)
+            }
+            Err(error) => Err(error.into()),
+        }
+    }
+    #[cfg(unix)]
+    {
+        #[cfg(target_os = "macos")]
+        let registration = PathBuf::from("/Library/LaunchDaemons")
+            .join(format!("{}.plist", crate::MACOS_SERVICE_ID));
+        #[cfg(not(target_os = "macos"))]
+        let registration =
+            PathBuf::from("/etc/systemd/system").join(format!("{}.service", crate::SERVICE_SLUG));
+        match std::fs::symlink_metadata(registration) {
+            Ok(_) => Ok(true),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(error) => Err(error.into()),
+        }
+    }
+}
+
 #[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct InstallationOutcome {
     pub warnings: Vec<InstallationWarning>,

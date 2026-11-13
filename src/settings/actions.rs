@@ -26,9 +26,10 @@ impl SettingsPage {
                 cx,
             ),
             "Gist 备份历史" => super::gist::history(window, cx),
-            "安装服务" | "修复服务" | "卸载服务" => {
+            "安装服务" | "更新服务" | "修复服务" | "卸载服务" => {
                 let action = match action {
                     "安装服务" => crate::core::ServiceAction::Install,
+                    "更新服务" => crate::core::ServiceAction::Update,
                     "修复服务" => crate::core::ServiceAction::Repair,
                     "卸载服务" => crate::core::ServiceAction::Uninstall,
                     _ => return false,

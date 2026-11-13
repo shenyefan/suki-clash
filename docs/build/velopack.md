@@ -23,13 +23,27 @@
 
 | 平台／架构 | 更新channel | 用户下载文件 |
 | --- | --- | --- |
-| Windows x64／ARM64 | win-x64／win-arm64 | SukiClash-{channel}-Setup.exe、SukiClash-{channel}-Portable.zip |
+| Windows x64／ARM64 | win-x64／win-arm64 | SukiClash-{channel}.msi、SukiClash-{channel}-Portable.zip |
 | macOS Apple Silicon | osx-arm64 | SukiClash-{channel}-Setup.pkg；同时保留Velopack生成的Portable.zip |
 | Linux x64 | linux-x64 | SukiClash-{channel}.AppImage |
 
 Release附件为上表的7个安装器／压缩包，加上每个channel的更新清单`releases.{channel}.json`和完整更新包`SukiClash-{version}-{channel}-full.nupkg`（应用内更新的数据源，缺少任一项则汇总失败）。`assets.{channel}.json`、`build.{channel}.json`仅保留在Actions artifacts中14天。禁用delta，不依赖历史版本下载。SDK的PackageId固定`SukiClash`。Linux原生不生成deb／rpm，需要时另接发行版打包工具，不能把AppImage称为deb安装器。各架构文件互不覆盖。
 
 Windows便携版是**免安装程序包**，用户配置仍沿当前平台应用目录保存，不宣称数据与程序同目录。Windows构建采用静态CRT，避免只在安装版补VC运行库而让便携版漏依赖。便携版使用TUN仍遵守现有服务安装／权限要求。
+
+Windows 使用 Velopack 官方 MSI：`pack.py` 传入 `--msi --instLocation PerMachine`，供所有用户使用。当前固定 CLI 的实际生成目录为 `%ProgramFiles%\SukiClash`，没有公司名子目录；已检查 x64／ARM64 MSI 中的 `ALLUSERS=1`、`ApplicationFolderName=SukiClash` 以及交互／静默安装共用的 Program Files 默认目录设置。安装所需权限由 Windows Installer 的标准流程处理，不另加提权包装程序。目录采用官方 PerMachine 默认值，不定制 MSI 属性或安装逻辑。`Moenya` 仅保留为现有发布者／作者元数据。
+
+外观使用 Velopack 官方默认向导和控件，`--icon` 使用现有应用图标；不提供自定义顶部横幅或欢迎页背景，也不修改生成的 MSI。CLI 同时生成的 Setup.exe 仅保留在 Actions artifacts，Release 的 Windows 安装入口只发布 MSI，另保留 Portable.zip 和原有更新源。
+
+用户配置、订阅、覆写、内核、Geo、备份、日志和缓存统一使用各用户的 `%LOCALAPPDATA%\suki-clash`，不读取或迁移其他用户目录；具体结构见[设置存储](../features/settings/settings.md)。这些用户文件不写入 Program Files。
+
+## 服务生命周期接入边界
+
+仅计划在 Windows 接入 Velopack 服务维护 hook；macOS、Linux 继续使用现有应用内维护入口。虚拟网卡页保留安装、更新、修复和卸载动作。当前主程序尚未注册服务生命周期 callback。
+
+依据[官方 App Hooks 文档](https://docs.velopack.io/integrating/hooks)，安装及卸载 fast callback 最长 30 秒，更新前后最长 15 秒，不允许显示 UI，失败不能取消安装、更新或卸载。项目所用 `vpk 1.2.161` 的 Setup.exe 为 `asInvoker`，当前服务维护入口会请求 UAC 并等待结果，不能直接将该入口放入 fast callback。首次启动和更新重启的普通运行 callback 没有 fast callback 的退出期限，但将提权维护放到这些阶段会改变权限请求时机。
+
+PerMachine 只确定应用安装范围，不会自动安装平台服务。官方 MSI 的安装／卸载 hook 使用 `Impersonate="yes"`、`Return="ignore"`，不能把 MSI 获得安装权限视为应用 hook 已获得服务维护权限。当前仍使用应用内服务维护入口，尚未接入 hook，也未增加服务可选安装项或自动服务安装、更新、卸载。应用内 Update.exe 更新不会执行 MSI 的自定义动作，不能把应用包更新完成视为包外系统服务已经更新。macOS、Linux 删除应用也不会调用 Velopack 卸载 hook，服务由用户通过现有入口单独卸载。
 
 ## 文件结构与资源
 
@@ -58,6 +72,8 @@ GitHub上传权限只给最终草稿job；不需要在仓库写PAT。更新源�
 更新清单和完整包随Release公开，应用请求`releases/latest/download/releases.{channel}.json`并按清单下载完整包。v0.2.4与v0.2.6的Release未包含这些文件，对它们检查会报清单获取错误；自动更新从包含清单的版本开始生效，且需要用旧版本安装包升级到该版本后再验证。草稿不会成为普通用户的更新源。
 
 ## 当前验证边界
+
+2026-11-13：通过固定 `vpk 1.2.161`，使用隔离占位程序分别生成 Windows x64／ARM64 MSI、Portable.zip、完整更新包和 feed；检查 MSI 安装范围、交互／静默默认目录及目标架构。首次打包检查使用过自定义横幅和背景，此后已移除这两份图片及参数，恢复官方默认外观；移除后检查 Python 语法及差异，未重新生成测试 MSI。未安装或运行这些测试包，未操作真实服务；本次结果不能代替正式程序的安装、卸载、更新及向导实机验收。
 
 本地验证了Python语法、workflow YAML解析、plist与暂存结构；实际安装`vpk 1.2.161`检查CLI参数，并用隔离占位Mach-O二进制生成macOS pkg／Portable.zip／full.nupkg／channel feed，核对PackageId、版本、文件名、摘要和大小。该冒烟验证未运行／安装产物，也不是实际Suki发布验证。
 

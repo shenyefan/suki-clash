@@ -80,6 +80,7 @@ impl Command {
                 "重建防火墙规则"
             }
             Self::PlatformService(super::privileged::Action::Install) => "安装服务",
+            Self::PlatformService(super::privileged::Action::Update) => "更新服务",
             Self::PlatformService(super::privileged::Action::Repair) => "修复服务",
             Self::PlatformService(super::privileged::Action::Uninstall) => "卸载服务",
             Self::Gist(_) => "Gist 备份操作",
@@ -2818,7 +2819,7 @@ impl Actor {
                     }
                     self.snapshot.service_mode = matches!(running.child, Process::Service(_));
                     if self.snapshot.service_mode {
-                        self.snapshot.service_state = super::privileged::State::Ready;
+                        self.snapshot.service_state = super::privileged::probe().await;
                     }
                     // The API and process must belong to this generation and both still exist.
                     if running

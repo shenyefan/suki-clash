@@ -24,11 +24,15 @@ fn response<T>(reply: suki_service::Response<T>) -> Result<T, String> {
 pub(super) async fn require_ready() -> Result<(), String> {
     await_protocol(std::time::Duration::ZERO, suki_service::get_version)
         .await
+        .map(|_| ())
         .map_err(|error| error.to_string())
 }
 
 /// Retry read-only probes while service availability is unknown.
-async fn await_protocol<F, Fut>(budget: std::time::Duration, mut probe: F) -> anyhow::Result<()>
+async fn await_protocol<F, Fut>(
+    budget: std::time::Duration,
+    mut probe: F,
+) -> anyhow::Result<suki_service::ProtocolInfo>
 where
     F: FnMut() -> Fut,
     Fut: Future<Output = anyhow::Result<suki_service::Response<suki_service::ProtocolInfo>>>,
@@ -82,15 +86,12 @@ pub(super) async fn probe_startup(tun_requested: bool) -> State {
         let _ = tun_requested;
         std::time::Duration::ZERO
     };
-    match await_protocol(budget, suki_service::get_version).await {
-        Ok(()) => State::Ready,
-        Err(error) => State::from_error(error),
-    }
+    observed_state(await_protocol(budget, suki_service::get_version).await).await
 }
 /// Existing elevated privileges can run TUN directly; never request elevation during a toggle.
 pub(super) async fn tun_service_required() -> Result<bool, String> {
     match await_protocol(std::time::Duration::ZERO, suki_service::get_version).await {
-        Ok(()) => Ok(true),
+        Ok(_) => Ok(true),
         Err(error) if suki_service::is_unreachable(&error) => {
             elevated_tun_policy(crate::platform_access::elevated()?, error.to_string())
         }
@@ -163,7 +164,7 @@ mod policy_tests {
             assert!(!suki_service::is_unreachable(&error));
             assert!(matches!(
                 super::State::from_error(error),
-                super::State::Rejected(_)
+                super::State::Rejected(_) | super::State::VersionMismatch(_)
             ));
         }
     }
@@ -243,6 +244,34 @@ mod policy_tests {
             super::elevated_tun_policy(false, "permission denied".into()),
             Err("permission denied".into())
         );
+    }
+
+    #[tokio::test]
+    async fn service_build_version_controls_update_action_even_with_matching_protocol() {
+        let current = suki_service::ProtocolInfo::current();
+        assert_eq!(
+            super::observed_state(Ok(current.clone())).await,
+            super::State::Ready
+        );
+        let different = suki_service::ProtocolInfo {
+            build_version: "different-build".into(),
+            ..current
+        };
+        let state = super::observed_state(Ok(different)).await;
+        assert_eq!(
+            state,
+            super::State::VersionMismatch("different-build".into())
+        );
+        assert_eq!(state.actions(), &["更新服务", "卸载服务"]);
+        assert_eq!(super::State::NotInstalled.actions(), &["安装服务"]);
+        assert!(super::State::Checking.actions().is_empty());
+        for state in [
+            super::State::Ready,
+            super::State::Unreachable("stopped".into()),
+            super::State::Rejected("denied".into()),
+        ] {
+            assert_eq!(state.actions(), &["修复服务", "卸载服务"]);
+        }
     }
 }
 impl Session {
@@ -411,6 +440,7 @@ fn session_token() -> Result<String, String> {
 #[derive(Clone)]
 pub(crate) enum Action {
     Install,
+    Update,
     Repair,
     Uninstall,
 }
@@ -488,7 +518,7 @@ async fn install(
 pub(super) async fn ready_for_start(paths: &AppPaths) -> Result<bool, String> {
     match suki_service::get_version().await {
         Ok(reply) => {
-            suki_service::validate_protocol_response(reply).map_err(|error| error.to_string())?
+            suki_service::validate_protocol_response(reply).map_err(|error| error.to_string())?;
         }
         Err(error) if suki_service::is_unreachable(&error) => return Ok(false),
         Err(error) => return Err(error.to_string()),
@@ -505,13 +535,19 @@ pub(super) async fn ready_for_start(paths: &AppPaths) -> Result<bool, String> {
 pub(crate) enum State {
     #[default]
     Checking,
+    NotInstalled,
     Ready,
+    VersionMismatch(String),
     Unreachable(String),
     Rejected(String),
 }
 impl State {
     fn from_error(error: anyhow::Error) -> Self {
-        if suki_service::is_read_unavailable(&error) {
+        if let Some(suki_service::RequestError::ProtocolMismatch { actual, .. }) =
+            error.downcast_ref::<suki_service::RequestError>()
+        {
+            Self::VersionMismatch(actual.build_version.clone())
+        } else if suki_service::is_read_unavailable(&error) {
             Self::Unreachable(error.to_string())
         } else {
             Self::Rejected(error.to_string())
@@ -519,6 +555,8 @@ impl State {
     }
     pub(crate) fn reason(&self) -> Option<&str> {
         match self {
+            Self::NotInstalled => Some("后台服务未安装，请安装服务"),
+            Self::VersionMismatch(_) => Some("后台服务版本不一致，请更新服务"),
             Self::Unreachable(reason) | Self::Rejected(reason) => Some(reason),
             Self::Checking | Self::Ready => None,
         }
@@ -526,15 +564,39 @@ impl State {
     pub(crate) fn label(&self) -> &str {
         match self {
             Self::Checking => "读取中",
+            Self::NotInstalled => "未安装",
             Self::Ready => "就绪",
+            Self::VersionMismatch(_) => "版本不一致",
             Self::Unreachable(_) => "尚未连接",
             Self::Rejected(_) => "服务异常",
         }
     }
+    pub(crate) fn actions(&self) -> &'static [&'static str] {
+        match self {
+            Self::Checking => &[],
+            Self::NotInstalled => &["安装服务"],
+            Self::VersionMismatch(_) => &["更新服务", "卸载服务"],
+            Self::Ready | Self::Unreachable(_) | Self::Rejected(_) => &["修复服务", "卸载服务"],
+        }
+    }
 }
 pub(super) async fn probe() -> State {
-    match await_protocol(std::time::Duration::ZERO, suki_service::get_version).await {
-        Ok(()) => State::Ready,
+    observed_state(await_protocol(std::time::Duration::ZERO, suki_service::get_version).await).await
+}
+async fn observed_state(result: anyhow::Result<suki_service::ProtocolInfo>) -> State {
+    match result {
+        Ok(info) if info.build_version != suki_service::VERSION => {
+            State::VersionMismatch(info.build_version)
+        }
+        Ok(_) => State::Ready,
+        Err(error) if suki_service::is_read_unavailable(&error) => {
+            match tokio::task::spawn_blocking(suki_service::management::is_installed).await {
+                Ok(Ok(false)) => State::NotInstalled,
+                Ok(Ok(true)) => State::from_error(error),
+                Ok(Err(error)) => State::Rejected(error.to_string()),
+                Err(error) => State::Rejected(error.to_string()),
+            }
+        }
         Err(error) => State::from_error(error),
     }
 }

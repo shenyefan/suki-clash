@@ -618,7 +618,7 @@ fn wait_for_service_ready() -> Result<(), Error> {
                 .await
                 .and_then(suki_clash_service::validate_protocol_response)
             {
-                Ok(()) => break Ok(()),
+                Ok(_) => break Ok(()),
                 Err(error) if suki_clash_service::is_unreachable(&error) => {
                     if Instant::now() >= deadline {
                         break Err(error.context(format!(

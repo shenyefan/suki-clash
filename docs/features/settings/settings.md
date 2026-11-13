@@ -1,6 +1,6 @@
 # 设置存储
 
-设置位于本机配置目录（不漫游）的 `suki-clash/settings/`；各类内容使用各平台的标准位置，不读取旧位置。
+Windows 用户文件统一位于本地应用目录 `%LOCALAPPDATA%\suki-clash`，设置保存在其中的 `settings/`。macOS、Linux 各类内容继续使用各平台的标准位置。不读取、搬移或删除旧目录，不提供兼容或迁移逻辑；目录缺失的配置按当前默认值初始化。
 
 | 内容 | Windows | macOS | Linux |
 | --- | --- | --- | --- |
@@ -9,6 +9,8 @@
 | 日志 | `%LOCALAPPDATA%\suki-clash\logs` | `~/Library/Logs/suki-clash` | `~/.local/state/suki-clash/logs` |
 | 缓存 | `%LOCALAPPDATA%\suki-clash\cache` | `~/Library/Caches/suki-clash` | `~/.cache/suki-clash` |
 | 实例锁 | 同缓存 | 同缓存 | `$XDG_RUNTIME_DIR/suki-clash`，缺失时同缓存 |
+
+Windows 的内核、Geo 资源、本地备份、日志、缓存和运行时文件均属于上述用户目录。Velopack 应用安装目录独立于用户目录；系统服务与管理员批准的内核副本继续使用服务模块管理的受保护系统目录。
 
 | 文件 | 内容 |
 | --- | --- |

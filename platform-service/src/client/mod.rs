@@ -268,13 +268,13 @@ pub async fn get_version() -> Result<Response<ProtocolInfo>> {
     .await
 }
 
-pub fn validate_protocol_response(reply: Response<ProtocolInfo>) -> Result<()> {
+pub fn validate_protocol_response(reply: Response<ProtocolInfo>) -> Result<ProtocolInfo> {
     let actual = response_data(reply)?;
     let expected = ProtocolVersion::current();
     if !actual.supports_client(expected, crate::MIN_REQUIRED_SERVICE_REVISION) {
         return Err(RequestError::ProtocolMismatch { expected, actual }.into());
     }
-    Ok(())
+    Ok(actual)
 }
 
 pub async fn get_status(credentials: &OwnerCredentials) -> Result<Response<ServiceStatusSnapshot>> {

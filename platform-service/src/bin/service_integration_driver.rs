@@ -47,7 +47,7 @@ async fn probe_protocol() -> anyhow::Result<()> {
         .await
         .and_then(suki_clash_service::validate_protocol_response);
     set_request_timeout(None).await;
-    result
+    result.map(|_| ())
 }
 
 async fn wait_protocol_ready() -> anyhow::Result<()> {

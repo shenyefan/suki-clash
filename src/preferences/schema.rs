@@ -230,7 +230,7 @@ fn tun_sections() -> Vec<SectionSpec> {
                     kind: FieldKind::ReadOnly,
                     default: "",
                     options: &[],
-                    actions: &["安装服务", "修复服务", "卸载服务"],
+                    actions: &["安装服务", "更新服务", "修复服务", "卸载服务"],
                 },
                 FieldSpec {
                     key: "StackIndex",

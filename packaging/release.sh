@@ -10,7 +10,7 @@ base="https://github.com/$GH_REPO/releases/download/$tag"
 cat > release-notes.md <<'NOTES'
 ## 下载
 
-按系统和架构选择文件。Windows 提供安装版和免安装压缩包；macOS 提供安装包和应用压缩包；Linux 提供 AppImage。
+按系统和架构选择文件。Windows 提供 MSI 安装包和免安装压缩包；macOS 提供安装包和应用压缩包；Linux 提供 AppImage。
 
 | 平台 | 文件 |
 | --- | --- |
@@ -18,14 +18,15 @@ NOTES
 for channel in win-x64 win-arm64 osx-arm64 linux-x64; do
   source="$packages/packages-$channel"
   case $channel in
-    win-x64) label="Windows x64"; files=(Setup.exe Portable.zip) ;;
-    win-arm64) label="Windows ARM64"; files=(Setup.exe Portable.zip) ;;
+    win-x64) label="Windows x64"; files=(msi Portable.zip) ;;
+    win-arm64) label="Windows ARM64"; files=(msi Portable.zip) ;;
     osx-arm64) label="macOS Apple Silicon"; files=(Setup.pkg Portable.zip) ;;
     linux-x64) label="Linux x64"; files=(AppImage) ;;
   esac
   for suffix in "${files[@]}"; do
     name="SukiClash-$channel-$suffix"
     if [[ $suffix == AppImage ]]; then name="SukiClash-$channel.AppImage"; fi
+    if [[ $suffix == msi ]]; then name="SukiClash-$channel.msi"; fi
     test -s "$source/$name"
     cp "$source/$name" Releases/
     printf '| %s | [%s](%s/%s) |\n' "$label" "$name" "$base" "$name" >> release-notes.md
@@ -40,6 +41,7 @@ cat >> release-notes.md <<'NOTES'
 ## 使用说明
 
 - 已内置 Mihomo 内核和 Geo 数据。
+- Windows MSI 为所有用户安装到 Program Files，权限请求由 Windows Installer 处理；用户文件保存在各自的 `%LOCALAPPDATA%\suki-clash`。
 - 安装包和压缩包未签名：Windows 可能出现 SmartScreen 提示；macOS 首次打开需在“系统设置 → 隐私与安全性”中允许。
 - 免安装版的用户配置仍保存在系统应用目录；TUN 需要相应服务与权限。
 - Linux 下载后需为 AppImage 添加执行权限。
