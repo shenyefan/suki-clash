@@ -1,4 +1,8 @@
 ; Compile with packaging/pack.py on the matching Windows runner.
+#define CoreSHA256 GetSHA256OfFile(StageDir + "\resources\mihomo.exe")
+#if FileExists(StageDir + "\resources\mihomo-alpha.exe")
+#define AlphaCoreSHA256 GetSHA256OfFile(StageDir + "\resources\mihomo-alpha.exe")
+#endif
 [Setup]
 AppId={{CF241840-F76C-4AF9-88DC-2DFA874DF04B}
 AppName=Suki Clash
@@ -21,6 +25,10 @@ CloseApplications=yes
 RestartApplications=no
 SetupLogging=yes
 UninstallLogging=yes
+ShowLanguageDialog=no
+
+[Languages]
+Name: "chinesesimplified"; MessagesFile: "compiler:Languages\ChineseSimplified.isl"
 
 [Files]
 Source: "{#StageDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
@@ -30,7 +38,7 @@ Name: "{group}\Suki Clash"; Filename: "{app}\suki-clash.exe"
 Name: "{autodesktop}\Suki Clash"; Filename: "{app}\suki-clash.exe"; Tasks: desktopicon
 
 [Tasks]
-Name: desktopicon; Description: "Create a desktop shortcut"; Flags: unchecked
+Name: desktopicon; Description: "创建桌面快捷方式"; Flags: unchecked
 
 [Registry]
 Root: HKLM; Subkey: "Software\Classes\suki-clash"; ValueType: string; ValueData: "URL:Suki Clash"; Flags: uninsdeletekey
@@ -38,7 +46,7 @@ Root: HKLM; Subkey: "Software\Classes\suki-clash"; ValueType: string; ValueName:
 Root: HKLM; Subkey: "Software\Classes\suki-clash\shell\open\command"; ValueType: string; ValueData: """{app}\suki-clash.exe"" ""%1"""
 
 [Run]
-Filename: "{app}\suki-clash.exe"; Description: "Launch Suki Clash"; Flags: nowait postinstall runasoriginaluser; Check: ServiceReady
+Filename: "{app}\suki-clash.exe"; Description: "启动 Suki Clash"; Flags: nowait postinstall runasoriginaluser; Check: ServiceReady
 
 [UninstallDelete]
 Type: files; Name: "{app}\inno-install"
@@ -72,7 +80,7 @@ begin
   try
     Result := WaitForSingleObject(ProcessHandle, 60000) = 0;
     if not Result then
-      MsgBox('Suki Clash did not exit. Close it and run the installer again.', mbError, MB_OK);
+      MsgBox('Suki Clash 尚未退出。请关闭后重新运行安装程序。', mbError, MB_OK);
   finally
     CloseHandle(ProcessHandle);
   end;
@@ -81,22 +89,30 @@ end;
 procedure CurStepChanged(CurStep: TSetupStep);
 var
   ResultCode: Integer;
+  InstallArguments: String;
 begin
   if CurStep = ssPostInstall then
   begin
     if not SaveStringToFile(ExpandConstant('{app}\inno-install'), 'inno', False) then
-      RaiseException('Unable to record the installation mode.');
+      RaiseException('无法记录安装模式。');
+    { Stage the packaged cores explicitly; service discovery does not search resources. }
+    InstallArguments := '--install --install-service --install-core "' +
+      ExpandConstant('{app}\resources\mihomo.exe') + '" --sha256 {#CoreSHA256}';
+#ifdef AlphaCoreSHA256
+    InstallArguments := InstallArguments + ' --install-core "' +
+      ExpandConstant('{app}\resources\mihomo-alpha.exe') + '" --sha256 {#AlphaCoreSHA256}';
+#endif
     if not ExecAndLogOutput(ExpandConstant('{app}\suki-clash-service.exe'),
-      '--install --install-service', ExpandConstant('{app}'), SW_HIDE,
+      InstallArguments, ExpandConstant('{app}'), SW_HIDE,
       ewWaitUntilTerminated, ResultCode, nil) then
-      RaiseException('Unable to start service installation: ' + SysErrorMessage(ResultCode));
+      RaiseException('无法启动后台服务安装：' + SysErrorMessage(ResultCode));
     { Exit code 2 means the service is ready but a firewall rule failed. }
     if ResultCode = 2 then
-      SuppressibleMsgBox('The service is ready, but its firewall rule could not be configured. Repair the service before using TUN or LAN access.',
+      SuppressibleMsgBox('后台服务和内核已安装，但防火墙规则配置失败。使用虚拟网卡或允许局域网连接前，请修复服务。',
         mbError, MB_OK, IDOK)
     else if ResultCode <> 0 then
-      RaiseException('Service installation failed (exit code ' + IntToStr(ResultCode) +
-        '). Run the installer again to repair the service.');
+      RaiseException('后台服务安装失败（退出码 ' + IntToStr(ResultCode) +
+        '）。请重新运行安装程序修复服务。');
     ServiceInstalled := True;
   end;
 end;
@@ -110,9 +126,9 @@ procedure CurPageChanged(CurPageID: Integer);
 begin
   if (CurPageID = wpFinished) and not ServiceInstalled then
   begin
-    WizardForm.FinishedHeadingLabel.Caption := 'Service installation needs repair';
+    WizardForm.FinishedHeadingLabel.Caption := '后台服务安装未完成';
     WizardForm.FinishedLabel.Caption :=
-      'The application files were installed, but service installation did not finish. Run the installer again to repair the service.';
+      '应用文件已安装，但后台服务安装未完成。请重新运行安装程序修复服务。';
   end;
 end;
 
@@ -126,14 +142,14 @@ begin
       '--uninstall', ExpandConstant('{app}'), SW_HIDE,
       ewWaitUntilTerminated, ResultCode, nil) then
     begin
-      SuppressibleMsgBox('Unable to start service removal: ' + SysErrorMessage(ResultCode),
+      SuppressibleMsgBox('无法启动后台服务卸载：' + SysErrorMessage(ResultCode),
         mbError, MB_OK, IDOK);
       Abort;
     end;
     if ResultCode <> 0 then
     begin
-      SuppressibleMsgBox('Service removal failed (exit code ' + IntToStr(ResultCode) +
-        '). Repair the service and retry uninstalling.', mbError, MB_OK, IDOK);
+      SuppressibleMsgBox('后台服务卸载失败（退出码 ' + IntToStr(ResultCode) +
+        '）。请修复服务后重试卸载。', mbError, MB_OK, IDOK);
       Abort;
     end;
   end;
