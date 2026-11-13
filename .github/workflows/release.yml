@@ -88,9 +88,6 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
-      - uses: actions/setup-dotnet@v6
-        with:
-          dotnet-version: "8.0.x"
       - name: Select matching MSVC toolchain
         if: runner.os == 'Windows'
         shell: pwsh
@@ -114,8 +111,19 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y clang cmake ninja-build pkg-config libfontconfig1-dev libfreetype6-dev libxkbcommon-dev libxkbcommon-x11-dev libxcb1-dev libxcb-xkb-dev libwayland-dev libssl-dev libasound2-dev libudev-dev libvulkan-dev libgit2-dev patchelf file
           sudo apt-get install -y libfuse2 squashfs-tools desktop-file-utils
-      - name: Restore official Velopack local tool
-        run: dotnet tool restore
+      - name: Prepare pinned Inno Setup compiler
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $installer = Join-Path $env:RUNNER_TEMP 'innosetup-7.1.1-x64.exe'
+          gh release download is-7_1_1 --repo jrsoftware/issrc --pattern innosetup-7.1.1-x64.exe --dir $env:RUNNER_TEMP
+          if ((Get-FileHash -Algorithm SHA256 -LiteralPath $installer).Hash -ne '8a5a6711c3766a6e5fb74f280ba0e3551e719ce94538d901fdbd1f8f9920b3f0') { throw 'Inno Setup checksum mismatch' }
+          $directory = Join-Path $env:RUNNER_TEMP 'inno-setup'
+          $process = Start-Process -FilePath $installer -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/CURRENTUSER', '/PORTABLE=1', "/DIR=`"$directory`"") -WindowStyle Hidden -PassThru -Wait
+          if ($process.ExitCode -ne 0) { throw "Inno Setup preparation failed: $($process.ExitCode)" }
+          "ISCC_PATH=$directory/ISCC.exe" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
       - uses: actions/download-artifact@v8
         with:
           name: runtime
@@ -131,7 +139,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: python packaging/stage.py "$BUILD_TARGET" "$BUILD_VERSION" "$RUNNER_TEMP/runtime/$BUILD_TARGET" "$RUNNER_TEMP/package/stage"
-      - name: Pack with official Velopack CLI
+      - name: Create native packages and update manifests
         run: python packaging/pack.py "$BUILD_VERSION" "$BUILD_TARGET" "$BUILD_CHANNEL" "$RUNNER_TEMP/package/stage" "$RUNNER_TEMP/package/Releases"
       - name: Upload packages and isolated release feed
         uses: actions/upload-artifact@v7

@@ -35,9 +35,6 @@ use gpui_kit::{
 };
 
 fn main() {
-    velopack::VelopackApp::build()
-        .set_auto_apply_on_startup(false)
-        .run();
     let (instance, instance_error) = match integration::AppPaths::discover()
         .map_err(logging::error_message)
         .and_then(|paths| {

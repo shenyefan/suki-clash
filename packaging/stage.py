@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Stage the release binaries and offline runtime in the layout packed by vpk.
+"""Stage the release binaries and offline runtime in the native distribution layout.
 
 Usage: stage.py TARGET VERSION RUNTIME_DIR STAGE_DIR   (run on the target's own runner)
 """
+import os
 from pathlib import Path
 import plistlib
 import shutil
@@ -61,7 +62,10 @@ def linux(appdir, version):
         binaries = appdir / "usr/bin"
         run(tools / "squashfs-root/AppRun", "--appdir", appdir,
             "--desktop-file", appdir / "suki-clash.desktop", "--icon-file", appdir / "suki-clash.png",
-            "--executable", binaries / "suki-clash", "--executable", binaries / "suki-clash-service")
+            "--executable", binaries / "suki-clash", "--executable", binaries / "suki-clash-service",
+            "--output", "appimage", env={**os.environ, "ARCH": "x86_64",
+                "LDAI_OUTPUT": str(appdir.parent / "SukiClash.AppImage"),
+                "LDAI_VERSION": version, "APPIMAGE_EXTRACT_AND_RUN": "1"})
 
 
 def main():

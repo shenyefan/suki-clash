@@ -599,10 +599,13 @@ fn finish(exit: Exit, cx: &mut App) {
             let joined = async {
                 let installer = if let Exit::Update(expected) = &exit {
                     let expected = expected.clone();
+                    let paths = cx
+                        .update(|cx| crate::integration::paths(cx))
+                        .ok_or("无法确定应用配置目录")?;
                     Some(
-                        cx.background_spawn(
-                            async move { crate::updates::prepare_installer(&expected) },
-                        )
+                        cx.background_spawn(async move {
+                            crate::updates::prepare_installer(&expected, &paths)
+                        })
                         .await?,
                     )
                 } else {
@@ -634,15 +637,23 @@ fn finish(exit: Exit, cx: &mut App) {
                     })
                     .await?;
                 }
-                if let Some(installer) = installer {
+                let executable = if installer.is_some() || matches!(exit, Exit::Restart) {
+                    Some(
+                        cx.background_spawn(async { crate::desktop::executable() })
+                            .await?,
+                    )
+                } else {
+                    None
+                };
+                let updated = if let Some(installer) = installer {
                     cx.background_spawn(async move { installer.launch() })
-                        .await?;
-                }
-                if let Exit::Restart = exit {
+                        .await?
+                } else {
+                    false
+                };
+                if updated || matches!(exit, Exit::Restart) {
                     // Resolve the executable before giving up instance ownership.
-                    let executable = cx
-                        .background_spawn(async { crate::desktop::executable() })
-                        .await?;
+                    let executable = executable.ok_or("无法确定重启程序位置")?;
                     let paths = cx
                         .update(|cx| crate::integration::paths(cx))
                         .ok_or("无法确定实例控制目录")?;

@@ -10,7 +10,7 @@ Windows 用户文件统一位于本地应用目录 `%LOCALAPPDATA%\suki-clash`�
 | 缓存 | `%LOCALAPPDATA%\suki-clash\cache` | `~/Library/Caches/suki-clash` | `~/.cache/suki-clash` |
 | 实例锁 | 同缓存 | 同缓存 | `$XDG_RUNTIME_DIR/suki-clash`，缺失时同缓存 |
 
-Windows 的内核、Geo 资源、本地备份、日志、缓存和运行时文件均属于上述用户目录。Velopack 应用安装目录独立于用户目录；系统服务与管理员批准的内核副本继续使用服务模块管理的受保护系统目录。
+Windows 的内核、Geo 资源、本地备份、日志、缓存和运行时文件均属于上述用户目录。Inno Setup 应用安装目录独立于用户目录；系统服务与管理员批准的内核副本继续使用服务模块管理的受保护系统目录。
 
 | 文件 | 内容 |
 | --- | --- |

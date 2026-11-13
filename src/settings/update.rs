@@ -39,7 +39,7 @@ fn checked(state: State, window: &mut Window, cx: &mut App) {
     if let Some(url) = state.manual_url {
         ui::notifications::push(
             window,
-            Notification::info("当前安装方式需前往发布页检查更新").action(move |_, _, _| {
+            Notification::info("请前往发布页检查更新").action(move |_, _, _| {
                 let url = url.clone();
                 Button::new("app-update-release-page")
                     .icon(IconName::ExternalLink)
