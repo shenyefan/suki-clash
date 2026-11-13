@@ -2,7 +2,7 @@ mod model;
 mod table;
 mod view;
 
-use crate::ui;
+use crate::{logging::Level, ui};
 use gpui_kit::{
     component::{
         IndexPath,
@@ -25,6 +25,7 @@ pub(crate) struct LogsPage {
     table: Entity<TableState<LogTable>>,
     search: LogSearch,
     source: usize,
+    minimum: [Option<Level>; 2],
     descending: bool,
     detail_cache: Option<LogEntry>,
     _subscriptions: Vec<Subscription>,
@@ -37,11 +38,11 @@ impl LogsPage {
         let source = 0;
         let descending = true;
         let query = cx.new(|cx| InputState::new(window, cx).placeholder("搜索时间、级别或内容"));
-        let levels: Vec<SharedString> = ["全部级别", "TRACE", "DEBUG", "INFO", "WARNING", "ERROR"]
+        let levels: Vec<SharedString> = ["TRACE", "DEBUG", "INFO", "WARNING", "ERROR"]
             .into_iter()
             .map(Into::into)
             .collect();
-        let selected = 0;
+        let selected = 2;
         let level =
             cx.new(|cx| SelectState::new(levels, Some(IndexPath::new(selected)), window, cx));
         cx.bind_keys([KeyBinding::new("escape", DismissLogDetails, Some("Logs"))]);
@@ -101,8 +102,11 @@ impl LogsPage {
             cx.subscribe_in(
                 &level,
                 window,
-                |this, _, _: &SelectEvent<Vec<SharedString>>, w, cx| {
-                    this.refresh(w, cx);
+                |this, _, event: &SelectEvent<Vec<SharedString>>, w, cx| {
+                    if let SelectEvent::Confirm(Some(value)) = event {
+                        this.minimum[this.source] = Some(Level::parse(value));
+                        this.refresh(w, cx);
+                    }
                 },
             ),
             cx.observe_window_visibility(window, |this, visibility, window, cx| {
@@ -162,6 +166,7 @@ impl LogsPage {
             table,
             search: LogSearch::default(),
             source,
+            minimum: [None; 2],
             descending,
             detail_cache: None,
             _subscriptions: subscriptions,
@@ -191,19 +196,32 @@ impl LogsPage {
             return;
         }
         self.search.compile(self.query.read(cx).value().as_ref());
-        let level = self
-            .level
-            .read(cx)
-            .selected_value()
-            .cloned()
-            .unwrap_or_default();
+        let minimum = self.minimum[self.source].unwrap_or_else(|| {
+            let (page, key) = if self.source == 0 {
+                ("core", "LogLevelIndex")
+            } else {
+                ("settings", "AppLogLevel")
+            };
+            let settings = crate::preferences::choices::encode(crate::integration::read(page, cx));
+            settings
+                .get(key)
+                .map_or(Level::Info, |value| Level::parse(value))
+                .min(Level::Error)
+        });
+        let selected: SharedString = minimum.label().into();
+        if self.level.read(cx).selected_value() != Some(&selected) {
+            self.level.update(cx, |level, cx| {
+                level.set_selected_value(&selected, window, cx);
+                cx.notify();
+            });
+        }
         let entries: Vec<_> = self
             .buffer
             .entries
             .iter()
             .filter(|entry| {
                 entry.source == self.source
-                    && (level == "全部级别" || entry.level == level.as_ref())
+                    && Level::parse(&entry.level) >= minimum
                     && self.search.matches(&entry.text())
             })
             .cloned()
@@ -287,6 +305,117 @@ mod tests {
         AppContext, Bounds, TestAppContext, WindowBounds, WindowOptions, WindowVisibility, px, size,
     };
     use std::time::Duration;
+
+    #[gpui_kit::test]
+    fn level_defaults_follow_each_source_and_manual_filters_include_higher_severities(
+        cx: &mut TestAppContext,
+    ) {
+        let root = tempfile::tempdir().unwrap();
+        let paths = AppPaths::isolated(root.path());
+        let repository = Repository::open(paths.clone()).unwrap();
+        let mut core = crate::preferences::defaults(crate::preferences::SettingsKind::Core);
+        core.insert("LogLevelIndex".into(), "debug".into());
+        crate::configuration::Preferences::from_values(&core, None)
+            .unwrap()
+            .save(&paths)
+            .unwrap();
+        let mut general = crate::preferences::defaults(crate::preferences::SettingsKind::General);
+        general.insert("AppLogLevel".into(), "warn".into());
+        repository
+            .save(
+                &crate::storage::Namespace::parse("settings").unwrap(),
+                &general,
+            )
+            .unwrap();
+        let service = Service::start(repository).unwrap();
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            crate::integration::init(service, None, cx);
+        });
+        let settings_path = crate::preferences::app::path(&paths);
+        let saved = std::fs::read(&settings_path).unwrap();
+        let (handle, page) = cx.update(|cx| {
+            gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
+                cx.new(|cx| LogsPage::new(window, cx))
+            })
+            .unwrap()
+        });
+        handle
+            .update(cx, |_, window, cx| {
+                page.update(cx, |page, cx| {
+                    let entries = [0, 1].into_iter().flat_map(|source| {
+                        [
+                            Level::Trace,
+                            Level::Debug,
+                            Level::Info,
+                            Level::Warning,
+                            Level::Error,
+                        ]
+                        .into_iter()
+                        .map(move |level| super::LogEntry {
+                            id: 0,
+                            time: "2026-11-13T12:00:00+08:00".into(),
+                            level: level.label().into(),
+                            source,
+                            origin: "test".into(),
+                            message: level.label().into(),
+                        })
+                    });
+                    page.append(entries.collect(), window, cx);
+                    assert_eq!(
+                        page.level.read(cx).selected_value().unwrap().as_ref(),
+                        "DEBUG"
+                    );
+                    assert_eq!(page.table.read(cx).delegate().entries.len(), 4);
+                    page.source = 1;
+                    page.refresh(window, cx);
+                    assert_eq!(
+                        page.level.read(cx).selected_value().unwrap().as_ref(),
+                        "WARNING"
+                    );
+                    assert_eq!(page.table.read(cx).delegate().entries.len(), 2);
+                });
+            })
+            .unwrap();
+        for (level, expected) in [
+            (Level::Trace, 5),
+            (Level::Debug, 4),
+            (Level::Info, 3),
+            (Level::Warning, 2),
+            (Level::Error, 1),
+        ] {
+            page.read_with(cx, |page, _| page.level.clone())
+                .update(cx, |_, cx| {
+                    cx.emit(super::SelectEvent::Confirm(Some(level.label().into())));
+                });
+            cx.run_until_parked();
+            page.read_with(cx, |page, cx| {
+                let entries = &page.table.read(cx).delegate().entries;
+                assert_eq!(entries.len(), expected, "{level:?}");
+                assert!(
+                    entries
+                        .iter()
+                        .all(|entry| Level::parse(&entry.level) >= level)
+                );
+                assert_eq!(page.minimum, [None, Some(level)]);
+            });
+        }
+        handle
+            .update(cx, |_, window, cx| {
+                page.update(cx, |page, cx| {
+                    page.source = 0;
+                    page.refresh(window, cx);
+                    assert_eq!(
+                        page.level.read(cx).selected_value().unwrap().as_ref(),
+                        "DEBUG"
+                    );
+                    assert_eq!(page.table.read(cx).delegate().entries.len(), 4);
+                });
+            })
+            .unwrap();
+        assert_eq!(std::fs::read(settings_path).unwrap(), saved);
+        crate::integration::finish_test_services(cx);
+    }
 
     #[gpui_kit::test]
     fn hidden_page_and_window_keep_collecting_without_refreshing_the_table(
