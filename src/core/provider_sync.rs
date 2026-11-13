@@ -1,11 +1,11 @@
-//! Provider cache publication is serialized by the lifecycle actor, for both core owners.
-use super::{client::Client, launch::Launch};
+//! Provider cache passes belong to the lifecycle actor and are cancelled before commands.
+use super::client::Client;
 use crate::storage::AppPaths;
 use std::{
     collections::BTreeMap,
     future::Future,
     path::Path,
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use suki_service::RuntimeFileOutcome;
 
@@ -15,13 +15,13 @@ type LoadTimes = BTreeMap<(&'static str, String), Option<u64>>;
 
 pub(super) async fn sync_local(
     client: &Client,
-    launch: &Launch,
+    composed: &str,
     paths: &AppPaths,
 ) -> Result<usize, String> {
     let root = paths.directory(crate::storage::DirectoryKind::Core);
     sync(
         client,
-        launch,
+        composed,
         paths,
         |destination, offset| {
             let path = root.join(destination);
@@ -35,7 +35,7 @@ pub(super) async fn sync_local(
 
 pub(super) async fn sync<R, F, C, CF>(
     client: &Client,
-    launch: &Launch,
+    composed: &str,
     paths: &AppPaths,
     mut read: R,
     mut confirm: C,
@@ -48,32 +48,67 @@ where
     CF: Future<Output = Result<(), String>>,
 {
     let root = paths.directory(crate::storage::DirectoryKind::Core);
-    let config: serde_yaml_ng::Mapping = serde_yaml_ng::from_str(&launch.composed)
+    use tokio::io::{AsyncReadExt as _, AsyncSeekExt as _, AsyncWriteExt as _};
+    let config: serde_yaml_ng::Mapping = serde_yaml_ng::from_str(composed)
         .map_err(|error| crate::logging::rejected("运行配置无效", error))?;
     let declarations = super::runtime_bundle::remote_providers_of(&config, &root)
         .map_err(crate::logging::error_message)?;
     if declarations.is_empty() {
         return Ok(0);
     }
+    log::debug!(
+        "开始同步 Provider 缓存，共 {} 项，本地进程 {}",
+        declarations.len(),
+        local
+    );
+    let started = Instant::now();
+    let before = load_times(client).await?;
     let mut pending = 0;
+    let mut fetched = Vec::new();
     for declared in declarations {
         let key = (declared.section, declared.name.clone());
-        let before = load_times(client).await?;
-        let Some(before_time) = before.get(&key) else {
-            pending += 1;
-            continue;
-        };
-        let Some((bytes, identity)) =
-            fetch(&mut read, &declared.provider.destination, now_ns()).await?
-        else {
-            pending += 1;
-            continue;
-        };
-        let after = load_times(client).await?;
-        if before.get(&key) != after.get(&key) || !finished_loading(identity.1, *before_time) {
+        if !before.contains_key(&key) {
             pending += 1;
             continue;
         }
+        let read_started = Instant::now();
+        let content = fetch(&mut read, &declared.provider.destination, now_ns()).await?;
+        log::debug!(
+            "Provider {} {} 缓存读取结束，耗时 {} ms，可用 {}，字节数 {}",
+            declared.section,
+            declared.name,
+            read_started.elapsed().as_millis(),
+            content.is_some(),
+            content.as_ref().map_or(0, |(bytes, _)| bytes.len())
+        );
+        let Some((bytes, identity)) = content else {
+            pending += 1;
+            continue;
+        };
+        // Keep the batch on disk so large rule providers do not accumulate in memory.
+        // Dropping a cancelled pass closes and removes every anonymous temporary file.
+        let mut file =
+            tokio::fs::File::from_std(tempfile::tempfile().map_err(crate::logging::error_message)?);
+        file.write_all(&bytes)
+            .await
+            .map_err(crate::logging::error_message)?;
+        fetched.push((declared, file, identity));
+    }
+    let after = load_times(client).await?;
+    for (declared, mut file, identity) in fetched {
+        let verification_started = Instant::now();
+        let key = (declared.section, declared.name.clone());
+        if before.get(&key) != after.get(&key)
+            || !finished_loading(identity.1, after.get(&key).copied().flatten())
+        {
+            pending += 1;
+            continue;
+        }
+        file.rewind().await.map_err(crate::logging::error_message)?;
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes)
+            .await
+            .map_err(crate::logging::error_message)?;
         let final_chunk = read(declared.provider.destination.clone(), identity.0).await?;
         if !eof_matches(final_chunk, identity) {
             pending += 1;
@@ -94,7 +129,17 @@ where
         } else {
             crate::proxies::chain_sources::publish_cache(&path, &declared.provider.url, &bytes)?;
         }
+        log::debug!(
+            "Provider {} {} 缓存确认及发布结束，耗时 {} ms",
+            declared.section,
+            declared.name,
+            verification_started.elapsed().as_millis()
+        );
     }
+    log::debug!(
+        "Provider 缓存同步本轮结束，耗时 {} ms，待重试 {pending} 项",
+        started.elapsed().as_millis()
+    );
     Ok(pending)
 }
 
@@ -255,6 +300,7 @@ fn modified_ns(metadata: &std::fs::Metadata) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::launch::Launch;
     fn chunk(hex: &str, len: u64, time: u64) -> RuntimeFileOutcome {
         RuntimeFileOutcome::Chunk {
             hex: hex.into(),
@@ -317,7 +363,6 @@ mod tests {
         assert!(!finished_loading(Some(5_000_000_000), Some(1)));
         assert!(!finished_loading(Some(1), None));
     }
-    #[cfg(unix)]
     #[tokio::test]
     async fn provider_load_revision_changes_keep_old_cache_until_a_confirmed_read() {
         use std::sync::{
@@ -331,10 +376,33 @@ mod tests {
         let repository = crate::storage::Repository::open(paths.clone()).unwrap();
         crate::preferences::initialize(&repository).unwrap();
         let mut launch = Launch::preview(&paths).await.unwrap();
-        launch.composed = "proxy-providers: {p: {type: http, url: 'https://example.test/current', path: cache.yaml}}".into();
+        launch.composed = "proxy-providers: {p: {type: http, url: 'https://example.test/current', path: cache.yaml}, q: {type: http, url: 'https://example.test/other', path: other.yaml}}".into();
+        #[cfg(unix)]
         let socket = directory.path().join("provider.sock");
+        #[cfg(unix)]
         let listener = tokio::net::UnixListener::bind(&socket).unwrap();
-        launch.client = Client::new(super::super::client::Endpoint::Unix(socket), String::new());
+        #[cfg(unix)]
+        {
+            launch.client =
+                Client::new(super::super::client::Endpoint::Unix(socket), String::new());
+        }
+        #[cfg(windows)]
+        let socket = format!(
+            r"\\.\pipe\suki-provider-sync-{}",
+            super::super::client::random_token().unwrap()
+        );
+        #[cfg(windows)]
+        let mut listener = tokio::net::windows::named_pipe::ServerOptions::new()
+            .first_pipe_instance(true)
+            .create(&socket)
+            .unwrap();
+        #[cfg(windows)]
+        {
+            launch.client = Client::new(
+                super::super::client::Endpoint::Pipe(socket.clone()),
+                String::new(),
+            );
+        }
         let changing = Arc::new(AtomicBool::new(true));
         let calls = Arc::new(AtomicUsize::new(0));
         let server = tokio::spawn({
@@ -342,7 +410,18 @@ mod tests {
             let calls = calls.clone();
             async move {
                 loop {
+                    #[cfg(unix)]
                     let (mut stream, _) = listener.accept().await.unwrap();
+                    #[cfg(windows)]
+                    let mut stream = {
+                        listener.connect().await.unwrap();
+                        std::mem::replace(
+                            &mut listener,
+                            tokio::net::windows::named_pipe::ServerOptions::new()
+                                .create(&socket)
+                                .unwrap(),
+                        )
+                    };
                     let mut request = [0; 4096];
                     let count = stream.read(&mut request).await.unwrap();
                     let body = if request[..count].starts_with(b"GET /providers/proxies ") {
@@ -353,7 +432,7 @@ mod tests {
                             10
                         };
                         format!(
-                            r#"{{"providers":{{"p":{{"updatedAt":"1970-01-01T00:00:00.{nano:09}Z"}}}}}}"#
+                            r#"{{"providers":{{"p":{{"updatedAt":"1970-01-01T00:00:00.{nano:09}Z"}},"q":{{"updatedAt":"1970-01-01T00:00:00.{nano:09}Z"}}}}}}"#
                         )
                     } else {
                         r#"{"providers":{}}"#.into()
@@ -388,21 +467,42 @@ mod tests {
             std::future::ready(Ok(()))
         };
         assert_eq!(
-            sync(&launch.client, &launch, &paths, read, confirm, false)
-                .await
-                .unwrap(),
-            1
+            sync(
+                &launch.client,
+                &launch.composed,
+                &paths,
+                read,
+                confirm,
+                false
+            )
+            .await
+            .unwrap(),
+            2
         );
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
         assert_eq!(std::fs::read(&path).unwrap(), b"old cache");
+        assert!(!path.with_file_name("other.yaml").exists());
         assert!(!confirmed.load(Ordering::SeqCst));
         changing.store(false, Ordering::SeqCst);
         assert_eq!(
-            sync(&launch.client, &launch, &paths, read, confirm, false)
-                .await
-                .unwrap(),
+            sync(
+                &launch.client,
+                &launch.composed,
+                &paths,
+                read,
+                confirm,
+                false
+            )
+            .await
+            .unwrap(),
             0
         );
         assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        assert_eq!(
+            std::fs::read(path.with_file_name("other.yaml")).unwrap(),
+            bytes
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 4);
         assert!(confirmed.load(Ordering::SeqCst));
         server.abort();
     }

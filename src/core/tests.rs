@@ -3730,6 +3730,28 @@ async fn gui_login_registration_reconciles_startup_and_explicit_same_value_save(
         .unwrap();
     assert!(!crate::desktop::autostart::enabled().unwrap());
     assert_eq!(owner.snapshot.autostart, Some(Ok(false)));
+
+    // An explicit setting waits for startup reconciliation before changing OS intent.
+    let (finished, wait) = tokio::sync::oneshot::channel();
+    owner.autostart_reconcile = Some(tokio::spawn(async move {
+        wait.await.unwrap();
+        Ok(true)
+    }));
+    {
+        let save = owner.save_settings(
+            crate::preferences::SettingsKind::General,
+            crate::storage::Values::from([("AutoRun".into(), "false".into())]),
+        );
+        tokio::pin!(save);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), &mut save)
+                .await
+                .is_err()
+        );
+        finished.send(()).unwrap();
+        save.await.unwrap();
+    }
+    assert!(!crate::desktop::autostart::enabled().unwrap());
     crate::desktop::autostart::apply(true).unwrap();
     // Missing core must not prevent coordinating the independent GUI login entry.
     assert!(owner.startup().await.is_err());

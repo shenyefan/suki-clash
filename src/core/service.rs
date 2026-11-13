@@ -7,7 +7,7 @@ use std::{
         atomic::{AtomicBool, Ordering},
     },
     thread::JoinHandle,
-    time::Duration,
+    time::{Duration, Instant},
 };
 use tokio::{process::Child, sync::watch};
 
@@ -401,6 +401,10 @@ struct ProviderSyncPlan {
     remaining: u8,
     next: std::time::Instant,
 }
+struct ProviderSyncTask {
+    plan: ProviderSyncPlan,
+    work: std::pin::Pin<Box<dyn Future<Output = Result<usize, String>>>>,
+}
 struct AutostartQuery {
     request: Option<u64>,
     task: tokio::task::JoinHandle<Result<bool, String>>,
@@ -445,6 +449,7 @@ pub(super) struct Actor {
     provider_sync: Option<ProviderSyncPlan>,
     provider_sync_identity: Option<(u64, u64)>,
     provider_chain_refresh: bool,
+    autostart_reconcile: Option<tokio::task::JoinHandle<Result<bool, String>>>,
 }
 impl Actor {
     fn new(
@@ -496,6 +501,7 @@ impl Actor {
             provider_sync: None,
             provider_sync_identity: None,
             provider_chain_refresh: false,
+            autostart_reconcile: None,
         }
     }
     pub(super) fn publish(&mut self, phase: Phase, error: Option<String>) {
@@ -666,6 +672,7 @@ impl Actor {
             Err(error) => self.publish(self.snapshot.phase, Some(error)),
         }
         self.publish(Phase::Preparing, None);
+        let preparation_started = Instant::now();
         let prepared = super::install::recover_pending(&self.paths)
             .and_then(|()| {
                 let repository = crate::storage::Repository::open(self.paths.clone())
@@ -685,6 +692,11 @@ impl Actor {
             .and_then(|bundle| {
                 crate::bootstrap::prepare(&self.paths, &bundle, || *shutdown.borrow())
             });
+        log::debug!(
+            "启动资源准备结束，耗时 {} ms，成功 {}",
+            preparation_started.elapsed().as_millis(),
+            prepared.is_ok()
+        );
         match prepared {
             Ok(()) => {
                 let started = tokio::select! {
@@ -706,20 +718,32 @@ impl Actor {
         self.snapshot.progress = None;
         self.publish(self.snapshot.phase, self.snapshot.error.clone());
         let mut autostart_query: Option<AutostartQuery> = None;
+        let mut provider_task: Option<ProviderSyncTask> = None;
         loop {
             if *shutdown.borrow() {
                 break;
             }
+            if provider_task.as_ref().is_some_and(|task| {
+                task.plan.identity != (self.snapshot.generation, self.snapshot.monitor_epoch)
+                    || self.snapshot.phase != Phase::Ready
+            }) {
+                provider_task = None;
+            }
             tokio::select! {
                 biased;
                 _ = shutdown.changed() => break,
+                result = async { match self.autostart_reconcile.as_mut() { Some(task) => task.await, None => std::future::pending().await } }, if self.autostart_reconcile.is_some() => {
+                    self.autostart_reconcile = None;
+                    self.record_autostart_reconcile(result);
+                    self.publish_snapshot(self.snapshot.phase, self.snapshot.error.clone(), self.snapshot.error_logged);
+                }
                 changed = foreground.changed() => {
                     if changed.is_err() { break; }
                     let next_visible = foreground.borrow_and_update().visible;
                     if !visible && next_visible { state_poll.reset_immediately(); }
                     visible = next_visible;
                 }
-                changed = autostart_queries.changed(), if !self.exit_prepared => {
+                changed = autostart_queries.changed(), if !self.exit_prepared && self.autostart_reconcile.is_none() => {
                     if changed.is_err() { break; }
                     autostart_queries.borrow_and_update();
                     if autostart_query.is_none() {
@@ -739,6 +763,14 @@ impl Actor {
                 }
                 request = receiver.recv() => {
                     let Ok(request) = request else { break; };
+                    // Cancel reads before a command can change the runtime.
+                    if let Some(mut task) = provider_task.take() {
+                        task.plan.next = Instant::now() + Duration::from_secs(15);
+                        self.provider_sync = Some(task.plan);
+                    }
+                    if matches!(&request.command, Command::PrepareExit(_) | Command::LocalBackup(super::local_backup::Command::Restore(_)) | Command::Gist(super::gist::Command::Restore(_))) {
+                        self.finish_autostart_reconcile().await;
+                    }
                     if !matches!(&request.command, Command::PrepareExit(_)) {
                         self.exit_prepared = false;
                     }
@@ -917,7 +949,18 @@ impl Actor {
                     }
                     drop(request);
                 }
+                result = async { match provider_task.as_mut() { Some(task) => task.work.as_mut().await, None => std::future::pending().await } }, if provider_task.is_some() => {
+                    if let Some(task) = provider_task.take()
+                        && let Err(error) = self.finish_provider_sync(task.plan, result) {
+                        self.publish(self.snapshot.phase, Some(error));
+                    }
+                }
                 _ = subscription_timer.tick(), if !self.exit_prepared => {
+                    // Automatic updates use the same lifecycle owner as user commands.
+                    if let Some(mut task) = provider_task.take() {
+                        task.plan.next = Instant::now() + Duration::from_secs(15);
+                        self.provider_sync = Some(task.plan);
+                    }
                     let result=tokio::select! { biased; _=shutdown.changed()=>break, result=async {let profiles=self.automatic_profiles().await;let overrides=self.automatic_overrides().await;let errors=profiles.err().into_iter().chain(overrides.err()).collect::<Vec<_>>();if errors.is_empty(){Ok(())}else{Err(crate::failure::join(&errors))}}=>result };
                     if let Err(error)=result {self.publish(self.snapshot.phase,Some(error));}
                     else {self.publish_snapshot(self.snapshot.phase,self.snapshot.error.clone(),self.snapshot.error_logged);}
@@ -957,15 +1000,11 @@ impl Actor {
                         else { self.publish(self.snapshot.phase,None); }
                     }
                     if self.snapshot.phase == Phase::Ready {
-                        if self.provider_sync.as_ref().is_some_and(|plan| std::time::Instant::now() >= plan.next) {
-                            let synced = tokio::select! {
-                                biased;
-                                _ = shutdown.changed() => break,
-                                result = self.sync_provider_cache() => result,
-                            };
-                            if let Err(error) = synced { self.publish(Phase::Ready, Some(error)); }
+                        if provider_task.is_none() && self.provider_sync.as_ref().is_some_and(|plan| std::time::Instant::now() >= plan.next) {
+                            provider_task = self.take_provider_sync();
                         }
                         if self.provider_chain_refresh {
+                            provider_task = None;
                             self.provider_chain_refresh = false;
                             let refreshed = tokio::select! {
                                 biased;
@@ -984,6 +1023,8 @@ impl Actor {
                 }
             }
         }
+        drop(provider_task);
+        self.finish_autostart_reconcile().await;
         let result = self.stop_validation().await;
         self.transfer = None;
         self.staging = None;
@@ -1191,33 +1232,43 @@ impl Actor {
         self.provider_sync = Some(ProviderSyncPlan {
             identity,
             remaining: 4,
-            next: std::time::Instant::now(),
+            next: std::time::Instant::now() + Duration::from_secs(15),
         });
     }
-    pub(super) async fn sync_provider_cache(&mut self) -> Result<(), String> {
-        self.queue_provider_sync();
-        let Some(mut plan) = self.provider_sync.take() else {
-            return Ok(());
-        };
+    fn take_provider_sync(&mut self) -> Option<ProviderSyncTask> {
+        let plan = self.provider_sync.take()?;
         if plan.identity != (self.snapshot.generation, self.snapshot.monitor_epoch) {
+            return None;
+        }
+        let running = self.running.as_ref()?;
+        let client = running.launch.client.clone();
+        let composed = running.launch.composed.clone();
+        let paths = self.paths.clone();
+        let session = match &running.child {
+            Process::Service(session) => Some(session.clone()),
+            Process::Local(_) => None,
+        };
+        Some(ProviderSyncTask {
+            plan,
+            work: Box::pin(async move {
+                match session {
+                    Some(session) => session.sync_providers(&client, &composed, &paths).await,
+                    None => super::provider_sync::sync_local(&client, &composed, &paths).await,
+                }
+            }),
+        })
+    }
+    fn finish_provider_sync(
+        &mut self,
+        mut plan: ProviderSyncPlan,
+        result: Result<usize, String>,
+    ) -> Result<(), String> {
+        if plan.identity != (self.snapshot.generation, self.snapshot.monitor_epoch)
+            || self.running.is_none()
+        {
             return Ok(());
         }
-        let Some(running) = &self.running else {
-            return Ok(());
-        };
-        let pending = match &running.child {
-            Process::Service(session) => {
-                session.sync_providers(&running.launch, &self.paths).await?
-            }
-            Process::Local(_) => {
-                super::provider_sync::sync_local(
-                    &running.launch.client,
-                    &running.launch,
-                    &self.paths,
-                )
-                .await?
-            }
-        };
+        let pending = result?;
         if pending == 0 {
             self.provider_chain_refresh = true;
             return Ok(());
@@ -1230,6 +1281,14 @@ impl Actor {
         }
         plan.next = std::time::Instant::now() + Duration::from_secs(15);
         self.provider_sync = Some(plan);
+        Ok(())
+    }
+    pub(super) async fn sync_provider_cache(&mut self) -> Result<(), String> {
+        self.queue_provider_sync();
+        if let Some(task) = self.take_provider_sync() {
+            let result = task.work.await;
+            self.finish_provider_sync(task.plan, result)?;
+        }
         Ok(())
     }
 
@@ -2002,6 +2061,9 @@ impl Actor {
         patch: crate::storage::Values,
     ) -> Result<(), String> {
         use crate::preferences::{self, SettingsKind};
+        if kind == SettingsKind::General && patch.contains_key("AutoRun") {
+            self.finish_autostart_reconcile().await;
+        }
         if matches!(
             kind,
             SettingsKind::Core | SettingsKind::Resources | SettingsKind::Tun
@@ -2512,7 +2574,14 @@ impl Actor {
             Ok(()) => {
                 log::debug!("配置选择已提交");
                 self.publish(Phase::Ready, None);
-                if let Err(error) = self.sync_system_proxy().await {
+                let proxy_started = Instant::now();
+                let proxy = self.sync_system_proxy().await;
+                log::debug!(
+                    "内核替换后系统代理协调结束，耗时 {} ms，成功 {}",
+                    proxy_started.elapsed().as_millis(),
+                    proxy.is_ok()
+                );
+                if let Err(error) = proxy {
                     self.runtime_warning = Some(match self.runtime_warning.take() {
                         Some(previous) => format!("{previous}；{error}"),
                         None => error,
@@ -2558,19 +2627,54 @@ impl Actor {
         crate::preferences::initialize(&repository).map_err(crate::logging::error_message)?;
         self.snapshot.preferences = Some(super::Preferences::load(&self.paths)?);
         self.publish(Phase::Starting, None);
-        let launch = Launch::prepare(&self.paths).await?;
+        let preparation_started = Instant::now();
+        let launch = Launch::prepare(&self.paths).await;
+        log::debug!(
+            "启动配置合成结束，耗时 {} ms，成功 {}",
+            preparation_started.elapsed().as_millis(),
+            launch.is_ok()
+        );
+        let launch = launch?;
         #[cfg(not(test))]
         let launch = {
             let mut launch = launch;
-            launch.force_service = super::privileged::ready_for_start(&self.paths).await?;
+            let service_started = Instant::now();
+            let service = super::privileged::ready_for_start(&self.paths).await;
+            log::debug!(
+                "启动服务归属检查结束，耗时 {} ms，成功 {}",
+                service_started.elapsed().as_millis(),
+                service.is_ok()
+            );
+            launch.force_service = service?;
             launch
         };
-        let launch = self.validate(launch).await?;
+        let validation_started = Instant::now();
+        let launch = self.validate(launch).await;
+        log::debug!(
+            "启动配置校验结束，耗时 {} ms，成功 {}",
+            validation_started.elapsed().as_millis(),
+            launch.is_ok()
+        );
+        let launch = launch?;
         self.replace(launch, true).await
     }
 
     /// Startup is strict: never change requested ports or substitute a profile.
     async fn startup(&mut self) -> Result<(), String> {
+        let startup_started = Instant::now();
+        #[cfg(not(test))]
+        {
+            let paths = self.paths.clone();
+            self.autostart_reconcile = Some(tokio::task::spawn_blocking(move || {
+                Self::reconcile_autostart(&paths)
+            }));
+        }
+        #[cfg(test)]
+        {
+            // The test platform adapter is thread-local and performs no system calls.
+            let result = Self::reconcile_autostart(&self.paths);
+            self.record_autostart_reconcile(Ok(result));
+        }
         #[cfg(not(test))]
         {
             let tun_requested = self
@@ -2581,38 +2685,95 @@ impl Actor {
                 .values()
                 .get("IsTunEnabled")
                 .is_some_and(|value| value == "true");
+            let service_started = Instant::now();
             self.snapshot.service_state = super::privileged::probe_startup(tun_requested).await;
+            log::debug!(
+                "启动服务探测结束，耗时 {} ms，状态 {}",
+                service_started.elapsed().as_millis(),
+                self.snapshot.service_state.label()
+            );
             if let super::privileged::State::Rejected(reason) = &self.snapshot.service_state {
                 return Err(reason.clone());
             }
         }
-        let autostart = (|| {
-            let repository = crate::storage::Repository::open(self.paths.clone())
+        let script_started = Instant::now();
+        let script = crate::desktop::startup_script(&self.paths).await;
+        log::debug!(
+            "启动脚本阶段结束，耗时 {} ms，成功 {}",
+            script_started.elapsed().as_millis(),
+            script.is_ok()
+        );
+        if let Err(error) = script {
+            self.runtime_warning = Some(match self.runtime_warning.take() {
+                Some(previous) => format!("{previous}；{error}"),
+                None => error,
+            });
+        }
+        let started = self.start().await;
+        log::debug!(
+            "启动内核工作流结束，累计耗时 {} ms，成功 {}",
+            startup_started.elapsed().as_millis(),
+            started.is_ok()
+        );
+        started?;
+        let proxy_started = Instant::now();
+        let result = self.sync_system_proxy().await;
+        log::debug!(
+            "启动系统代理协调结束，耗时 {} ms，启动累计耗时 {} ms，成功 {}",
+            proxy_started.elapsed().as_millis(),
+            startup_started.elapsed().as_millis(),
+            result.is_ok()
+        );
+        result
+    }
+
+    fn reconcile_autostart(paths: &AppPaths) -> Result<bool, String> {
+        let started = Instant::now();
+        let result = (|| {
+            let repository = crate::storage::Repository::open(paths.clone())
                 .map_err(crate::logging::error_message)?;
             let settings =
                 crate::preferences::values(&repository, crate::preferences::SettingsKind::General)
                     .map_err(crate::logging::error_message)?;
             let desired = settings.get("AutoRun").is_some_and(|value| value == "true");
             if crate::desktop::autostart::enabled()? != desired {
+                // apply already verifies the OS state after registration.
                 crate::desktop::autostart::apply(desired)?;
             }
-            Ok::<_, String>(())
+            Ok(desired)
         })();
-        self.snapshot.autostart = Some(crate::desktop::autostart::enabled());
-        if let Err(error) = autostart {
-            self.runtime_warning = Some(error);
-        }
-        if let Err(error) = crate::desktop::startup_script(&self.paths).await {
+        log::debug!(
+            "后台自启动状态协调结束，耗时 {} ms，成功 {}",
+            started.elapsed().as_millis(),
+            result.is_ok()
+        );
+        result
+    }
+
+    fn record_autostart_reconcile(
+        &mut self,
+        result: Result<Result<bool, String>, tokio::task::JoinError>,
+    ) {
+        let actual = result.unwrap_or_else(|error| Err(format!("自启动状态协调任务异常：{error}")));
+        if let Err(error) = &actual {
             self.runtime_warning = Some(match self.runtime_warning.take() {
                 Some(previous) => format!("{previous}；{error}"),
-                None => error,
+                None => error.clone(),
             });
         }
-        self.start().await?;
-        self.sync_system_proxy().await
+        self.snapshot.autostart = Some(actual);
+    }
+
+    async fn finish_autostart_reconcile(&mut self) {
+        if let Some(task) = self.autostart_reconcile.as_mut() {
+            let result = task.await;
+            self.autostart_reconcile = None;
+            self.record_autostart_reconcile(result);
+        }
     }
 
     async fn start_prepared(&mut self, mut launch: Launch) -> Result<(), String> {
+        let process_started = Instant::now();
         let log_cursor = self.logs.since(0).last().map_or(0, |record| record.id);
         self.snapshot.proxy_names.clear();
         self.snapshot.resources = super::Resources::default();
@@ -2693,6 +2854,14 @@ impl Actor {
             _lifetime: lifetime,
             _execution: execution,
         });
+        log::debug!(
+            "内核进程启动完成，代次 {}，服务模式 {}，耗时 {} ms",
+            self.snapshot.generation,
+            self.running
+                .as_ref()
+                .is_some_and(|running| matches!(running.child, Process::Service(_))),
+            process_started.elapsed().as_millis()
+        );
         // Log collection starts with the owned process; runtime data still waits for readiness.
         self.sync_monitor();
         #[cfg(target_os = "macos")]
@@ -2733,14 +2902,31 @@ impl Actor {
         } else {
             Duration::from_secs(8)
         };
+        let readiness_started = Instant::now();
         let result = self.wait_ready(budget).await;
+        log::debug!(
+            "内核就绪检查结束，代次 {}，耗时 {} ms，成功 {}",
+            self.snapshot.generation,
+            readiness_started.elapsed().as_millis(),
+            result.is_ok()
+        );
         match result {
             Ok(version) => {
                 self.snapshot.version = Some(version);
-                if let Err(error) = self.sync_provider_cache().await {
-                    self.runtime_warning = Some(format!("内核已就绪；{error}"));
-                }
-                if let Err(error) = self.restore_all_selections().await {
+                self.queue_provider_sync();
+                log::debug!(
+                    "Provider 缓存同步已安排在 15 秒后，代次 {}",
+                    self.snapshot.generation
+                );
+                let selections_started = Instant::now();
+                let selections = self.restore_all_selections().await;
+                log::debug!(
+                    "启动节点选择恢复首轮结束，代次 {}，耗时 {} ms，成功 {}",
+                    self.snapshot.generation,
+                    selections_started.elapsed().as_millis(),
+                    selections.is_ok()
+                );
+                if let Err(error) = selections {
                     self.runtime_warning = Some(format!("内核已就绪；节点选择恢复失败：{error}"));
                 }
                 Ok(())

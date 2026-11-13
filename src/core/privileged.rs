@@ -2,6 +2,7 @@
 use super::launch::Launch;
 use crate::storage::AppPaths;
 use suki_service::{OwnerCredentials, OwnerSessionProof, ServiceStatusSnapshot};
+#[derive(Clone)]
 pub(super) struct Session {
     credentials: OwnerCredentials,
     proof: OwnerSessionProof,
@@ -379,12 +380,13 @@ impl Session {
     }
     pub(super) async fn sync_providers(
         &self,
-        launch: &Launch,
+        client: &super::client::Client,
+        composed: &str,
         paths: &AppPaths,
     ) -> Result<usize, String> {
         super::provider_sync::sync(
-            &launch.client,
-            launch,
+            client,
+            composed,
             paths,
             |destination, offset| async move {
                 response(

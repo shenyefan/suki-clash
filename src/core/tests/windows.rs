@@ -64,6 +64,66 @@ fn running(launch: Launch, child: tokio::process::Child) -> Running {
 }
 
 #[tokio::test]
+async fn provider_cache_is_delayed_and_cancelled_reads_do_not_block_stop() {
+    use tokio::io::AsyncReadExt as _;
+    let (_root, paths) = fixture(Some(SLEEPING_CORE));
+    let mut launch = Launch::prepare(&paths).await.unwrap();
+    launch.composed =
+        "proxy-providers: {p: {type: http, url: 'https://example.test/p', path: p.yaml}}\n".into();
+    let pipe = format!(r"\\.\pipe\suki-provider-cancel-{}", random_token().unwrap());
+    let listener = ServerOptions::new()
+        .first_pipe_instance(true)
+        .create(&pipe)
+        .unwrap();
+    launch.client = Client::new(Endpoint::Pipe(pipe), String::new());
+    let (requested, request_received) = tokio::sync::oneshot::channel();
+    let server = tokio::spawn(async move {
+        listener.connect().await.unwrap();
+        let mut listener = listener;
+        let mut bytes = [0; 4096];
+        assert!(listener.read(&mut bytes).await.unwrap() > 0);
+        requested.send(()).unwrap();
+        // Simulate a provider API that accepts requests but never replies.
+        std::future::pending::<()>().await;
+    });
+    let mut owner = actor(paths);
+    owner.running = Some(running(launch, child("sleep")));
+    owner.publish(Phase::Ready, None);
+    assert!(
+        owner.provider_sync.as_ref().unwrap().next
+            >= std::time::Instant::now() + Duration::from_secs(14)
+    );
+    let mut task = owner.take_provider_sync().unwrap();
+    tokio::time::timeout(Duration::from_secs(3), async {
+        tokio::select! {
+            result = task.work.as_mut() => panic!("provider pass unexpectedly finished: {result:?}"),
+            result = request_received => result.unwrap(),
+        }
+    })
+    .await
+    .unwrap();
+    drop(task.work);
+    tokio::time::timeout(Duration::from_secs(3), owner.stop())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(owner.running.is_none());
+    assert!(
+        !owner
+            .paths
+            .directory(DirectoryKind::Core)
+            .join("p.yaml")
+            .exists()
+    );
+    // A completion from the stopped generation cannot request a chain reload.
+    owner.snapshot.generation += 1;
+    owner.finish_provider_sync(task.plan, Ok(0)).unwrap();
+    assert!(!owner.provider_chain_refresh);
+    server.abort();
+    let _ = server.await;
+}
+
+#[tokio::test]
 async fn transient_health_failure_preserves_proxy_and_reconnects_after_recovery() {
     use http_body_util::Full;
     use hyper::{Response, StatusCode, body::Bytes, service::service_fn};
