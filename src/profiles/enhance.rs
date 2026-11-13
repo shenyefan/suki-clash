@@ -937,11 +937,7 @@ impl Render for EnhancementEditor {
                             )
                         })
                         .child(
-                            Button::new("enhancement-add")
-                                .outline()
-                                .with_size(control::STANDARD)
-                                .icon(IconName::Plus)
-                                .label("添加")
+                            ui::icon_button("enhancement-add", IconName::Plus, "添加")
                                 .disabled(self.saving)
                                 .on_click(cx.listener(move |this, _, window, cx| {
                                     let part = if LIST_PARTS[this.part] == "append" {

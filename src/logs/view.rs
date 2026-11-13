@@ -325,22 +325,19 @@ impl LogsPage {
                             .child(ui::muted(entry.origin.clone(), cx)),
                     )
                     .child(
-                        Button::new("copy-log-detail")
-                            .outline()
-                            .with_size(control::STANDARD)
-                            .icon(IconName::Copy)
-                            .label("复制日志")
-                            .on_click(move |_, _, cx| {
+                        ui::icon_button("copy-log-detail", IconName::Copy, "复制日志").on_click(
+                            move |_, _, cx| {
                                 cx.write_to_clipboard(ClipboardItem::new_string(value.clone()))
-                            }),
+                            },
+                        ),
                     )
                     .child(
-                        Button::new("collapse-log-details")
-                            .outline()
-                            .with_size(control::STANDARD)
-                            .icon(IconName::ChevronDown)
-                            .label("收起")
-                            .on_click(cx.listener(|this, _, w, cx| this.dismiss_details(w, cx))),
+                        ui::icon_button(
+                            "collapse-log-details",
+                            IconName::ChevronDown,
+                            "收起日志详情",
+                        )
+                        .on_click(cx.listener(|this, _, w, cx| this.dismiss_details(w, cx))),
                     ),
             )
             .child(

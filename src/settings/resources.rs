@@ -6,7 +6,7 @@ use crate::{
 };
 use gpui_kit::{
     assets::IconName,
-    component::{Disableable, Sizable, button::Button, h_flex, input::Input, v_flex},
+    component::{Disableable, Sizable, h_flex, input::Input, v_flex},
     prelude::FluentBuilder,
     *,
 };
@@ -110,21 +110,21 @@ impl SettingsPage {
                 .w(preferences::URL_WIDTH)
                 .disabled(disabled)
                 .aria_label(format!("{name} 下载地址"));
-            let update = h_flex()
-                .gap(space::LG)
-                .child(ui::muted(metadata, cx).text_size(text::CAPTION))
-                .child(
-                    Button::new(SharedString::from(format!("resource-update-{key}")))
-                        .outline()
-                        .icon(IconName::RefreshCw)
-                        .with_size(control::STANDARD)
-                        .label("现在更新")
+            let update =
+                h_flex()
+                    .gap(space::LG)
+                    .child(ui::muted(metadata, cx).text_size(text::CAPTION))
+                    .child(
+                        ui::icon_button(
+                            SharedString::from(format!("resource-update-{key}")),
+                            IconName::RefreshCw,
+                            &format!("更新 {name} 数据库"),
+                        )
                         .disabled(disabled)
-                        .accessibility_label(format!("更新 {name} 数据库"))
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            this.update_database(key, window, cx)
-                        })),
-                );
+                        .on_click(cx.listener(
+                            move |this, _, window, cx| this.update_database(key, window, cx),
+                        )),
+                    );
             body = body.child(ui::preferences_group(
                 format!("{name} 数据库"),
                 vec![
@@ -220,14 +220,14 @@ impl SettingsPage {
                         row.child(ui::muted("待确认", cx))
                     })
                     .child(
-                        Button::new(SharedString::from(format!(
-                            "provider-update-{}-{name}",
-                            this.runtime_tab
-                        )))
-                        .icon(IconName::RefreshCw)
-                        .with_size(control::STANDARD)
-                        .label("更新")
-                        .accessibility_label(format!("更新 {name}"))
+                        ui::icon_button(
+                            SharedString::from(format!(
+                                "provider-update-{}-{name}",
+                                this.runtime_tab
+                            )),
+                            IconName::RefreshCw,
+                            &format!("更新 {name}"),
+                        )
                         .disabled(
                             this.saving
                                 || this.session.read(cx).core_busy()

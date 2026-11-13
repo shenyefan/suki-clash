@@ -181,11 +181,7 @@ impl ProfilesPage {
                             ),
                     )
                     .child(
-                        Button::new(("override-edit", id))
-                            .outline()
-                            .with_size(control::STANDARD)
-                            .icon(IconName::Pencil)
-                            .label("编辑")
+                        ui::icon_button(("override-edit", id), IconName::Pencil, "编辑覆写")
                             .on_click(cx.listener(move |this, _, w, cx| {
                                 this.document_action(id, "编辑文件", w, cx)
                             })),

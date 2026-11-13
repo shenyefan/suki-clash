@@ -53,29 +53,26 @@ impl TrafficPage {
                     .gap(space::MD)
                     .child(div().flex_1().font_weight(text::HEADING).child("规则详情"))
                     .child(
-                        Button::new("copy-selected-rule")
-                            .outline()
-                            .with_size(control::STANDARD)
-                            .icon(IconName::Copy)
-                            .label("复制规则")
-                            .on_click(move |_, _, cx| {
+                        ui::icon_button("copy-selected-rule", IconName::Copy, "复制规则").on_click(
+                            move |_, _, cx| {
                                 cx.write_to_clipboard(ClipboardItem::new_string(value.clone()))
-                            }),
+                            },
+                        ),
                     )
                     .child(
-                        Button::new("collapse-rule-details")
-                            .outline()
-                            .with_size(control::STANDARD)
-                            .icon(IconName::ChevronDown)
-                            .label("收起")
-                            .on_click(cx.listener(|this, _, w, cx| {
-                                this.table.update(cx, |table, cx| {
-                                    table.delegate_mut().detail_id = None;
-                                    table.clear_selection(cx);
-                                    cx.notify();
-                                });
-                                this.table.focus_handle(cx).focus(w, cx);
-                            })),
+                        ui::icon_button(
+                            "collapse-rule-details",
+                            IconName::ChevronDown,
+                            "收起规则详情",
+                        )
+                        .on_click(cx.listener(|this, _, w, cx| {
+                            this.table.update(cx, |table, cx| {
+                                table.delegate_mut().detail_id = None;
+                                table.clear_selection(cx);
+                                cx.notify();
+                            });
+                            this.table.focus_handle(cx).focus(w, cx);
+                        })),
                     ),
             )
             .child(
@@ -209,11 +206,7 @@ impl TrafficPage {
                             .child(ui::muted(record.cells[0].clone(), cx).truncate()),
                     )
                     .child(
-                        Button::new("close-selected-connection")
-                            .outline()
-                            .with_size(control::STANDARD)
-                            .icon(IconName::X)
-                            .label("关闭连接")
+                        ui::icon_button("close-selected-connection", IconName::X, "关闭连接")
                             .disabled(
                                 !record.active || !self.session.read(cx).runtime().connections_live,
                             )
@@ -222,19 +215,19 @@ impl TrafficPage {
                             }),
                     )
                     .child(
-                        Button::new("collapse-connection-details")
-                            .outline()
-                            .with_size(control::STANDARD)
-                            .icon(IconName::ChevronDown)
-                            .label("收起")
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.table.update(cx, |table, cx| {
-                                    table.delegate_mut().detail_id = None;
-                                    table.clear_selection(cx);
-                                    cx.notify();
-                                });
-                                this.table.focus_handle(cx).focus(window, cx);
-                            })),
+                        ui::icon_button(
+                            "collapse-connection-details",
+                            IconName::ChevronDown,
+                            "收起连接详情",
+                        )
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.table.update(cx, |table, cx| {
+                                table.delegate_mut().detail_id = None;
+                                table.clear_selection(cx);
+                                cx.notify();
+                            });
+                            this.table.focus_handle(cx).focus(window, cx);
+                        })),
                     ),
             )
             .child(

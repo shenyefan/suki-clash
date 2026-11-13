@@ -200,7 +200,23 @@ impl SettingsPage {
                 if query.is_empty() || "webui 面板".contains(query) {
                     found = true;
                     let height = ui::theme::list::DETAIL_ROW_HEIGHT.to_pixels(window.rem_size());
-                    let mut rows = Vec::new();
+                    let mut rows = vec![
+                        ui::preference_row(
+                            "面板",
+                            "使用外部控制器访问内核",
+                            h_flex().gap(space::SM).child(
+                                Button::new("add-runtime-panel")
+                                    .outline()
+                                    .with_size(control::STANDARD)
+                                    .icon(IconName::Plus)
+                                    .label("添加面板")
+                                    .disabled(busy || self.saving)
+                                    .on_click(cx.listener(|this, _, w, cx| this.add_panel(w, cx))),
+                            ),
+                            cx,
+                        )
+                        .into_any_element(),
+                    ];
                     if !self.panels.is_empty() {
                         rows.push(ui::virtual_rows::panel(
                             cx.entity(),
@@ -312,19 +328,6 @@ impl SettingsPage {
                             },
                         ));
                     }
-                    rows.push(
-                        ui::preference_row(
-                            "面板",
-                            "使用外部控制器访问内核",
-                            h_flex().gap(space::SM).child(
-                                ui::icon_button("add-runtime-panel", IconName::Plus, "添加面板")
-                                    .disabled(busy || self.saving)
-                                    .on_click(cx.listener(|this, _, w, cx| this.add_panel(w, cx))),
-                            ),
-                            cx,
-                        )
-                        .into_any_element(),
-                    );
                     body = body.child(ui::preferences_group("WebUI", rows, cx));
                 }
                 continue;
@@ -333,13 +336,18 @@ impl SettingsPage {
                 .fields
                 .iter()
                 .filter(|field| {
-                    !matches!(
-                        field.key,
-                        "CoreAction0" | "CoreAction1" | "CoreSpecificVersion" | "CoreReleaseIndex"
-                    ) && (query.is_empty()
-                        || format!("{} {} {}", section.title, field.label, field.description)
-                            .to_lowercase()
-                            .contains(query))
+                    super::schema::field_visible(self.kind, field.key)
+                        && !matches!(
+                            field.key,
+                            "CoreAction0"
+                                | "CoreAction1"
+                                | "CoreSpecificVersion"
+                                | "CoreReleaseIndex"
+                        )
+                        && (query.is_empty()
+                            || format!("{} {} {}", section.title, field.label, field.description)
+                                .to_lowercase()
+                                .contains(query))
                 })
                 .map(|field| field.key)
                 .collect();

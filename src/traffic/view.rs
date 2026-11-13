@@ -193,8 +193,8 @@ impl Render for TrafficPage {
         } else {
             String::new()
         };
-        let header = ui::workspace_header(title, &speed, cx)
-            .when(kind == TrafficKind::Connections, |row| {
+        let header =
+            ui::workspace_header(title, &speed, cx).when(kind == TrafficKind::Connections, |row| {
                 row.child(
                     TabBar::new("connection-status")
                         .segmented()
@@ -205,22 +205,6 @@ impl Render for TrafficPage {
                         ])
                         .selected_index(tab)
                         .on_click(cx.listener(|this, index, _, cx| this.switch_tab(*index, cx))),
-                )
-            })
-            .when(kind == TrafficKind::Rules, |row| {
-                row.child(
-                    Button::new("refresh-rules")
-                        .outline()
-                        .with_size(control::STANDARD)
-                        .icon(IconName::RefreshCw)
-                        .label("刷新规则")
-                        .disabled(
-                            self.session.read(cx).core_busy()
-                                || !self.session.read(cx).is_running(),
-                        )
-                        .on_click(|_, w, cx| {
-                            crate::core::request(crate::core::Command::Rules, w, cx)
-                        }),
                 )
             });
         let presence = ui::motion::presence("traffic-details", detail.is_some(), window, cx);
@@ -328,26 +312,45 @@ impl Render for TrafficPage {
                             )
                     })
                     .when(kind == TrafficKind::Rules, |row| {
-                        row.child(self.sort_button(cx)).child(
-                            Button::new("copy-visible-rules")
-                                .outline()
-                                .with_size(control::STANDARD)
-                                .icon(IconName::Copy)
-                                .label("复制")
-                                .disabled(count == 0)
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    let delegate = this.table.read(cx).delegate();
-                                    let value = delegate
-                                        .visible
-                                        .iter()
-                                        .map(|index| {
-                                            super::table::rule_text(&delegate.records[*index])
-                                        })
-                                        .collect::<Vec<_>>()
-                                        .join("\n");
-                                    cx.write_to_clipboard(ClipboardItem::new_string(value));
-                                })),
-                        )
+                        row.child(self.sort_button(cx))
+                            .child(
+                                Button::new("copy-visible-rules")
+                                    .outline()
+                                    .with_size(control::STANDARD)
+                                    .icon(IconName::Copy)
+                                    .label("复制")
+                                    .disabled(count == 0)
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        let delegate = this.table.read(cx).delegate();
+                                        let value = delegate
+                                            .visible
+                                            .iter()
+                                            .map(|index| {
+                                                super::table::rule_text(&delegate.records[*index])
+                                            })
+                                            .collect::<Vec<_>>()
+                                            .join("\n");
+                                        cx.write_to_clipboard(ClipboardItem::new_string(value));
+                                    })),
+                            )
+                            .child(
+                                Button::new("refresh-rules")
+                                    .outline()
+                                    .with_size(control::STANDARD)
+                                    .icon(IconName::RefreshCw)
+                                    .label("刷新规则")
+                                    .disabled(
+                                        self.session.read(cx).core_busy()
+                                            || !self.session.read(cx).is_running(),
+                                    )
+                                    .on_click(|_, window, cx| {
+                                        crate::core::request(
+                                            crate::core::Command::Rules,
+                                            window,
+                                            cx,
+                                        )
+                                    }),
+                            )
                     }),
             )
             .child(

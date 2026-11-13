@@ -6,7 +6,7 @@ use gpui_kit::{
     assets::IconName,
     component::{
         Disableable, Sizable,
-        button::{Button, ButtonVariants},
+        button::Button,
         h_flex,
         input::{Editor, Input},
         select::Select,
@@ -132,9 +132,10 @@ impl SettingsPage {
                     "复制环境变量" | "复制地址" | "复制密钥" => Some(IconName::Copy),
                     "网卡信息" => Some(IconName::Network),
                     "随机端口" => Some(IconName::Shuffle),
-                    "打开配置目录" | "打开内核目录" | "打开日志目录" | "打开备份目录" => {
-                        Some(IconName::FolderOpen)
-                    }
+                    "打开配置目录" => Some(IconName::Settings2),
+                    "打开内核目录" => Some(IconName::Cpu),
+                    "打开日志目录" => Some(IconName::ScrollText),
+                    "打开备份目录" => Some(IconName::FolderOpen),
                     "生成密钥" => Some(IconName::KeyRound),
                     "安装服务" => Some(IconName::Download),
                     "修复服务" => Some(IconName::Wrench),
@@ -172,22 +173,24 @@ impl SettingsPage {
                     "查看运行配置" => "运行配置",
                     _ => action,
                 };
-                Button::new(SharedString::from(format!("action-{key}-{action}")))
-                    .outline()
-                    .with_size(control::STANDARD)
-                    .when(
-                        spec.kind == FieldKind::ReadOnly || icon.is_none(),
-                        |button| button.label(label),
-                    )
-                    .when(
-                        spec.kind != FieldKind::ReadOnly && icon.is_some(),
-                        |button| button.ghost().accessibility_label(label).tooltip(label),
-                    )
-                    .when_some(icon, |button, icon| button.icon(icon))
-                    .disabled(busy || disabled)
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.field_action(key, action, window, cx)
-                    }))
+                let id = SharedString::from(format!("action-{key}-{action}"));
+                let button = if spec.kind == FieldKind::ReadOnly {
+                    Button::new(id)
+                        .outline()
+                        .with_size(control::STANDARD)
+                        .label(label)
+                        .when_some(icon, |button, icon| button.icon(icon))
+                } else if let Some(icon) = icon {
+                    ui::icon_button(id, icon, label)
+                } else {
+                    Button::new(id)
+                        .outline()
+                        .with_size(control::STANDARD)
+                        .label(label)
+                };
+                button.disabled(busy || disabled).on_click(cx.listener(
+                    move |this, _, window, cx| this.field_action(key, action, window, cx),
+                ))
             })
             .collect::<Vec<_>>();
         if spec.kind == FieldKind::Multiline {
@@ -266,20 +269,20 @@ impl SettingsPage {
                 .child(control)
                 .children(actions.iter().map(|action| {
                     let action = *action;
-                    Button::new(SharedString::from(format!("service-{action}")))
-                        .outline()
-                        .label(action)
-                        .icon(match action {
+                    ui::icon_button(
+                        SharedString::from(format!("service-{action}")),
+                        match action {
                             "安装服务" => IconName::Download,
                             "更新服务" => IconName::RefreshCw,
                             "修复服务" => IconName::Wrench,
                             _ => IconName::Trash,
-                        })
-                        .with_size(control::STANDARD)
-                        .disabled(disabled || checking)
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            this.field_action(key, action, window, cx)
-                        }))
+                        },
+                        action,
+                    )
+                    .disabled(disabled || checking)
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.field_action(key, action, window, cx)
+                    }))
                 }));
             return ui::preference_row(spec.label, spec.description, buttons, cx)
                 .into_any_element();

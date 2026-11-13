@@ -8,9 +8,7 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     assets::IconName,
     component::{
-        ActiveTheme, Icon, IndexPath, Sizable,
-        button::Button,
-        h_flex,
+        ActiveTheme, Icon, IndexPath, Sizable, h_flex,
         input::{Editor, EditorState, Input, InputState, MaskPattern},
         searchable_list::SearchableListItem,
         select::{Select, SelectState},
@@ -385,11 +383,7 @@ impl Render for DocumentEditor {
                         ))
                         .child(div().flex_1())
                         .child(
-                            Button::new("validate-document-yaml")
-                                .icon(IconName::Check)
-                                .outline()
-                                .with_size(control::STANDARD)
-                                .label("检查语法")
+                            ui::icon_button("validate-document-yaml", IconName::Check, "检查语法")
                                 .on_click(cx.listener(|this, _, window, cx| {
                                     crate::core::request(
                                         crate::core::Command::CheckDocument {
@@ -402,16 +396,13 @@ impl Render for DocumentEditor {
                                 })),
                         )
                         .child(
-                            Button::new("copy-editor-file")
-                                .icon(IconName::Copy)
-                                .outline()
-                                .with_size(control::STANDARD)
-                                .label("复制")
-                                .on_click(cx.listener(|this, _, _, cx| {
+                            ui::icon_button("copy-editor-file", IconName::Copy, "复制").on_click(
+                                cx.listener(|this, _, _, cx| {
                                     cx.write_to_clipboard(ClipboardItem::new_string(
                                         this.content.read(cx).value().to_string(),
                                     ))
-                                })),
+                                }),
+                            ),
                         ),
                 )
                 .child(

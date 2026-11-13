@@ -444,39 +444,7 @@ impl Render for ProfilesPage {
         let owner = cx.weak_entity();
         let current_columns = self.columns;
         ui::workspace()
-            .child(
-                ui::workspace_header(if self.overrides { "覆写" } else { "订阅" }, "", cx)
-                    .when(!self.batch, |header| {
-                        header.child(
-                            Button::new("profile-batch")
-                                .icon(IconName::ListChecks)
-                                .outline()
-                                .with_size(control::STANDARD)
-                                .label("批量管理")
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.batch = !this.batch;
-                                    this.selected.clear();
-                                    cx.notify();
-                                })),
-                        )
-                    })
-                    .child(
-                        Button::new("update-or-apply")
-                            .outline()
-                            .with_size(control::STANDARD)
-                            .icon(IconName::RefreshCw)
-                            .label("全部更新")
-                            .on_click(cx.listener(|this, _, w, cx| {
-                                let ids = this
-                                    .documents
-                                    .iter()
-                                    .filter(|doc| doc.is_remote())
-                                    .map(|doc| doc.id)
-                                    .collect();
-                                this.update_profiles(ids, w, cx);
-                            })),
-                    ),
-            )
+            .child(ui::workspace_header("订阅", "", cx))
             .child(
                 ui::workspace_toolbar()
                     .child(
@@ -496,7 +464,41 @@ impl Render for ProfilesPage {
                                 .on_click(cx.listener(|this, _, w, cx| this.import_dialog(w, cx))),
                             ),
                     )
-                    .child(self.import_button(cx)),
+                    .child(self.import_button(cx))
+                    .child(
+                        h_flex()
+                            .gap(space::SM)
+                            .when(!self.batch, |row| {
+                                row.child(
+                                    Button::new("profile-batch")
+                                        .icon(IconName::ListChecks)
+                                        .outline()
+                                        .with_size(control::STANDARD)
+                                        .label("批量管理")
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.batch = !this.batch;
+                                            this.selected.clear();
+                                            cx.notify();
+                                        })),
+                                )
+                            })
+                            .child(
+                                Button::new("update-or-apply")
+                                    .outline()
+                                    .with_size(control::STANDARD)
+                                    .icon(IconName::RefreshCw)
+                                    .label("全部更新")
+                                    .on_click(cx.listener(|this, _, w, cx| {
+                                        let ids = this
+                                            .documents
+                                            .iter()
+                                            .filter(|doc| doc.is_remote())
+                                            .map(|doc| doc.id)
+                                            .collect();
+                                        this.update_profiles(ids, w, cx);
+                                    })),
+                            ),
+                    ),
             )
             .when(self.batch, |page| {
                 page.child(
@@ -664,8 +666,8 @@ mod interaction_tests {
             window.click("profile-batch", cx);
             assert!(page.read(cx).batch);
             let done = window.find("finish-profile-batch").bounds();
-            let import = window.within("import-subscription").find("popup").bounds();
-            assert!((done.right() - import.right()).abs() <= px(1.));
+            let update = window.find("update-or-apply").bounds();
+            assert!((done.right() - update.right()).abs() <= px(1.));
             assert!(done.bottom() <= window.viewport_size().height);
             assert!(done.top() > window.viewport_size().height * 0.8);
             assert!(done.size.width < window.viewport_size().width / 3.);
