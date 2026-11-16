@@ -1,9 +1,6 @@
+use crate::OwnerIdentity;
 use crate::core::auth::{AuthenticatedOwner, hash_session_token};
-use crate::core::logger::set_or_update_writer;
-use crate::core::manager::CORE_MANAGER;
 use crate::core::paths::service_paths;
-use crate::core::state::set_core_lifecycle_state;
-use crate::{ClashConfig, OwnerIdentity, ServiceLifecycleState, WriterConfig};
 use anyhow::{Context, Result};
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
@@ -11,7 +8,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::io::AsyncWriteExt as _;
 use tokio::sync::Mutex;
-use tracing::{info, warn};
+use tracing::warn;
 
 static DESIRED_STATE_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
 static STATE_FILE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -19,8 +16,6 @@ static STATE_FILE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct DesiredState {
     pub core_should_be_running: bool,
-    pub last_clash_config: Option<ClashConfig>,
-    pub last_writer_config: Option<WriterConfig>,
     pub generation: u64,
     pub updated_at: u64,
 }
@@ -59,14 +54,9 @@ pub async fn load_owner_desired_state(owner_key: &str) -> Result<DesiredState> {
     read_json_or_default(&path).await
 }
 
-pub async fn persist_owner_core_started(
-    owner: &AuthenticatedOwner,
-    config: &ClashConfig,
-) -> Result<DesiredState> {
+pub async fn persist_owner_core_started(owner: &AuthenticatedOwner) -> Result<DesiredState> {
     update_owner_desired_state(&owner.key, |state| {
         state.core_should_be_running = true;
-        state.last_clash_config = Some(config.clone());
-        state.last_writer_config = Some(config.log_config.clone());
     })
     .await
 }
@@ -78,19 +68,6 @@ pub async fn persist_owner_core_stopped(owner: &AuthenticatedOwner) -> Result<De
 pub async fn persist_owner_core_stopped_by_key(owner_key: &str) -> Result<DesiredState> {
     update_owner_desired_state(owner_key, |state| {
         state.core_should_be_running = false;
-    })
-    .await
-}
-
-pub async fn persist_owner_writer_config(
-    owner: &AuthenticatedOwner,
-    config: &WriterConfig,
-) -> Result<DesiredState> {
-    update_owner_desired_state(&owner.key, |state| {
-        state.last_writer_config = Some(config.clone());
-        if let Some(clash_config) = state.last_clash_config.as_mut() {
-            clash_config.log_config = config.clone();
-        }
     })
     .await
 }
@@ -146,42 +123,6 @@ pub async fn clear_active_owner() -> Result<()> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(error).with_context(|| format!("failed to remove active owner {path:?}")),
     }
-}
-
-pub async fn restore_desired_state() -> Result<()> {
-    let Some(active_owner) = load_active_owner().await? else {
-        info!("无活动所有者，跳过恢复");
-        return Ok(());
-    };
-    let state = load_owner_desired_state(&active_owner.owner_key).await?;
-
-    if let Some(writer_config) = state.last_writer_config.as_ref()
-        && let Err(error) = set_or_update_writer(writer_config)
-    {
-        warn!("恢复写入配置失败：{}", error);
-    }
-
-    if !state.core_should_be_running {
-        info!("期望状态无需恢复内核");
-        return Ok(());
-    }
-
-    let Some(config) = state.last_clash_config else {
-        warn!("期望状态要求恢复内核但缺少内核配置");
-        return Ok(());
-    };
-
-    info!("按期望状态第 {} 代恢复内核", state.generation);
-    if let Err(error) = CORE_MANAGER
-        .lock()
-        .await
-        .start_core(config, active_owner.identity.clone())
-        .await
-    {
-        set_core_lifecycle_state(ServiceLifecycleState::Fatal);
-        return Err(error);
-    }
-    Ok(())
 }
 
 async fn update_owner_desired_state(
@@ -291,8 +232,8 @@ mod owner_tests {
         load_owner_desired_state, persist_active_owner, persist_owner_core_started,
         persist_owner_core_stopped,
     };
+    use crate::OwnerIdentity;
     use crate::core::auth::AuthenticatedOwner;
-    use crate::{ClashConfig, CoreConfig, OwnerIdentity};
     use serial_test::serial;
 
     fn test_owner(uid: u32) -> AuthenticatedOwner {
@@ -304,53 +245,10 @@ mod owner_tests {
     }
 
     #[tokio::test]
-    #[serial]
-    async fn unusable_restored_core_does_not_reserve_execution() -> anyhow::Result<()> {
-        let owner = test_owner(90_019);
-        let directory =
-            std::env::temp_dir().join(format!("missing-core-restore-{}", std::process::id()));
-        std::fs::create_dir_all(&directory)?;
-        let config = ClashConfig {
-            core_config: CoreConfig {
-                core_path: "/missing/suki-mihomo".into(),
-                core_ipc_path: directory.join("core.sock").to_string_lossy().into_owned(),
-                ..Default::default()
-            },
-            log_config: Default::default(),
-        };
-        persist_owner_core_started(&owner, &config).await?;
-        persist_active_owner(&owner).await?;
-        assert!(
-            crate::core::installation::inspect(&[], false)
-                .await?
-                .core_busy
-        );
-        assert!(super::restore_desired_state().await.is_err());
-        let status = crate::core::installation::inspect(&[], false).await?;
-        let occupied = status.core_busy;
-        assert!(status.service_sha256.is_empty());
-        clear_active_owner().await?;
-        std::fs::remove_dir_all(directory)?;
-        assert!(
-            occupied,
-            "failed restore must preserve intent and block an implicit sidecar handoff"
-        );
-        Ok(())
-    }
-
-    #[tokio::test]
     async fn desired_state_is_scoped_by_owner_key() -> anyhow::Result<()> {
         let owner_a = test_owner(90_001);
         let owner_b = test_owner(90_002);
-        let config = ClashConfig {
-            core_config: CoreConfig {
-                core_path: "/tmp/mock-core-a".to_string(),
-                ..Default::default()
-            },
-            log_config: Default::default(),
-        };
-
-        persist_owner_core_started(&owner_a, &config).await?;
+        persist_owner_core_started(&owner_a).await?;
         persist_owner_core_stopped(&owner_b).await?;
 
         assert!(
@@ -442,11 +340,7 @@ mod owner_tests {
         let _ = std::fs::remove_dir_all(&owner_root);
         std::fs::create_dir_all(owner_root.join("desired-state.json"))?;
 
-        assert!(
-            persist_owner_core_started(&owner, &ClashConfig::default())
-                .await
-                .is_err()
-        );
+        assert!(persist_owner_core_started(&owner).await.is_err());
         assert!(owner_root.join("desired-state.json").is_dir());
         std::fs::remove_dir_all(owner_root)?;
         Ok(())

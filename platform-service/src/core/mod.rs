@@ -75,10 +75,7 @@ pub(in crate::core) use unix_security as platform_security;
 pub(in crate::core) use windows_security as platform_security;
 
 #[cfg(feature = "standalone")]
-pub use desired::{
-    ActiveOwnerState, DesiredState, load_active_owner, load_owner_desired_state,
-    restore_desired_state,
-};
+pub use desired::{ActiveOwnerState, DesiredState, load_active_owner, load_owner_desired_state};
 #[cfg(feature = "standalone")]
 pub use logger::{flush_service_log, init_service_logging};
 #[cfg(feature = "standalone")]

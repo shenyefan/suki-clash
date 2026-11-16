@@ -6,7 +6,7 @@ mod maintenance;
 use anyhow::Result;
 use suki_clash_service::{
     acquire_service_owner, flush_service_log, init_service_logging, reconcile_service_startup,
-    restore_desired_state, run_ipc_supervisor_until_shutdown,
+    run_ipc_supervisor_until_shutdown,
 };
 use tracing::{error, info, warn};
 
@@ -125,16 +125,11 @@ fn run_service() -> windows_service::Result<()> {
             }
         };
 
-        match reconcile_service_startup().await {
-            Ok(()) => {
-                if let Err(error) = restore_desired_state().await {
-                    tracing::warn!("期望状态恢复失败，保留本地通道供界面恢复：{:#}", error);
-                }
-            }
-            Err(error) => tracing::warn!(
+        if let Err(error) = reconcile_service_startup().await {
+            tracing::warn!(
                 "服务启动对账失败，内核启动保持阻止，本地通道仍可用：{}",
                 error
-            ),
+            );
         }
 
         let result = run_ipc_supervisor_until_shutdown(async {
@@ -178,18 +173,9 @@ async fn run_standalone() -> Result<()> {
         return Ok(());
     };
 
-    // Startup recovery is best-effort so stale desired state cannot prevent IPC self-healing.
-    match reconcile_service_startup().await {
-        Ok(()) => {
-            if let Err(error) = restore_desired_state().await {
-                warn!(
-                    "启动时恢复期望内核状态失败，不自动启动内核，保留本地通道供界面重连恢复：{error:#}"
-                );
-            }
-        }
-        Err(error) => {
-            warn!("服务启动对账失败，内核启动保持阻止，本地通道仍可用：{error:#}")
-        }
+    // The daemon waits for an explicit app request; previous sessions never authorize a start.
+    if let Err(error) = reconcile_service_startup().await {
+        warn!("服务启动对账失败，内核启动保持阻止，本地通道仍可用：{error:#}");
     }
 
     let result = run_ipc_supervisor_until_shutdown(shutdown_signal()).await;

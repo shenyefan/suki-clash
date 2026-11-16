@@ -6,7 +6,6 @@ use crate::core::auth::{
 use crate::core::desired::{
     ActiveOwnerState, clear_active_owner, commit_active_owner_session, load_active_owner,
     persist_owner_core_started, persist_owner_core_stopped, persist_owner_core_stopped_by_key,
-    persist_owner_writer_config,
 };
 use crate::core::logger::{LOG_RING, flush_writer, set_or_update_writer};
 use crate::core::manager::{CORE_IPC_READY_TIMEOUT, CORE_MANAGER, CORE_OUTPUT_DRAIN_TIMEOUT};
@@ -172,12 +171,7 @@ impl OwnerProxyTransition for StartOwnerTransition<'_> {
     }
 
     async fn commit_new_owner(&mut self) -> AnyResult<ActiveOwnerState> {
-        let clash_config = self
-            .prepared_runtime
-            .as_ref()
-            .context("prepared runtime is unavailable during owner commit")?
-            .clash_config();
-        if let Err(error) = persist_owner_core_started(self.owner, clash_config).await {
+        if let Err(error) = persist_owner_core_started(self.owner).await {
             return self.rollback_commit_failure(error).await;
         }
         match commit_active_owner_session(self.owner, self.proposed_session_token).await {
@@ -935,9 +929,6 @@ pub(super) async fn handle_request(ctx: RequestContext) -> Result<HttpResponse> 
                     return service_unavailable(format!("Failed to update writer: {}", e));
                 }
             };
-            if let Err(e) = persist_owner_writer_config(&owner, &writer_config).await {
-                return service_unavailable(format!("Failed to persist writer config: {}", e));
-            }
             ok_empty("Update Writer successfully")
         }
         ("PUT", Ok(IpcCommand::SetSystemProxy)) => {

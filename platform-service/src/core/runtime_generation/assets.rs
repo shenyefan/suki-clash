@@ -78,7 +78,7 @@ pub(super) fn runtime_cleanup_retry_delay(
     None
 }
 
-/// Ensures the private, durable generation used by both normal starts and desired-state restore.
+/// Ensures the private, durable generation used by authenticated app starts.
 /// Reuse preserves core-owned state such as `cache.db` selections and fake-IP leases.
 async fn ensure_runtime_generation(owner_root: &Path) -> Result<PathBuf, ServiceError> {
     let runtime = owner_root.join(RUNTIME_GENERATION_DIRECTORY_NAME);

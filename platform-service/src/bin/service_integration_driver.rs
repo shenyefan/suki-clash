@@ -229,6 +229,11 @@ fn mock_binary_path() -> anyhow::Result<String> {
 #[cfg(feature = "test")]
 async fn verify_session() -> anyhow::Result<()> {
     let credentials = owner_credentials()?;
+    let idle = suki_clash_service::response_data(get_status(&credentials).await?)?;
+    anyhow::ensure!(
+        !idle.is_active && idle.core_pid.is_none() && !idle.desired_core_should_be_running,
+        "helper must wait for an app start request: {idle:?}"
+    );
     let request = StartClashRequest {
         runtime: RuntimeBundle {
             yaml: "mode: rule\n".into(),
@@ -272,8 +277,16 @@ async fn verify_session() -> anyhow::Result<()> {
                 token: "00".repeat(32),
             },
         )
-        .await?;
-        anyhow::ensure!(rejected.code != 0, "wrong proof was accepted");
+        .await
+        .err()
+        .context("wrong proof was accepted")?;
+        anyhow::ensure!(
+            matches!(
+                rejected.downcast_ref::<suki_clash_service::RequestError>(),
+                Some(suki_clash_service::RequestError::Rejected { code: 422, .. })
+            ),
+            "wrong proof must receive a session rejection: {rejected:#}"
+        );
         anyhow::ensure!(
             get_status(&credentials)
                 .await?
